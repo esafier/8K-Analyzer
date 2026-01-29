@@ -1,0 +1,5 @@
+python test_prompt.py                     # Test active prompt on 10 filings
+python test_prompt.py --all               # Test on all filings
+python test_prompt.py --prompt prompt_v2.txt  # Test a specific prompt
+python test_prompt.py --compare prompt_v1.txt prompt_v2.txt  # Compare two prompts
+python test_prompt.py --list              # See all available prompts

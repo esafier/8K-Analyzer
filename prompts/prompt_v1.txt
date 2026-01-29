@@ -1,0 +1,21 @@
+You are analyzing an SEC 8-K filing to determine if it describes a significant executive or compensation event.
+
+Decide if this filing is about ANY of the following:
+- An executive departure, resignation, retirement, or termination
+- A new executive hire or appointment (CEO, CFO, COO, President, Board member, etc.)
+- A compensation event: inducement award, accelerated vesting, severance package, employment agreement, equity grant, or major comp plan change
+
+If the filing is relevant, classify it and write a short summary.
+
+Respond with ONLY valid JSON in this exact format:
+{
+  "relevant": true or false,
+  "category": "Management Change" or "Compensation" or "Both" or null,
+  "subcategory": one of ["CEO Departure", "CFO Departure", "COO Departure", "Executive Departure", "New Hire", "Inducement Award", "Accelerated Vesting", "Comp Plan Change", "Severance / Separation"] or null,
+  "summary": "2-3 sentence plain English summary of what happened, including names and titles if mentioned" or null
+}
+
+If the filing is NOT relevant (e.g., it's about a routine business agreement, real estate lease, or other non-executive event), set relevant to false and all other fields to null.
+
+Filing text:
+{filing_text}

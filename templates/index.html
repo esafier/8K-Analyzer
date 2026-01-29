@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Filtered 8-K Filings</h2>
+    <span class="badge bg-secondary fs-6">{{ total_count }} total filings in database</span>
+</div>
+
+<!-- Filter controls -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" action="/" class="row g-3">
+            <!-- Category dropdown -->
+            <div class="col-md-3">
+                <label class="form-label">Category</label>
+                <select name="category" class="form-select">
+                    <option value="">All Categories</option>
+                    {% for cat in categories %}
+                    <option value="{{ cat }}" {{ 'selected' if cat == current_category }}>{{ cat }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- Search box -->
+            <div class="col-md-3">
+                <label class="form-label">Search</label>
+                <input type="text" name="search" class="form-control"
+                       placeholder="Company, ticker, or keyword..."
+                       value="{{ current_search }}">
+            </div>
+
+            <!-- Date range -->
+            <div class="col-md-2">
+                <label class="form-label">From</label>
+                <input type="date" name="date_from" class="form-control" value="{{ current_date_from }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">To</label>
+                <input type="date" name="date_to" class="form-control" value="{{ current_date_to }}">
+            </div>
+
+            <div class="col-md-2 d-flex align-items-end gap-2">
+                <button type="submit" class="btn btn-primary">Filter</button>
+                <a href="/" class="btn btn-outline-secondary">Clear</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Results table -->
+{% if filings %}
+<div class="table-responsive">
+    <table class="table table-hover">
+        <thead class="table-dark">
+            <tr>
+                <th>Date</th>
+                <th>Company</th>
+                <th>Ticker</th>
+                <th>Category</th>
+                <th>Sub-Category</th>
+                <th>Summary</th>
+                <th>Link</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for filing in filings %}
+            <tr class="clickable-row" onclick="window.location='/filing/{{ filing['id'] }}'">
+                <td class="text-nowrap">{{ filing['filed_date'] }}</td>
+                <td>{{ filing['company'] }}</td>
+                <td><strong>{{ filing['ticker'] or '—' }}</strong></td>
+                <td>
+                    <!-- Show user tag if set, otherwise auto category -->
+                    {% set display_category = filing['user_tag'] or filing['auto_category'] %}
+                    <span class="badge
+                        {% if display_category == 'Management Change' %}bg-primary
+                        {% elif display_category == 'Compensation' %}bg-success
+                        {% elif display_category == 'Both' %}bg-warning text-dark
+                        {% else %}bg-info
+                        {% endif %}">
+                        {{ display_category or 'Uncategorized' }}
+                    </span>
+                </td>
+                <td class="text-muted small">{{ filing['auto_subcategory'] or '—' }}</td>
+                <td class="summary-cell">{{ filing['summary'][:150] }}{{ '...' if filing['summary'] and filing['summary']|length > 150 }}</td>
+                <td>
+                    <a href="{{ filing['filing_url'] }}" target="_blank" class="btn btn-sm btn-outline-primary"
+                       onclick="event.stopPropagation()">SEC</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Simple pagination -->
+<nav class="d-flex justify-content-between align-items-center">
+    <div>
+        {% if current_page > 1 %}
+        <a href="?page={{ current_page - 1 }}&category={{ current_category }}&search={{ current_search }}&date_from={{ current_date_from }}&date_to={{ current_date_to }}"
+           class="btn btn-outline-primary">Previous</a>
+        {% endif %}
+    </div>
+    <span class="text-muted">Page {{ current_page }}</span>
+    <div>
+        {% if filings|length == per_page %}
+        <a href="?page={{ current_page + 1 }}&category={{ current_category }}&search={{ current_search }}&date_from={{ current_date_from }}&date_to={{ current_date_to }}"
+           class="btn btn-outline-primary">Next</a>
+        {% endif %}
+    </div>
+</nav>
+
+{% else %}
+<div class="text-center py-5">
+    <h4 class="text-muted">No filings found</h4>
+    <p class="text-muted">Try adjusting your filters or <a href="/backfill">run a backfill</a> to fetch historical filings.</p>
+</div>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+
+<a href="/" class="btn btn-outline-secondary mb-3">&larr; Back to Dashboard</a>
+
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h3 class="mb-0">{{ filing['company'] }}</h3>
+        <span class="badge bg-secondary fs-6">{{ filing['ticker'] or 'No Ticker' }}</span>
+    </div>
+    <div class="card-body">
+
+        <!-- Filing metadata -->
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <table class="table table-sm">
+                    <tr><th>Filed Date</th><td>{{ filing['filed_date'] }}</td></tr>
+                    <tr><th>CIK</th><td>{{ filing['cik'] }}</td></tr>
+                    <tr><th>Accession No.</th><td>{{ filing['accession_no'] }}</td></tr>
+                    <tr><th>Item Codes</th><td>{{ filing['item_codes'] }}</td></tr>
+                    <tr>
+                        <th>SEC Filing</th>
+                        <td><a href="{{ filing['filing_url'] }}" target="_blank">View on SEC.gov</a></td>
+                    </tr>
+                </table>
+            </div>
+            <div class="col-md-6">
+                <table class="table table-sm">
+                    <tr>
+                        <th>Auto Category</th>
+                        <td>
+                            <span class="badge
+                                {% if filing['auto_category'] == 'Management Change' %}bg-primary
+                                {% elif filing['auto_category'] == 'Compensation' %}bg-success
+                                {% elif filing['auto_category'] == 'Both' %}bg-warning text-dark
+                                {% else %}bg-info{% endif %}">
+                                {{ filing['auto_category'] or '—' }}
+                            </span>
+                        </td>
+                    </tr>
+                    <tr><th>Auto Sub-Category</th><td>{{ filing['auto_subcategory'] or '—' }}</td></tr>
+                    <tr>
+                        <th>User Tag</th>
+                        <td>
+                            {% if filing['user_tag'] %}
+                            <span class="badge bg-dark">{{ filing['user_tag'] }}</span>
+                            {% else %}
+                            <span class="text-muted">Not set</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr><th>Matched Keywords</th><td class="small">{{ filing['matched_keywords'] }}</td></tr>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tag override form -->
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5>Update Tag</h5>
+                <form method="POST" action="/update-tag/{{ filing['id'] }}" class="d-flex gap-2">
+                    <select name="user_tag" class="form-select" style="max-width: 300px;">
+                        <option value="">— Clear Tag —</option>
+                        {% for tag in tag_options %}
+                        <option value="{{ tag }}" {{ 'selected' if filing['user_tag'] == tag }}>{{ tag }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="btn btn-primary">Save</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Summary -->
+        <div class="card">
+            <div class="card-header"><h5 class="mb-0">Summary</h5></div>
+            <div class="card-body">
+                <p>{{ filing['summary'] or 'No summary available' }}</p>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+{% endblock %}

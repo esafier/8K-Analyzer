@@ -1,0 +1,22 @@
+# render.yaml — Render deployment blueprint
+# This file tells Render how to set up your app and database automatically
+
+databases:
+  - name: 8k-analyzer-db
+    plan: free
+    databaseName: filings
+
+services:
+  - type: web
+    name: 8k-analyzer
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: 8k-analyzer-db
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false  # You'll enter this manually in the Render dashboard

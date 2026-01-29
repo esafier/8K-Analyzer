@@ -1,0 +1,26 @@
+/* Custom styles for the 8-K Filing Analyzer dashboard */
+
+/* Make table rows clickable with a pointer cursor and hover highlight */
+.clickable-row {
+    cursor: pointer;
+}
+.clickable-row:hover {
+    background-color: #f0f4ff !important;
+}
+
+/* Limit summary text width so it doesn't stretch the table */
+.summary-cell {
+    max-width: 400px;
+    font-size: 0.85rem;
+    color: #555;
+}
+
+/* Tighten up the card spacing */
+.card {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* Make badges a bit more readable */
+.badge {
+    font-weight: 500;
+}

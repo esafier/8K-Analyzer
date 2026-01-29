@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h2 class="mb-4">Historical Backfill</h2>
+<p class="text-muted">Fetch 8-K filings from a date range in the past. The system will download, filter, and categorize them automatically.</p>
+
+<div class="card" style="max-width: 500px;">
+    <div class="card-body">
+        <form method="POST" action="/backfill">
+            <div class="mb-3">
+                <label class="form-label">Start Date</label>
+                <input type="date" name="start_date" class="form-control" required>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">End Date</label>
+                <input type="date" name="end_date" class="form-control" required>
+            </div>
+            <p class="text-muted small">
+                Tip: Start with a small range (1-3 days) to test. Larger ranges will take longer
+                since each filing needs to be downloaded and scanned.
+            </p>
+            <button type="submit" class="btn btn-primary">Start Backfill</button>
+        </form>
+    </div>
+</div>
+
+{% endblock %}

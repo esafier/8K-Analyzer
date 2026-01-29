@@ -1,0 +1,12 @@
+# Database (local SQLite file, not needed on Render)
+filings.db
+
+# Environment variables (never commit secrets)
+.env
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
