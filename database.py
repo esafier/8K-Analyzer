@@ -2,8 +2,9 @@
 # Supports PostgreSQL (when DATABASE_URL is set, e.g. on Render)
 # and SQLite (local development fallback)
 
+import os
 import sqlite3
-from config import DATABASE_PATH, DATABASE_URL
+from config import DATABASE_PATH
 
 # Try to import psycopg2 for PostgreSQL support
 # If it's not installed (local dev without it), that's fine — we'll use SQLite
@@ -15,9 +16,15 @@ except ImportError:
     HAS_PSYCOPG2 = False
 
 
+def _get_database_url():
+    """Read DATABASE_URL fresh from environment every time.
+    This ensures gunicorn workers always pick it up."""
+    return os.environ.get("DATABASE_URL")
+
+
 def _using_postgres():
     """Check if we should use PostgreSQL (DATABASE_URL is set and psycopg2 available)."""
-    return DATABASE_URL is not None and HAS_PSYCOPG2
+    return _get_database_url() is not None and HAS_PSYCOPG2
 
 
 def get_connection():
@@ -26,7 +33,7 @@ def get_connection():
     if _using_postgres():
         # Render provides DATABASE_URL starting with "postgres://" but psycopg2
         # needs "postgresql://" — fix it if needed
-        url = DATABASE_URL
+        url = _get_database_url()
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
         conn = psycopg2.connect(url)
