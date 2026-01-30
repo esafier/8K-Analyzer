@@ -115,6 +115,16 @@ def initialize_database():
         """)
 
     conn.commit()
+
+    # Log which database we're using and how many filings are stored
+    # This helps us debug data loss issues on Render
+    cursor.execute("SELECT COUNT(*) FROM filings")
+    count = cursor.fetchone()[0]
+    if _using_postgres():
+        print(f"[STARTUP] Using PostgreSQL — {count} filings in database")
+    else:
+        print(f"[STARTUP] Using SQLite — {count} filings in database")
+
     conn.close()
 
 
