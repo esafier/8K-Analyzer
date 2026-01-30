@@ -66,6 +66,10 @@ Include:
 **Bad summary examples (don't do this):**
 - "The company filed an 8-K about an executive departure." (too vague)
 - "John Smith is leaving the company." (missing context and numbers)
+- "Departure of Directors or Certain Officers; Election of Directors; Appointment of Certain Officers." (this is SEC header text, not a summary)
+- "Indicate by check mark whether the registrant is an emerging growth company..." (this is SEC boilerplate, not a summary)
+
+**CRITICAL: Never copy or echo text from the filing.** Your summary must be written in your own words as a plain English sentence. Do not include SEC item descriptions, form headers, checkbox instructions, legal disclaimers, or any boilerplate language from the filing.
 
 ## IGNORE THESE (set relevant: false)
 - Routine business contracts
