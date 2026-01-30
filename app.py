@@ -138,9 +138,10 @@ def run_backfill(start_date, end_date):
     # Step 3: Summarize and store each matched filing
     stored_count = 0
     for filing in matched_filings:
-        # Generate summary from the filing text
-        keywords = filing.get("matched_keywords", "").split(",")
-        filing["summary"] = extract_summary(filing.get("raw_text", ""), keywords)
+        # Only generate a fallback summary if the LLM didn't already provide one
+        if not filing.get("summary"):
+            keywords = filing.get("matched_keywords", "").split(",")
+            filing["summary"] = extract_summary(filing.get("raw_text", ""), keywords)
 
         # Save to database
         insert_filing(filing)
