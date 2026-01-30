@@ -12,8 +12,10 @@ try:
     import psycopg2
     import psycopg2.extras
     HAS_PSYCOPG2 = True
+    print("[BOOT] psycopg2 is installed ✓")
 except ImportError:
     HAS_PSYCOPG2 = False
+    print("[BOOT] psycopg2 is NOT installed — PostgreSQL unavailable")
 
 
 def _get_database_url():
@@ -75,6 +77,17 @@ def _dict_rows(rows, cursor):
 def initialize_database():
     """Create the filings table if it doesn't exist yet.
     Called once when the app starts up."""
+    # Safety check: if DATABASE_URL is set but psycopg2 isn't available,
+    # crash instead of silently using SQLite (which loses data on Render)
+    db_url = _get_database_url()
+    print(f"[STARTUP] DATABASE_URL is {'SET' if db_url else 'NOT SET'}")
+    print(f"[STARTUP] HAS_PSYCOPG2 = {HAS_PSYCOPG2}")
+    if db_url and not HAS_PSYCOPG2:
+        raise RuntimeError(
+            "DATABASE_URL is set but psycopg2 is not installed! "
+            "Run: pip install psycopg2-binary"
+        )
+
     conn = get_connection()
     cursor = conn.cursor()
 
