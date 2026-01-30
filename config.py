@@ -1,6 +1,10 @@
 # config.py — Settings for the 8-K Filing Analyzer
 # Change these values to customize what filings you're looking for
 
+# Load .env file so we can read API keys from it locally
+from dotenv import load_dotenv
+load_dotenv()
+
 # Your contact info for SEC EDGAR (required by SEC policy)
 # Replace with your actual name and email
 USER_AGENT = "elyinvesting1@gmail.com"
@@ -106,7 +110,7 @@ LLM_MODEL = "gpt-4o-mini"
 # Folder where prompt files are stored (prompt_v1.txt, prompt_v2.txt, etc.)
 # The "active" prompt used by the live pipeline is whichever one ACTIVE_PROMPT points to.
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
-ACTIVE_PROMPT = "prompt_v1.txt"
+ACTIVE_PROMPT = "prompt_v2.txt"
 
 # --- Database ---
 # If DATABASE_URL is set (Render provides this), use PostgreSQL

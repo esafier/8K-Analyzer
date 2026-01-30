@@ -3,3 +3,13 @@ python test_prompt.py --all               # Test on all filings
 python test_prompt.py --prompt prompt_v2.txt  # Test a specific prompt
 python test_prompt.py --compare prompt_v1.txt prompt_v2.txt  # Compare two prompts
 python test_prompt.py --list              # See all available prompts
+
+
+
+
+
+A few updates for the program:
+
+Add the ability to save filings. 
+Improve prompt/summary (how do i try a v2?)
+CEO or CAO and was it voluntary
