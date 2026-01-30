@@ -6,16 +6,15 @@ import os
 import sqlite3
 from config import DATABASE_PATH
 
-# Try to import psycopg2 for PostgreSQL support
-# If it's not installed (local dev without it), that's fine — we'll use SQLite
+# Try to import pg8000 for PostgreSQL support
+# pg8000 is pure Python (no C compilation needed), so it installs reliably everywhere
 try:
-    import psycopg2
-    import psycopg2.extras
-    HAS_PSYCOPG2 = True
-    print("[BOOT] psycopg2 is installed ✓")
+    import pg8000.dbapi
+    HAS_PG = True
+    print("[BOOT] pg8000 is installed ✓")
 except ImportError:
-    HAS_PSYCOPG2 = False
-    print("[BOOT] psycopg2 is NOT installed — PostgreSQL unavailable")
+    HAS_PG = False
+    print("[BOOT] pg8000 is NOT installed — PostgreSQL unavailable")
 
 
 def _get_database_url():
@@ -25,20 +24,47 @@ def _get_database_url():
 
 
 def _using_postgres():
-    """Check if we should use PostgreSQL (DATABASE_URL is set and psycopg2 available)."""
-    return _get_database_url() is not None and HAS_PSYCOPG2
+    """Check if we should use PostgreSQL (DATABASE_URL is set and pg8000 available)."""
+    return _get_database_url() is not None and HAS_PG
 
 
 def get_connection():
     """Open a database connection. Uses PostgreSQL if DATABASE_URL is set,
     otherwise falls back to local SQLite file."""
     if _using_postgres():
-        # Render provides DATABASE_URL starting with "postgres://" but psycopg2
-        # needs "postgresql://" — fix it if needed
+        # Parse the DATABASE_URL into components that pg8000 needs
         url = _get_database_url()
+        # URL format: postgres://user:password@host:port/dbname
+        # Strip the scheme prefix
         if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql://", 1)
-        conn = psycopg2.connect(url)
+            url = url[len("postgres://"):]
+        elif url.startswith("postgresql://"):
+            url = url[len("postgresql://"):]
+
+        # Split into user_info@host_info/dbname
+        user_info, rest = url.split("@", 1)
+        host_info, dbname = rest.split("/", 1)
+        user, password = user_info.split(":", 1)
+        if ":" in host_info:
+            host, port = host_info.split(":", 1)
+            port = int(port)
+        else:
+            host = host_info
+            port = 5432
+
+        import ssl
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        conn = pg8000.dbapi.connect(
+            user=user,
+            password=password,
+            host=host,
+            port=port,
+            database=dbname,
+            ssl_context=ssl_context
+        )
         return conn
     else:
         conn = sqlite3.connect(DATABASE_PATH)
@@ -55,7 +81,7 @@ def _placeholder():
 
 def _dict_row(row, cursor):
     """Convert a database row to a dictionary.
-    SQLite rows are already dict-like, but psycopg2 rows need conversion."""
+    SQLite rows are already dict-like, but pg8000 rows need conversion."""
     if row is None:
         return None
     if _using_postgres():
@@ -77,15 +103,15 @@ def _dict_rows(rows, cursor):
 def initialize_database():
     """Create the filings table if it doesn't exist yet.
     Called once when the app starts up."""
-    # Safety check: if DATABASE_URL is set but psycopg2 isn't available,
+    # Safety check: if DATABASE_URL is set but pg8000 isn't available,
     # crash instead of silently using SQLite (which loses data on Render)
     db_url = _get_database_url()
     print(f"[STARTUP] DATABASE_URL is {'SET' if db_url else 'NOT SET'}")
-    print(f"[STARTUP] HAS_PSYCOPG2 = {HAS_PSYCOPG2}")
-    if db_url and not HAS_PSYCOPG2:
+    print(f"[STARTUP] HAS_PG = {HAS_PG}")
+    if db_url and not HAS_PG:
         raise RuntimeError(
-            "DATABASE_URL is set but psycopg2 is not installed! "
-            "Run: pip install psycopg2-binary"
+            "DATABASE_URL is set but pg8000 is not installed! "
+            "Run: pip install pg8000"
         )
 
     conn = get_connection()
