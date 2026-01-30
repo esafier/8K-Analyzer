@@ -86,6 +86,15 @@ def update_tag(filing_id):
     return redirect(url_for("filing_detail", filing_id=filing_id))
 
 
+@app.route("/clear-database", methods=["POST"])
+def clear_database():
+    """Wipe all filings so you can re-backfill with an updated prompt."""
+    from database import clear_all_filings
+    clear_all_filings()
+    flash("Database cleared. Run a backfill to repopulate with the current prompt.", "success")
+    return redirect(url_for("backfill"))
+
+
 @app.route("/backfill", methods=["GET", "POST"])
 def backfill():
     """Page to trigger a historical backfill of filings."""

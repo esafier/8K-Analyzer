@@ -300,6 +300,16 @@ def get_filing_by_id(filing_id):
     return result
 
 
+def clear_all_filings():
+    """Delete all filings from the database. Used when you want to
+    repopulate everything with an updated prompt."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM filings")
+    conn.commit()
+    conn.close()
+
+
 def update_user_tag(filing_id, tag):
     """Update the user's manual tag for a filing.
     This overrides the auto-assigned category in the dashboard."""
