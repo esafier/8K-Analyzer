@@ -11,7 +11,7 @@ services:
     name: 8k-analyzer
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt && python -c "import psycopg2; print('psycopg2 OK')"
     startCommand: gunicorn app:app
     envVars:
       - key: DATABASE_URL
