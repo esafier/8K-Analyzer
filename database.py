@@ -288,6 +288,38 @@ def get_filings(category=None, search=None, date_from=None, date_to=None, limit=
     return results
 
 
+def get_filtered_filing_count(category=None, search=None, date_from=None, date_to=None):
+    """Count filings matching the current filters (for pagination)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    query = "SELECT COUNT(*) FROM filings WHERE 1=1"
+    params = []
+
+    if category:
+        query += f" AND (COALESCE(user_tag, auto_category) = {p})"
+        params.append(category)
+
+    if search:
+        query += f" AND (company LIKE {p} OR ticker LIKE {p} OR summary LIKE {p})"
+        search_term = f"%{search}%"
+        params.extend([search_term, search_term, search_term])
+
+    if date_from:
+        query += f" AND filed_date >= {p}"
+        params.append(date_from)
+
+    if date_to:
+        query += f" AND filed_date <= {p}"
+        params.append(date_to)
+
+    cursor.execute(query, params)
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
 def get_filing_by_id(filing_id):
     """Get a single filing by its database ID. Used for the detail page."""
     conn = get_connection()

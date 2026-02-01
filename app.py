@@ -3,7 +3,8 @@
 
 import os
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
-from database import initialize_database, get_filings, get_filing_by_id, update_user_tag, get_categories, get_filing_count
+import math
+from database import initialize_database, get_filings, get_filing_by_id, update_user_tag, get_categories, get_filing_count, get_filtered_filing_count
 from fetcher import fetch_filings, fetch_filing_text
 from filter import filter_filings
 from summarizer import extract_summary
@@ -41,6 +42,15 @@ def index():
     categories = get_categories()
     total_count = get_filing_count()
 
+    # Count filings matching current filters so we know total pages
+    filtered_count = get_filtered_filing_count(
+        category=category if category else None,
+        search=search if search else None,
+        date_from=date_from if date_from else None,
+        date_to=date_to if date_to else None,
+    )
+    total_pages = max(1, math.ceil(filtered_count / per_page))
+
     return render_template(
         "index.html",
         filings=filings,
@@ -52,6 +62,7 @@ def index():
         current_date_to=date_to,
         current_page=page,
         per_page=per_page,
+        total_pages=total_pages,
     )
 
 
@@ -70,7 +81,10 @@ def filing_detail(filing_id):
         "Accelerated Vesting", "Comp Plan Change", "Severance / Separation",
     ]
 
-    return render_template("filing.html", filing=filing, tag_options=tag_options)
+    # Remember where the user came from so "Back" returns to the right page
+    back_url = request.args.get("back", "/")
+
+    return render_template("filing.html", filing=filing, tag_options=tag_options, back_url=back_url)
 
 
 @app.route("/update-tag/<int:filing_id>", methods=["POST"])
