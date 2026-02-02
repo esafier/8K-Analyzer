@@ -23,6 +23,7 @@ def index():
     search = request.args.get("search", "")
     date_from = request.args.get("date_from", "")
     date_to = request.args.get("date_to", "")
+    urgent_only = request.args.get("urgent", "") == "1"
     page = int(request.args.get("page", 1))
 
     per_page = 50
@@ -34,9 +35,22 @@ def index():
         search=search if search else None,
         date_from=date_from if date_from else None,
         date_to=date_to if date_to else None,
+        urgent_only=urgent_only,
         limit=per_page,
         offset=offset,
     )
+
+    # Parse comp_details JSON for each filing so templates can use it
+    import json
+    for filing in filings:
+        raw = filing.get("comp_details") or filing.get("comp_details", None)
+        if raw and isinstance(raw, str):
+            try:
+                filing["_comp"] = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                filing["_comp"] = None
+        else:
+            filing["_comp"] = None
 
     # Get all categories for the filter dropdown
     categories = get_categories()
@@ -48,6 +62,7 @@ def index():
         search=search if search else None,
         date_from=date_from if date_from else None,
         date_to=date_to if date_to else None,
+        urgent_only=urgent_only,
     )
     total_pages = max(1, math.ceil(filtered_count / per_page))
 
@@ -60,6 +75,7 @@ def index():
         current_search=search,
         current_date_from=date_from,
         current_date_to=date_to,
+        current_urgent=urgent_only,
         current_page=page,
         per_page=per_page,
         total_pages=total_pages,
@@ -73,6 +89,20 @@ def filing_detail(filing_id):
     if not filing:
         flash("Filing not found", "error")
         return redirect(url_for("index"))
+
+    # Parse comp_details JSON so the template can display individual fields
+    import json
+    raw_comp = filing.get("comp_details") if hasattr(filing, 'get') else (filing["comp_details"] if "comp_details" in filing else None)
+    if raw_comp and isinstance(raw_comp, str):
+        try:
+            filing = dict(filing)  # Make mutable copy if needed
+            filing["_comp"] = json.loads(raw_comp)
+        except (json.JSONDecodeError, TypeError):
+            filing["_comp"] = None
+    else:
+        if not hasattr(filing, '__setitem__'):
+            filing = dict(filing)
+        filing["_comp"] = None
 
     # All possible category/tag options for the dropdown
     tag_options = [

@@ -6,7 +6,12 @@
 <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h3 class="mb-0">{{ filing['company'] }}</h3>
-        <span class="badge bg-secondary fs-6">{{ filing['ticker'] or 'No Ticker' }}</span>
+        <div class="d-flex gap-2">
+            {% if filing['urgent'] %}
+                <span class="badge bg-danger fs-6">URGENT</span>
+            {% endif %}
+            <span class="badge bg-secondary fs-6">{{ filing['ticker'] or 'No Ticker' }}</span>
+        </div>
     </div>
     <div class="card-body">
 
@@ -69,6 +74,32 @@
                 </form>
             </div>
         </div>
+
+        <!-- Compensation Details (only shown when data exists) -->
+        {% if filing['_comp'] %}
+        <div class="card mb-4">
+            <div class="card-header"><h5 class="mb-0">Compensation Details</h5></div>
+            <div class="card-body">
+                <table class="table table-sm comp-details-table">
+                    {% if filing['_comp']['grant_value'] %}
+                    <tr><th>Grant Value</th><td>{{ filing['_comp']['grant_value'] }}</td></tr>
+                    {% endif %}
+                    {% if filing['_comp']['grant_type'] %}
+                    <tr><th>Grant Type</th><td>{{ filing['_comp']['grant_type'] }}</td></tr>
+                    {% endif %}
+                    {% if filing['_comp']['vesting_target_price'] %}
+                    <tr><th>Vesting Target Price</th><td>{{ filing['_comp']['vesting_target_price'] }}</td></tr>
+                    {% endif %}
+                    {% if filing['_comp']['performance_hurdles'] %}
+                    <tr><th>Performance Hurdles</th><td>{{ filing['_comp']['performance_hurdles'] }}</td></tr>
+                    {% endif %}
+                    {% if filing['_comp']['stock_vs_cash_election'] %}
+                    <tr><th>Stock vs Cash Election</th><td>{{ filing['_comp']['stock_vs_cash_election'] }}</td></tr>
+                    {% endif %}
+                </table>
+            </div>
+        </div>
+        {% endif %}
 
         <!-- Summary -->
         <div class="card">

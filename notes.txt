@@ -10,6 +10,46 @@ python test_prompt.py --list              # See all available prompts
 
 A few updates for the program:
 
-Add the ability to save filings. 
+Add the ability to save filings.
 Improve prompt/summary (how do i try a v2?)
 CEO or CAO and was it voluntary
+Need to fix page handling
+
+---
+
+## Update: Urgency Flags + Structured Comp Data (Feb 2026)
+
+### What changed
+Added two new features to better surface the signals that matter:
+
+1. **Urgent flag (red badge)** — Filings where a CEO, CFO, or CAO suddenly departs
+   with no successor, gets terminated for cause, or dies are now flagged with a red
+   "URGENT" badge on the dashboard. You can filter to show only urgent filings.
+   Everything else displays normally. This saves you from scanning every summary.
+
+2. **Structured comp details** — The LLM now extracts specific compensation fields:
+   vesting target prices, performance hurdles, stock-vs-cash elections, grant values,
+   and grant types. These appear as a "Compensation Details" card on the filing detail
+   page, and as inline tags on the dashboard (showing vesting targets or grant values).
+   This is for spotting insider sentiment — e.g., equity vesting at $10 when stock
+   trades at $5 means the comp committee expects the stock to double.
+
+### Why
+The program was catching the right filings but treating them all equally. These
+changes make the most actionable filings jump off the screen (urgency) and surface
+the specific numbers that reveal insider sentiment (comp details).
+
+### Files modified
+- database.py — added urgent + comp_details columns with auto-migration
+- prompts/prompt_v2.txt — added urgency rules and comp extraction instructions
+- filter.py — passes new LLM fields through to database
+- app.py — urgent filter + comp JSON parsing for templates
+- templates/index.html — urgent badge column, comp tag, urgent filter checkbox
+- templates/filing.html — urgent badge in header, comp details card
+- static/style.css — urgent row styling, comp table styling
+
+### To repopulate with new fields
+Existing filings won't have urgency/comp data. To get it:
+1. Go to /backfill → Clear Database
+2. Re-run backfill for your date range
+New filings fetched going forward will automatically have these fields.

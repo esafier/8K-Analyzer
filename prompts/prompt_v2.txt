@@ -44,8 +44,36 @@ Respond with ONLY valid JSON in this exact format:
   "relevant": true or false,
   "category": "Management Change" or "Compensation" or "Both" or null,
   "subcategory": one of ["CEO Departure", "CFO Departure", "COO Departure", "CAO Departure", "CTO Departure", "CLO Departure", "CHRO Departure", "President Departure", "Board Member Departure", "Executive Departure", "CEO Appointment", "CFO Appointment", "COO Appointment", "President Appointment", "Board Member Appointment", "Executive Appointment", "Inducement Award", "Accelerated Vesting", "Comp Plan Change", "Severance / Separation"] or null,
-  "summary": "1-2 sentence investor-focused summary" or null
+  "summary": "1-2 sentence investor-focused summary" or null,
+  "urgent": true or false,
+  "comp_details": {
+    "vesting_target_price": "$X per share" or null,
+    "performance_hurdles": "description of performance conditions" or null,
+    "stock_vs_cash_election": "description of election" or null,
+    "grant_value": "$X" or null,
+    "grant_type": "RSUs" or "Stock Options" or "PSUs" or null
+  }
 }
+
+## URGENCY FLAG
+Set "urgent" to true ONLY for these high-priority situations:
+- Sudden CEO, CFO, or Chief Accounting Officer (CAO) departure with no successor named
+- CEO/CFO/CAO termination for cause
+- Death of a CEO, CFO, or CAO
+- CEO/CFO/CAO departure effective immediately or within days
+
+All other events (planned retirements, board changes, routine comp, appointments) should be "urgent": false.
+
+## COMPENSATION DETAIL EXTRACTION
+When compensation events are disclosed, extract these structured fields into "comp_details":
+
+- **vesting_target_price**: If equity grants have price-based vesting targets, extract the target price (e.g., "$15.00 per share"). This reveals what the comp committee believes the stock can reach.
+- **performance_hurdles**: Non-price performance metrics required for vesting (e.g., "Revenue > $500M", "EBITDA margin > 15%", "TSR exceeding S&P 500").
+- **stock_vs_cash_election**: If an executive chose between stock and cash compensation, note their choice (e.g., "Elected to receive annual bonus in stock" or "Chose equity over cash sign-on").
+- **grant_value**: Dollar value of equity grants, sign-on packages, or severance (e.g., "$5M in RSUs", "$2.5M severance").
+- **grant_type**: Type of equity instrument (RSUs, Stock Options, PSUs, Restricted Stock, etc.).
+
+**CRITICAL**: Only extract values explicitly stated in the filing. Set any field to null if not mentioned. Never infer, estimate, or guess numbers.
 
 ## SUMMARY GUIDELINES
 Your summary must answer: **"What happened and why should an investor care?"**

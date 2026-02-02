@@ -39,6 +39,17 @@
                 <input type="date" name="date_to" class="form-control" value="{{ current_date_to }}">
             </div>
 
+            <!-- Urgent only toggle -->
+            <div class="col-md-2 d-flex align-items-end gap-2">
+                <div class="form-check mb-2">
+                    <input type="checkbox" name="urgent" value="1" class="form-check-input"
+                           id="urgentCheck" {{ 'checked' if current_urgent }}>
+                    <label class="form-check-label" for="urgentCheck">
+                        <span class="badge bg-danger">URGENT</span> only
+                    </label>
+                </div>
+            </div>
+
             <div class="col-md-2 d-flex align-items-end gap-2">
                 <button type="submit" class="btn btn-primary">Filter</button>
                 <a href="/" class="btn btn-outline-secondary">Clear</a>
@@ -53,6 +64,7 @@
     <table class="table table-hover">
         <thead class="table-dark">
             <tr>
+                <th></th>
                 <th>Date</th>
                 <th>Company</th>
                 <th>Ticker</th>
@@ -64,7 +76,12 @@
         </thead>
         <tbody>
             {% for filing in filings %}
-            <tr class="clickable-row" onclick="window.location='/filing/{{ filing['id'] }}?back={{ ('/?page=' ~ current_page ~ '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to)|urlencode }}'">
+            <tr class="clickable-row" onclick="window.location='/filing/{{ filing['id'] }}?back={{ ('/?page=' ~ current_page ~ '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else ''))|urlencode }}'">
+                <td>
+                    {% if filing['urgent'] %}
+                        <span class="badge bg-danger">URGENT</span>
+                    {% endif %}
+                </td>
                 <td class="text-nowrap">{{ filing['filed_date'] }}</td>
                 <td>{{ filing['company'] }}</td>
                 <td><strong>{{ filing['ticker'] or '—' }}</strong></td>
@@ -81,7 +98,16 @@
                     </span>
                 </td>
                 <td class="text-muted small">{{ filing['auto_subcategory'] or '—' }}</td>
-                <td class="summary-cell">{{ filing['summary'][:150] }}{{ '...' if filing['summary'] and filing['summary']|length > 150 }}</td>
+                <td class="summary-cell">
+                    {% if filing['_comp'] %}
+                        {% if filing['_comp']['vesting_target_price'] %}
+                            <span class="badge bg-light text-dark border me-1">Target: {{ filing['_comp']['vesting_target_price'] }}</span>
+                        {% elif filing['_comp']['grant_value'] %}
+                            <span class="badge bg-light text-dark border me-1">{{ filing['_comp']['grant_value'] }}</span>
+                        {% endif %}
+                    {% endif %}
+                    {{ filing['summary'][:150] }}{{ '...' if filing['summary'] and filing['summary']|length > 150 }}
+                </td>
                 <td>
                     <a href="{{ filing['filing_url'] }}" target="_blank" class="btn btn-sm btn-outline-primary"
                        onclick="event.stopPropagation()">SEC</a>
@@ -93,7 +119,7 @@
 </div>
 
 <!-- Numbered pagination -->
-{% set q = '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to %}
+{% set q = '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') %}
 <nav aria-label="Page navigation">
     <ul class="pagination justify-content-center flex-wrap">
         <!-- Previous button -->

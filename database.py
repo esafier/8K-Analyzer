@@ -162,6 +162,9 @@ def initialize_database():
 
     conn.commit()
 
+    # Migrate: add new columns if they don't exist yet (safe to run repeatedly)
+    _migrate_add_columns(conn)
+
     # Log which database we're using and how many filings are stored
     # This helps us debug data loss issues on Render
     cursor.execute("SELECT COUNT(*) FROM filings")
@@ -172,6 +175,35 @@ def initialize_database():
         print(f"[STARTUP] Using SQLite — {count} filings in database")
 
     conn.close()
+
+
+def _migrate_add_columns(conn):
+    """Add new columns for urgency flags and comp details.
+    Uses ALTER TABLE so existing data is preserved (new columns get NULL/0)."""
+    cursor = conn.cursor()
+
+    # Figure out which columns already exist
+    if _using_postgres():
+        cursor.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'filings'
+        """)
+        existing = {row[0] for row in cursor.fetchall()}
+    else:
+        cursor.execute("PRAGMA table_info(filings)")
+        existing = {row[1] for row in cursor.fetchall()}
+
+    # Add urgent flag (0 or 1) if missing
+    if "urgent" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN urgent INTEGER DEFAULT 0")
+        print("[MIGRATE] Added 'urgent' column")
+
+    # Add comp_details JSON blob if missing
+    if "comp_details" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN comp_details TEXT DEFAULT NULL")
+        print("[MIGRATE] Added 'comp_details' column")
+
+    conn.commit()
 
 
 def filing_exists(accession_no):
@@ -201,13 +233,18 @@ def insert_filing(filing_data):
     cursor = conn.cursor()
     p = _placeholder()
 
+    # Convert urgent boolean to integer for database storage
+    urgent_val = 1 if filing_data.get("urgent") else 0
+    comp_details_val = _to_str(filing_data.get("comp_details"))
+
     if _using_postgres():
         # PostgreSQL: use ON CONFLICT instead of INSERT OR IGNORE
         cursor.execute(f"""
             INSERT INTO filings
             (accession_no, company, ticker, cik, filed_date, item_codes,
-             summary, auto_category, auto_subcategory, filing_url, raw_text, matched_keywords)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+             summary, auto_category, auto_subcategory, filing_url, raw_text,
+             matched_keywords, urgent, comp_details)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
             ON CONFLICT (accession_no) DO NOTHING
         """, (
             _to_str(filing_data.get("accession_no")),
@@ -222,14 +259,17 @@ def insert_filing(filing_data):
             _to_str(filing_data.get("filing_url")),
             _to_str(filing_data.get("raw_text")),
             _to_str(filing_data.get("matched_keywords")),
+            urgent_val,
+            comp_details_val,
         ))
     else:
         # SQLite: original INSERT OR IGNORE
         cursor.execute(f"""
             INSERT OR IGNORE INTO filings
             (accession_no, company, ticker, cik, filed_date, item_codes,
-             summary, auto_category, auto_subcategory, filing_url, raw_text, matched_keywords)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+             summary, auto_category, auto_subcategory, filing_url, raw_text,
+             matched_keywords, urgent, comp_details)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
         """, (
             _to_str(filing_data.get("accession_no")),
             _to_str(filing_data.get("company")),
@@ -243,13 +283,15 @@ def insert_filing(filing_data):
             _to_str(filing_data.get("filing_url")),
             _to_str(filing_data.get("raw_text")),
             _to_str(filing_data.get("matched_keywords")),
+            urgent_val,
+            comp_details_val,
         ))
 
     conn.commit()
     conn.close()
 
 
-def get_filings(category=None, search=None, date_from=None, date_to=None, limit=100, offset=0):
+def get_filings(category=None, search=None, date_from=None, date_to=None, urgent_only=False, limit=100, offset=0):
     """Fetch filings from the database with optional filters.
     Used by the dashboard to display results."""
     conn = get_connection()
@@ -279,6 +321,9 @@ def get_filings(category=None, search=None, date_from=None, date_to=None, limit=
         query += f" AND filed_date <= {p}"
         params.append(date_to)
 
+    if urgent_only:
+        query += " AND urgent = 1"
+
     query += f" ORDER BY filed_date DESC LIMIT {p} OFFSET {p}"
     params.extend([limit, offset])
 
@@ -288,7 +333,7 @@ def get_filings(category=None, search=None, date_from=None, date_to=None, limit=
     return results
 
 
-def get_filtered_filing_count(category=None, search=None, date_from=None, date_to=None):
+def get_filtered_filing_count(category=None, search=None, date_from=None, date_to=None, urgent_only=False):
     """Count filings matching the current filters (for pagination)."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -313,6 +358,9 @@ def get_filtered_filing_count(category=None, search=None, date_from=None, date_t
     if date_to:
         query += f" AND filed_date <= {p}"
         params.append(date_to)
+
+    if urgent_only:
+        query += " AND urgent = 1"
 
     cursor.execute(query, params)
     count = cursor.fetchone()[0]

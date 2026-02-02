@@ -2,6 +2,7 @@
 # Stage 1: Filter by item codes (fast, metadata-only check)
 # Stage 2: Keyword scan on filing text (more thorough)
 
+import json
 from config import TARGET_ITEM_CODES, KEYWORD_CATEGORIES, SUB_CATEGORIES
 from llm import classify_and_summarize
 from summarizer import extract_summary
@@ -307,6 +308,16 @@ def filter_filings(filings_metadata, fetch_text_func=None):
                 filing["auto_category"] = llm_result.get("category") or filing.get("auto_category")
                 filing["auto_subcategory"] = llm_result.get("subcategory") or filing.get("auto_subcategory")
                 filing["summary"] = llm_result.get("summary") or ""
+
+                # Extract urgency flag and comp details from LLM response
+                filing["urgent"] = llm_result.get("urgent", False)
+                comp_details = llm_result.get("comp_details")
+                if comp_details and any(v for v in comp_details.values()):
+                    # Only store comp_details if at least one field has a value
+                    filing["comp_details"] = json.dumps(comp_details)
+                else:
+                    filing["comp_details"] = None
+
                 final_passed.append(filing)
                 tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
                 print(f"    LLM: RELEVANT — {filing['auto_category']} / {filing['auto_subcategory']} ({tokens} tokens)")

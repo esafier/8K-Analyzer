@@ -24,3 +24,14 @@
 .badge {
     font-weight: 500;
 }
+
+/* Subtle left border on urgent filing rows so they stand out */
+tr.clickable-row:has(.badge.bg-danger) {
+    border-left: 3px solid #dc3545;
+}
+
+/* Comp details table on the filing detail page */
+.comp-details-table th {
+    width: 200px;
+    color: #555;
+}
