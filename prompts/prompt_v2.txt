@@ -62,6 +62,9 @@ Set "urgent" to true ONLY for these high-priority situations:
 - Death of a CEO, CFO, or CAO
 - CEO/CFO/CAO departure effective immediately or within days
 
+Do NOT set urgent to true when:
+- The departure is a result of a merger, acquisition, or change-of-control transaction (these are planned transitions, not sudden events)
+
 All other events (planned retirements, board changes, routine comp, appointments) should be "urgent": false.
 
 ## COMPENSATION DETAIL EXTRACTION
