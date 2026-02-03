@@ -4,7 +4,12 @@
 import os
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 import math
-from database import initialize_database, get_filings, get_filing_by_id, update_user_tag, get_categories, get_filing_count, get_filtered_filing_count
+from database import (
+    initialize_database, get_filings, get_filing_by_id, update_user_tag,
+    get_categories, get_filing_count, get_filtered_filing_count,
+    add_to_watchlist, remove_from_watchlist, update_watchlist_notes,
+    get_watchlist_item, get_all_watchlist_ids, get_watchlist_filings
+)
 from fetcher import fetch_filings, fetch_filing_text
 from filter import filter_filings
 from summarizer import extract_summary
@@ -56,6 +61,9 @@ def index():
     categories = get_categories()
     total_count = get_filing_count()
 
+    # Get watchlisted filing IDs so we can show star icons
+    watchlist_ids = get_all_watchlist_ids()
+
     # Count filings matching current filters so we know total pages
     filtered_count = get_filtered_filing_count(
         category=category if category else None,
@@ -79,6 +87,7 @@ def index():
         current_page=page,
         per_page=per_page,
         total_pages=total_pages,
+        watchlist_ids=watchlist_ids,
     )
 
 
@@ -114,7 +123,19 @@ def filing_detail(filing_id):
     # Remember where the user came from so "Back" returns to the right page
     back_url = request.args.get("back", "/")
 
-    return render_template("filing.html", filing=filing, tag_options=tag_options, back_url=back_url)
+    # Check if this filing is in the watchlist
+    watchlist_entry = get_watchlist_item(filing_id)
+    is_watchlisted = watchlist_entry is not None
+    watchlist_notes = watchlist_entry.get("notes", "") if watchlist_entry else ""
+
+    return render_template(
+        "filing.html",
+        filing=filing,
+        tag_options=tag_options,
+        back_url=back_url,
+        is_watchlisted=is_watchlisted,
+        watchlist_notes=watchlist_notes,
+    )
 
 
 @app.route("/update-tag/<int:filing_id>", methods=["POST"])
@@ -128,6 +149,72 @@ def update_tag(filing_id):
         update_user_tag(filing_id, None)  # Clear the tag
         flash("Tag cleared", "success")
     return redirect(url_for("filing_detail", filing_id=filing_id))
+
+
+# ============================================================
+# WATCHLIST ROUTES
+# ============================================================
+
+@app.route("/watchlist")
+def watchlist():
+    """Dedicated watchlist page showing all saved filings with notes."""
+    import json
+    filings = get_watchlist_filings()
+
+    # Parse comp_details JSON for each filing
+    for filing in filings:
+        raw = filing.get("comp_details")
+        if raw and isinstance(raw, str):
+            try:
+                filing["_comp"] = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                filing["_comp"] = None
+        else:
+            filing["_comp"] = None
+
+    return render_template("watchlist.html", filings=filings)
+
+
+@app.route("/watchlist/add/<int:filing_id>", methods=["POST"])
+def watchlist_add(filing_id):
+    """Add a filing to the watchlist."""
+    add_to_watchlist(filing_id)
+
+    # If this is an AJAX request, return JSON
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify({"success": True, "action": "added"})
+
+    # Otherwise redirect back (for form submission fallback)
+    flash("Added to watchlist", "success")
+    return redirect(request.referrer or url_for("index"))
+
+
+@app.route("/watchlist/remove/<int:filing_id>", methods=["POST"])
+def watchlist_remove(filing_id):
+    """Remove a filing from the watchlist."""
+    remove_from_watchlist(filing_id)
+
+    # If this is an AJAX request, return JSON
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify({"success": True, "action": "removed"})
+
+    # Otherwise redirect back
+    flash("Removed from watchlist", "success")
+    return redirect(request.referrer or url_for("index"))
+
+
+@app.route("/watchlist/notes/<int:filing_id>", methods=["POST"])
+def watchlist_save_notes(filing_id):
+    """Save or update notes for a watchlisted filing."""
+    notes = request.form.get("notes", "").strip()
+    update_watchlist_notes(filing_id, notes)
+
+    # If this is an AJAX request, return JSON
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify({"success": True})
+
+    flash("Notes saved", "success")
+    return redirect(request.referrer or url_for("filing_detail", filing_id=filing_id))
 
 
 @app.route("/clear-database", methods=["POST"])

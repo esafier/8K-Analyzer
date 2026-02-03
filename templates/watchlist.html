@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>My Watchlist</h2>
+    <span class="badge bg-secondary fs-6">{{ filings|length }} saved</span>
+</div>
+
+{% if filings %}
+    <!-- Card grid for watchlisted filings -->
+    <div class="row">
+        {% for filing in filings %}
+        <div class="col-md-6 col-lg-4 mb-4">
+            <div class="card h-100">
+                <div class="card-header">
+                    <!-- Company name links to detail page -->
+                    <a href="/filing/{{ filing['id'] }}" class="text-decoration-none">
+                        <h5 class="mb-1">{{ filing['company'] }}</h5>
+                    </a>
+                    <div class="d-flex gap-2 align-items-center">
+                        <span class="badge bg-secondary">{{ filing['ticker'] or 'No Ticker' }}</span>
+                        {% if filing['urgent'] %}
+                        <span class="badge bg-danger">URGENT</span>
+                        {% endif %}
+                        <span class="badge
+                            {% if filing['auto_category'] == 'Management Change' %}bg-primary
+                            {% elif filing['auto_category'] == 'Compensation' %}bg-success
+                            {% elif filing['auto_category'] == 'Both' %}bg-warning text-dark
+                            {% else %}bg-info{% endif %}">
+                            {{ filing['auto_category'] or 'Uncategorized' }}
+                        </span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <!-- Filing date -->
+                    <p class="text-muted small mb-2">
+                        Filed: {{ filing['filed_date'] }}
+                    </p>
+
+                    <!-- Summary snippet -->
+                    <p class="mb-3">
+                        {{ filing['summary'][:200] }}{% if filing['summary']|length > 200 %}...{% endif %}
+                    </p>
+
+                    <!-- Notes section -->
+                    <div class="border-top pt-3">
+                        <label class="form-label small fw-bold">Your Notes:</label>
+                        <form method="POST" action="/watchlist/notes/{{ filing['id'] }}" class="mb-2">
+                            <textarea name="notes" class="form-control form-control-sm mb-2" rows="2"
+                                placeholder="Add notes...">{{ filing['watchlist_notes'] or '' }}</textarea>
+                            <button type="submit" class="btn btn-primary btn-sm">Save</button>
+                        </form>
+                        <form method="POST" action="/watchlist/remove/{{ filing['id'] }}">
+                            <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                        </form>
+                    </div>
+                </div>
+                <div class="card-footer text-muted small">
+                    Added {{ filing['watchlist_added_at'][:10] if filing['watchlist_added_at'] else 'recently' }}
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+{% else %}
+    <!-- Empty state -->
+    <div class="text-center py-5">
+        <h4 class="text-muted mb-3">No saved filings yet</h4>
+        <p class="text-muted">
+            Click the star icon on any filing in the dashboard, or use the "Add to Watchlist" button on a filing detail page.
+        </p>
+        <a href="/" class="btn btn-primary">Go to Dashboard</a>
+    </div>
+{% endif %}
+
+{% endblock %}

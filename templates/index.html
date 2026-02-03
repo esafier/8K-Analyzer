@@ -64,6 +64,7 @@
     <table class="table table-hover">
         <thead class="table-dark">
             <tr>
+                <th style="width: 40px;"></th>
                 <th></th>
                 <th>Date</th>
                 <th>Company</th>
@@ -77,6 +78,18 @@
         <tbody>
             {% for filing in filings %}
             <tr class="clickable-row" onclick="window.location='/filing/{{ filing['id'] }}?back={{ ('/?page=' ~ current_page ~ '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else ''))|urlencode }}'">
+                <!-- Watchlist star toggle -->
+                <td onclick="event.stopPropagation()">
+                    <button class="btn btn-link p-0 watchlist-star" data-filing-id="{{ filing['id'] }}"
+                            data-watchlisted="{{ 'true' if filing['id'] in watchlist_ids else 'false' }}"
+                            title="{{ 'Remove from watchlist' if filing['id'] in watchlist_ids else 'Add to watchlist' }}">
+                        {% if filing['id'] in watchlist_ids %}
+                        <span class="star-filled" style="color: #ffc107; font-size: 1.2rem;">&#9733;</span>
+                        {% else %}
+                        <span class="star-empty" style="color: #6c757d; font-size: 1.2rem;">&#9734;</span>
+                        {% endif %}
+                    </button>
+                </td>
                 <td>
                     {% if filing['urgent'] %}
                         <span class="badge bg-danger">URGENT</span>
@@ -151,5 +164,51 @@
     <p class="text-muted">Try adjusting your filters or <a href="/backfill">run a backfill</a> to fetch historical filings.</p>
 </div>
 {% endif %}
+
+<!-- JavaScript for watchlist star toggle -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Handle star button clicks
+    document.querySelectorAll('.watchlist-star').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            var filingId = this.dataset.filingId;
+            var isWatchlisted = this.dataset.watchlisted === 'true';
+            var button = this;
+
+            // Determine which endpoint to call
+            var url = isWatchlisted
+                ? '/watchlist/remove/' + filingId
+                : '/watchlist/add/' + filingId;
+
+            // Send AJAX request
+            fetch(url, {
+                method: 'POST',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    // Toggle the star appearance
+                    if (data.action === 'added') {
+                        button.dataset.watchlisted = 'true';
+                        button.innerHTML = '<span class="star-filled" style="color: #ffc107; font-size: 1.2rem;">&#9733;</span>';
+                        button.title = 'Remove from watchlist';
+                    } else {
+                        button.dataset.watchlisted = 'false';
+                        button.innerHTML = '<span class="star-empty" style="color: #6c757d; font-size: 1.2rem;">&#9734;</span>';
+                        button.title = 'Add to watchlist';
+                    }
+                }
+            })
+            .catch(function(err) {
+                console.error('Watchlist toggle failed:', err);
+            });
+        });
+    });
+});
+</script>
 
 {% endblock %}

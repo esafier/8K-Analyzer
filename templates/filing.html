@@ -75,6 +75,41 @@
             </div>
         </div>
 
+        <!-- Watchlist controls -->
+        <div class="card mb-4">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h5 class="mb-0">Watchlist</h5>
+                    {% if is_watchlisted %}
+                    <form method="POST" action="/watchlist/remove/{{ filing['id'] }}" class="d-inline">
+                        <button type="submit" class="btn btn-outline-danger btn-sm">
+                            Remove from Watchlist
+                        </button>
+                    </form>
+                    {% else %}
+                    <form method="POST" action="/watchlist/add/{{ filing['id'] }}" class="d-inline">
+                        <button type="submit" class="btn btn-warning btn-sm">
+                            Add to Watchlist
+                        </button>
+                    </form>
+                    {% endif %}
+                </div>
+
+                {% if is_watchlisted %}
+                <!-- Notes form (only shown when watchlisted) -->
+                <form method="POST" action="/watchlist/notes/{{ filing['id'] }}">
+                    <div class="mb-2">
+                        <textarea name="notes" class="form-control" rows="3"
+                            placeholder="Add your notes about this filing...">{{ watchlist_notes }}</textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm">Save Notes</button>
+                </form>
+                {% else %}
+                <p class="text-muted small mb-0">Add to watchlist to save notes on this filing.</p>
+                {% endif %}
+            </div>
+        </div>
+
         <!-- Compensation Details (only shown when data exists) -->
         {% if filing['_comp'] %}
         <div class="card mb-4">

@@ -165,6 +165,9 @@ def initialize_database():
     # Migrate: add new columns if they don't exist yet (safe to run repeatedly)
     _migrate_add_columns(conn)
 
+    # Create watchlist table if it doesn't exist
+    _create_watchlist_table(conn)
+
     # Log which database we're using and how many filings are stored
     # This helps us debug data loss issues on Render
     cursor.execute("SELECT COUNT(*) FROM filings")
@@ -204,6 +207,36 @@ def _migrate_add_columns(conn):
         print("[MIGRATE] Added 'comp_details' column")
 
     conn.commit()
+
+
+def _create_watchlist_table(conn):
+    """Create the watchlist table for saving filings with notes.
+    Called during database initialization."""
+    cursor = conn.cursor()
+
+    if _using_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id SERIAL PRIMARY KEY,
+                filing_id INTEGER NOT NULL UNIQUE,
+                notes TEXT,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (filing_id) REFERENCES filings(id) ON DELETE CASCADE
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filing_id INTEGER NOT NULL UNIQUE,
+                notes TEXT,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (filing_id) REFERENCES filings(id) ON DELETE CASCADE
+            )
+        """)
+
+    conn.commit()
+    print("[STARTUP] Watchlist table ready")
 
 
 def filing_exists(accession_no):
@@ -432,6 +465,92 @@ def get_filing_count():
         count = row["count"]
     conn.close()
     return count
+
+
+# ============================================================
+# WATCHLIST FUNCTIONS
+# ============================================================
+
+def add_to_watchlist(filing_id):
+    """Add a filing to the watchlist. Does nothing if already watchlisted."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    if _using_postgres():
+        cursor.execute(f"""
+            INSERT INTO watchlist (filing_id) VALUES ({p})
+            ON CONFLICT (filing_id) DO NOTHING
+        """, (filing_id,))
+    else:
+        cursor.execute(f"""
+            INSERT OR IGNORE INTO watchlist (filing_id) VALUES ({p})
+        """, (filing_id,))
+
+    conn.commit()
+    conn.close()
+
+
+def remove_from_watchlist(filing_id):
+    """Remove a filing from the watchlist."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"DELETE FROM watchlist WHERE filing_id = {p}", (filing_id,))
+    conn.commit()
+    conn.close()
+
+
+def update_watchlist_notes(filing_id, notes):
+    """Update the notes for a watchlisted filing."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"UPDATE watchlist SET notes = {p} WHERE filing_id = {p}", (notes, filing_id))
+    conn.commit()
+    conn.close()
+
+
+def get_watchlist_item(filing_id):
+    """Get the watchlist entry for a filing, or None if not watchlisted."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"SELECT * FROM watchlist WHERE filing_id = {p}", (filing_id,))
+    row = cursor.fetchone()
+    result = _dict_row(row, cursor)
+    conn.close()
+    return result
+
+
+def get_all_watchlist_ids():
+    """Get a set of all filing IDs that are in the watchlist.
+    Used to show star icons on the dashboard."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT filing_id FROM watchlist")
+    if _using_postgres():
+        ids = {row[0] for row in cursor.fetchall()}
+    else:
+        ids = {row["filing_id"] for row in cursor.fetchall()}
+    conn.close()
+    return ids
+
+
+def get_watchlist_filings():
+    """Get all watchlisted filings with their notes, sorted by when they were added.
+    Returns filing data joined with watchlist notes."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT f.*, w.notes as watchlist_notes, w.added_at as watchlist_added_at
+        FROM filings f
+        JOIN watchlist w ON f.id = w.filing_id
+        ORDER BY w.added_at DESC
+    """)
+    results = _dict_rows(cursor.fetchall(), cursor)
+    conn.close()
+    return results
 
 
 # When this file is run directly, create the database
