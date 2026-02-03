@@ -324,7 +324,7 @@ def get_filings(category=None, search=None, date_from=None, date_to=None, urgent
     if urgent_only:
         query += " AND urgent = 1"
 
-    query += f" ORDER BY filed_date DESC LIMIT {p} OFFSET {p}"
+    query += f" ORDER BY filed_date DESC, created_at DESC LIMIT {p} OFFSET {p}"
     params.extend([limit, offset])
 
     cursor.execute(query, params)
