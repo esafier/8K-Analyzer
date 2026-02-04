@@ -614,7 +614,7 @@ def update_last_backfill(backfill_type):
 
 def get_last_backfill():
     """Get info about the last backfill run.
-    Returns dict with 'time' (datetime) and 'type' (str), or None if no backfill recorded."""
+    Returns dict with 'time' (datetime in Eastern Time) and 'type' (str), or None if no backfill recorded."""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -627,18 +627,29 @@ def get_last_backfill():
     if row is None:
         return None
 
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo  # Built into Python 3.9+
+
+    # Extract values based on database type
     if _using_postgres():
-        return {"type": row[0], "time": row[1]}
+        utc_time = row[1]
+        backfill_type = row[0]
     else:
         # SQLite returns timestamp as string, convert to datetime
-        from datetime import datetime
         time_str = row["updated_at"]
-        # Handle both datetime object and string formats
         if isinstance(time_str, str):
-            time_val = datetime.fromisoformat(time_str.replace(" ", "T"))
+            utc_time = datetime.fromisoformat(time_str.replace(" ", "T"))
         else:
-            time_val = time_str
-        return {"type": row["value"], "time": time_val}
+            utc_time = time_str
+        backfill_type = row["value"]
+
+    # Convert UTC to Eastern Time for display
+    if utc_time.tzinfo is None:
+        utc_time = utc_time.replace(tzinfo=timezone.utc)
+    eastern = ZoneInfo("America/New_York")
+    local_time = utc_time.astimezone(eastern)
+
+    return {"type": backfill_type, "time": local_time}
 
 
 # When this file is run directly, create the database
