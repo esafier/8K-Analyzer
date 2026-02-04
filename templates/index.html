@@ -3,7 +3,14 @@
 
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2>Filtered 8-K Filings</h2>
-    <span class="badge bg-secondary fs-6">{{ total_count }} total filings in database</span>
+    <div class="d-flex gap-2">
+        {% if last_backfill %}
+        <span class="badge bg-info fs-6">
+            Last updated: {{ last_backfill.time.strftime('%b %d, %Y at %I:%M %p') }} ({{ last_backfill.type }})
+        </span>
+        {% endif %}
+        <span class="badge bg-secondary fs-6">{{ total_count }} total filings in database</span>
+    </div>
 </div>
 
 <!-- Filter controls -->

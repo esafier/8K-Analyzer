@@ -8,7 +8,8 @@ from database import (
     initialize_database, get_filings, get_filing_by_id, update_user_tag,
     get_categories, get_filing_count, get_filtered_filing_count,
     add_to_watchlist, remove_from_watchlist, update_watchlist_notes,
-    get_watchlist_item, get_all_watchlist_ids, get_watchlist_filings
+    get_watchlist_item, get_all_watchlist_ids, get_watchlist_filings,
+    update_last_backfill, get_last_backfill
 )
 from fetcher import fetch_filings, fetch_filing_text
 from filter import filter_filings
@@ -61,6 +62,9 @@ def index():
     categories = get_categories()
     total_count = get_filing_count()
 
+    # Get last backfill info for the header display
+    last_backfill = get_last_backfill()
+
     # Get watchlisted filing IDs so we can show star icons
     watchlist_ids = get_all_watchlist_ids()
 
@@ -79,6 +83,7 @@ def index():
         filings=filings,
         categories=categories,
         total_count=total_count,
+        last_backfill=last_backfill,
         current_category=category,
         current_search=search,
         current_date_from=date_from,
@@ -279,6 +284,9 @@ def run_backfill(start_date, end_date):
         stored_count += 1
 
     print(f"--- Backfill complete: {stored_count} filings stored ---\n")
+
+    # Record that a backfill completed (for front page display)
+    update_last_backfill("web")
 
 
 # Initialize the database when the app starts

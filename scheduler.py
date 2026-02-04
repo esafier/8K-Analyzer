@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from fetcher import fetch_filings, fetch_filing_text
 from filter import filter_filings
 from summarizer import extract_summary
-from database import initialize_database, insert_filing
+from database import initialize_database, insert_filing, update_last_backfill
 
 
 def daily_fetch_job():
@@ -44,6 +44,9 @@ def daily_fetch_job():
         stored += 1
 
     print(f"  Daily fetch complete: {stored} new filings stored")
+
+    # Record that a scheduled fetch completed (for front page display)
+    update_last_backfill("scheduled")
 
 
 if __name__ == "__main__":

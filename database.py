@@ -168,6 +168,9 @@ def initialize_database():
     # Create watchlist table if it doesn't exist
     _create_watchlist_table(conn)
 
+    # Create app_status table for tracking backfill times, etc.
+    _create_app_status_table(conn)
+
     # Log which database we're using and how many filings are stored
     # This helps us debug data loss issues on Render
     cursor.execute("SELECT COUNT(*) FROM filings")
@@ -551,6 +554,91 @@ def get_watchlist_filings():
     results = _dict_rows(cursor.fetchall(), cursor)
     conn.close()
     return results
+
+
+# ============================================================
+# APP STATUS FUNCTIONS (tracks backfill timestamps, etc.)
+# ============================================================
+
+def _create_app_status_table(conn):
+    """Create the app_status table for tracking system info like last backfill time.
+    Uses a key-value design so we can store any status info we need."""
+    cursor = conn.cursor()
+
+    if _using_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS app_status (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS app_status (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+    conn.commit()
+    print("[STARTUP] App status table ready")
+
+
+def update_last_backfill(backfill_type):
+    """Record when a backfill completed and what type it was.
+    backfill_type should be 'web', 'scheduled', or 'manual'."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    if _using_postgres():
+        # PostgreSQL: use ON CONFLICT to upsert
+        cursor.execute(f"""
+            INSERT INTO app_status (key, value, updated_at)
+            VALUES ('last_backfill_type', {p}, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET value = {p}, updated_at = CURRENT_TIMESTAMP
+        """, (backfill_type, backfill_type))
+    else:
+        # SQLite: use INSERT OR REPLACE
+        cursor.execute(f"""
+            INSERT OR REPLACE INTO app_status (key, value, updated_at)
+            VALUES ('last_backfill_type', {p}, CURRENT_TIMESTAMP)
+        """, (backfill_type,))
+
+    conn.commit()
+    conn.close()
+    print(f"[BACKFILL] Recorded backfill completion: type={backfill_type}")
+
+
+def get_last_backfill():
+    """Get info about the last backfill run.
+    Returns dict with 'time' (datetime) and 'type' (str), or None if no backfill recorded."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT value, updated_at FROM app_status WHERE key = 'last_backfill_type'
+    """)
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+
+    if _using_postgres():
+        return {"type": row[0], "time": row[1]}
+    else:
+        # SQLite returns timestamp as string, convert to datetime
+        from datetime import datetime
+        time_str = row["updated_at"]
+        # Handle both datetime object and string formats
+        if isinstance(time_str, str):
+            time_val = datetime.fromisoformat(time_str.replace(" ", "T"))
+        else:
+            time_val = time_str
+        return {"type": row["value"], "time": time_val}
 
 
 # When this file is run directly, create the database
