@@ -47,8 +47,8 @@ Respond with ONLY valid JSON in this exact format:
   "summary": "1-2 sentence investor-focused summary" or null,
   "urgent": true or false,
   "comp_details": {
-    "vesting_target_price": "$X per share" or null,
-    "performance_hurdles": "description of performance conditions" or null,
+    "vesting_target_price": "$X per share" or "$X, $Y, $Z per share" or null,
+    "performance_hurdles": "operational/financial metrics (NOT stock prices)" or null,
     "stock_vs_cash_election": "description of election" or null,
     "grant_value": "$X" or null,
     "grant_type": "RSUs" or "Stock Options" or "PSUs" or null
@@ -70,13 +70,35 @@ All other events (planned retirements, board changes, routine comp, appointments
 ## COMPENSATION DETAIL EXTRACTION
 When compensation events are disclosed, extract these structured fields into "comp_details":
 
-- **vesting_target_price**: If equity grants have price-based vesting targets, extract the target price (e.g., "$15.00 per share"). This reveals what the comp committee believes the stock can reach.
-- **performance_hurdles**: Non-price performance metrics required for vesting (e.g., "Revenue > $500M", "EBITDA margin > 15%", "TSR exceeding S&P 500").
+- **vesting_target_price**: Extract STOCK PRICE levels that reveal the board's expectations. This includes:
+  - **Stock option exercise prices above market value**: If options have exercise prices described as "significantly higher than fair market value" or "above current stock price," extract those prices. Example: "exercise price of $60.00, $75.00 and $85.00 per share" → extract "$60, $75, $85 per share"
+  - **PSU/RSU vesting price targets**: Price hurdles that must be reached for shares to vest. Look for: "stock price hurdle," "share price target," "market price condition," "price-based vesting."
+  - Format: List all prices comma-separated (e.g., "$60, $75, $85 per share")
+  - **WHY THIS MATTERS**: Options with exercise prices above current stock price are essentially a bet on the stock reaching those levels — they're worthless otherwise. This reveals what the comp committee believes is achievable.
+- **performance_hurdles**: NON-STOCK-PRICE performance metrics required for vesting. Examples: "Revenue > $500M", "EBITDA margin > 15%", "TSR exceeding S&P 500", "EPS growth > 10%". NEVER put stock/share price targets or exercise prices here — those go in vesting_target_price.
 - **stock_vs_cash_election**: If an executive chose between stock and cash compensation, note their choice (e.g., "Elected to receive annual bonus in stock" or "Chose equity over cash sign-on").
 - **grant_value**: Dollar value of equity grants, sign-on packages, or severance (e.g., "$5M in RSUs", "$2.5M severance").
 - **grant_type**: Type of equity instrument (RSUs, Stock Options, PSUs, Restricted Stock, etc.).
 
 **CRITICAL**: Only extract values explicitly stated in the filing. Set any field to null if not mentioned. Never infer, estimate, or guess numbers.
+
+## PRICE TARGETS — HIGH PRIORITY EXTRACTION
+Stock options and PSUs often include price-based conditions that reveal insider expectations. **Watch for these patterns:**
+
+**Option exercise prices above market:**
+- "exercise price of $60.00 per share"
+- "exercise prices significantly higher than current fair market value"
+- "stock options with exercise price of $X"
+
+**PSU vesting price targets:**
+- "shares vest if stock price reaches $X"
+- "stock price hurdles of $50, $60, and $70"
+- "market condition requiring stock price of $X"
+
+**When you find price targets:**
+1. Put ALL price levels in vesting_target_price (comma-separated)
+2. ALWAYS mention them in the summary — this is a key investor signal
+3. Note if they're above current market price (if mentioned in filing)
 
 ## SUMMARY GUIDELINES
 Your summary must answer: **"What happened and why should an investor care?"**
@@ -87,12 +109,14 @@ Include:
 - WHEN: Effective date if material
 - KEY NUMBERS: Dollar amounts for severance, equity grants, or comp changes
 - SIGNAL: Any red/yellow flags (sudden departure, termination for cause, no succession plan, interim appointment)
+- PRICE TARGETS: If equity includes stock price targets (option exercise prices above market OR PSU vesting hurdles), ALWAYS mention them. Example: "options with exercise prices of $60/$75/$85 (above current ~$47 stock price)". This reveals the board's price expectations.
 - DEPARTURE REASON: For departures, always state the reason or characterization used in the filing (e.g., resigned, retired, terminated for cause, terminated without cause, mutually agreed to separate, stepped down, not standing for re-election, death). Quote the filing's language when it's specific.
 
 **Good summary examples:**
 - "CFO John Smith resigned effective March 15, 2024, receiving $2.4M severance; no permanent replacement named yet, raising execution risk during Q1 earnings."
 - "New CEO Jane Doe starts April 1 with $5M sign-on equity and $1.2M base; she joins from competitor XYZ Corp where she led their successful turnaround."
 - "Board approved accelerated vesting of 500K shares ($8M value) for departing COO, suggesting negotiated exit rather than termination for cause."
+- "Executive Chair received options with exercise prices of $60, $75, and $85 per share — significantly above current market value — signaling the board expects substantial stock appreciation."
 
 **Bad summary examples (don't do this):**
 - "The company filed an 8-K about an executive departure." (too vague)
