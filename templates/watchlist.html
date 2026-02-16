@@ -13,22 +13,34 @@
         <div class="col-md-6 col-lg-4 mb-4">
             <div class="card h-100">
                 <div class="card-header">
-                    <!-- Company name links to detail page -->
-                    <a href="/filing/{{ filing['id'] }}" class="text-decoration-none">
-                        <h5 class="mb-1">{{ filing['company'] }}</h5>
-                    </a>
-                    <div class="d-flex gap-2 align-items-center">
-                        <span class="badge bg-secondary">{{ filing['ticker'] or 'No Ticker' }}</span>
-                        {% if filing['urgent'] %}
-                        <span class="badge bg-danger">URGENT</span>
-                        {% endif %}
-                        <span class="badge
-                            {% if filing['auto_category'] == 'Management Change' %}bg-primary
-                            {% elif filing['auto_category'] == 'Compensation' %}bg-success
-                            {% elif filing['auto_category'] == 'Both' %}bg-warning text-dark
-                            {% else %}bg-info{% endif %}">
-                            {{ filing['auto_category'] or 'Uncategorized' }}
-                        </span>
+                    <!-- Checkbox for email selection + company name -->
+                    <div class="d-flex align-items-start gap-2">
+                        <input type="checkbox" class="form-check-input mt-1 filing-checkbox"
+                               data-filing-id="{{ filing['id'] }}"
+                               id="check-{{ filing['id'] }}">
+                        <div>
+                            <a href="/filing/{{ filing['id'] }}" class="text-decoration-none">
+                                <h5 class="mb-1">{{ filing['company'] }}</h5>
+                            </a>
+                            <div class="d-flex gap-2 align-items-center flex-wrap">
+                                <span class="badge bg-secondary">{{ filing['ticker'] or 'No Ticker' }}</span>
+                                {% if filing['urgent'] %}
+                                <span class="badge bg-danger">URGENT</span>
+                                {% endif %}
+                                <span class="badge
+                                    {% if filing['auto_category'] == 'Management Change' %}bg-primary
+                                    {% elif filing['auto_category'] == 'Compensation' %}bg-success
+                                    {% elif filing['auto_category'] == 'Both' %}bg-warning text-dark
+                                    {% else %}bg-info{% endif %}">
+                                    {{ filing['auto_category'] or 'Uncategorized' }}
+                                </span>
+                                {% if filing['email_sent_at'] %}
+                                <span class="badge bg-outline-success border border-success text-success">
+                                    Sent {{ (filing['email_sent_at']|string)[:10] }}
+                                </span>
+                                {% endif %}
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="card-body">
@@ -62,6 +74,74 @@
         </div>
         {% endfor %}
     </div>
+
+    <!-- Hidden form to submit selected filing IDs to the compose page -->
+    <form id="compose-form" method="POST" action="/compose-email">
+        <input type="hidden" name="selected_filings" id="selected-filings-input">
+    </form>
+
+    <!-- Fixed bottom toolbar — appears when filings are checked -->
+    <div id="compose-toolbar" class="fixed-bottom bg-white border-top shadow-sm p-3 d-none">
+        <div class="container">
+            <div class="d-flex justify-content-between align-items-center">
+                <span id="selection-counter" class="fw-bold text-muted"></span>
+                <div class="d-flex gap-2">
+                    <button type="button" id="clear-selection-btn" class="btn btn-outline-secondary btn-sm">
+                        Clear Selection
+                    </button>
+                    <button type="button" id="compose-btn" class="btn btn-primary">
+                        Compose Email Section
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // Track which filings are selected for the email
+    var selectedFilings = new Set();
+
+    // When a checkbox is toggled, update the selection set and toolbar
+    document.querySelectorAll('.filing-checkbox').forEach(function(checkbox) {
+        checkbox.addEventListener('change', function() {
+            var filingId = this.dataset.filingId;
+            if (this.checked) {
+                selectedFilings.add(filingId);
+            } else {
+                selectedFilings.delete(filingId);
+            }
+            updateToolbar();
+        });
+    });
+
+    function updateToolbar() {
+        var count = selectedFilings.size;
+        var toolbar = document.getElementById('compose-toolbar');
+        var counter = document.getElementById('selection-counter');
+
+        if (count > 0) {
+            toolbar.classList.remove('d-none');
+            counter.textContent = count + ' filing' + (count > 1 ? 's' : '') + ' selected';
+        } else {
+            toolbar.classList.add('d-none');
+        }
+    }
+
+    // "Compose Email Section" button — submit the hidden form with selected IDs
+    document.getElementById('compose-btn').addEventListener('click', function() {
+        document.getElementById('selected-filings-input').value = Array.from(selectedFilings).join(',');
+        document.getElementById('compose-form').submit();
+    });
+
+    // "Clear Selection" button — uncheck everything
+    document.getElementById('clear-selection-btn').addEventListener('click', function() {
+        selectedFilings.clear();
+        document.querySelectorAll('.filing-checkbox').forEach(function(cb) {
+            cb.checked = false;
+        });
+        updateToolbar();
+    });
+    </script>
 
 {% else %}
     <!-- Empty state -->

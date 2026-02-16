@@ -9,6 +9,7 @@ from database import (
     get_categories, get_filing_count, get_filtered_filing_count,
     add_to_watchlist, remove_from_watchlist, update_watchlist_notes,
     get_watchlist_item, get_all_watchlist_ids, get_watchlist_filings,
+    get_watchlist_filings_by_ids, mark_filings_email_sent,
     update_last_backfill, get_last_backfill, update_filing_analysis
 )
 from fetcher import fetch_filings, fetch_filing_text
@@ -214,7 +215,8 @@ def reanalyze(filing_id):
 def watchlist():
     """Dedicated watchlist page showing all saved filings with notes."""
     import json
-    filings = get_watchlist_filings()
+    # Convert to plain dicts so .get() works on both SQLite and PostgreSQL
+    filings = [dict(f) for f in get_watchlist_filings()]
 
     # Parse comp_details JSON for each filing
     for filing in filings:
@@ -270,6 +272,59 @@ def watchlist_save_notes(filing_id):
 
     flash("Notes saved", "success")
     return redirect(request.referrer or url_for("filing_detail", filing_id=filing_id))
+
+
+@app.route("/compose-email", methods=["POST"])
+def compose_email():
+    """Show the email composer page with selected watchlist filings.
+    User can edit commentary and copy a formatted section for their weekly email."""
+    import json
+
+    # Get the comma-separated filing IDs from the hidden form
+    selected_ids = request.form.get("selected_filings", "")
+    if not selected_ids:
+        flash("No filings selected", "warning")
+        return redirect(url_for("watchlist"))
+
+    # Parse IDs safely
+    try:
+        filing_ids = [int(x.strip()) for x in selected_ids.split(",") if x.strip()]
+    except ValueError:
+        flash("Invalid selection", "warning")
+        return redirect(url_for("watchlist"))
+
+    # Fetch the selected filings with their watchlist notes
+    # Convert to plain dicts so .get() works on both SQLite and PostgreSQL
+    filings = [dict(f) for f in get_watchlist_filings_by_ids(filing_ids)]
+
+    # Parse comp_details JSON (same pattern used in the watchlist route)
+    for filing in filings:
+        raw = filing.get("comp_details")
+        if raw and isinstance(raw, str):
+            try:
+                filing["_comp"] = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                filing["_comp"] = None
+        else:
+            filing["_comp"] = None
+
+    return render_template("compose_email.html", filings=filings)
+
+
+@app.route("/mark-as-sent", methods=["POST"])
+def mark_as_sent():
+    """Mark filings as included in a weekly email (AJAX endpoint)."""
+    data = request.get_json()
+    filing_ids = data.get("filing_ids", [])
+
+    # Validate: must be a list of integers
+    try:
+        filing_ids = [int(x) for x in filing_ids]
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid filing IDs"}), 400
+
+    mark_filings_email_sent(filing_ids)
+    return jsonify({"success": True})
 
 
 @app.route("/clear-database", methods=["POST"])

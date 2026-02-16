@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2>Compose Email Section</h2>
+    <a href="/watchlist" class="btn btn-outline-secondary btn-sm">Back to Watchlist</a>
+</div>
+
+<p class="text-muted mb-4">
+    Edit your commentary for each filing below. The preview at the bottom shows exactly what will be copied.
+</p>
+
+<!-- Editable filing entries -->
+<div id="filing-entries">
+    {% for filing in filings %}
+    <div class="card mb-3 filing-card" data-filing-id="{{ filing['id'] }}">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <div>
+                <strong class="filing-company">{{ filing['company'] }}</strong>
+                <span class="badge bg-secondary filing-ticker">{{ filing['ticker'] or 'No Ticker' }}</span>
+                <span class="badge
+                    {% if filing['auto_category'] == 'Management Change' %}bg-primary
+                    {% elif filing['auto_category'] == 'Compensation' %}bg-success
+                    {% elif filing['auto_category'] == 'Both' %}bg-warning text-dark
+                    {% else %}bg-info{% endif %}">
+                    {{ filing['auto_category'] or 'Uncategorized' }}
+                </span>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-danger remove-filing-btn">
+                Remove
+            </button>
+        </div>
+        <div class="card-body">
+            <!-- AI Summary (read-only) -->
+            <div class="mb-3">
+                <label class="form-label small fw-bold">AI Summary:</label>
+                <p class="filing-summary text-muted small mb-0">{{ filing['summary'] }}</p>
+            </div>
+
+            <!-- Editable commentary (pre-filled from watchlist notes) -->
+            <div>
+                <label class="form-label small fw-bold">Your Commentary:</label>
+                <textarea class="form-control commentary-input" rows="3"
+                    placeholder="What's interesting about this filing...">{{ filing['watchlist_notes'] or '' }}</textarea>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Preview section -->
+<div class="card mb-4">
+    <div class="card-header bg-light">
+        <div class="d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">Preview</h5>
+            <button type="button" id="copy-btn" class="btn btn-primary">
+                Copy to Clipboard
+            </button>
+        </div>
+    </div>
+    <div class="card-body">
+        <pre id="email-preview" class="mb-0"
+             style="white-space: pre-wrap; font-family: inherit; font-size: 0.95rem; line-height: 1.6;"></pre>
+    </div>
+</div>
+
+<!-- Extra bottom padding so the preview isn't jammed against the page bottom -->
+<div class="mb-5"></div>
+
+<script>
+// Build the preview text from all visible filing cards
+function updatePreview() {
+    var cards = document.querySelectorAll('#filing-entries .filing-card');
+    var lines = [];
+
+    cards.forEach(function(card, index) {
+        var company = card.querySelector('.filing-company').textContent.trim();
+        var ticker = card.querySelector('.filing-ticker').textContent.trim();
+        var summary = card.querySelector('.filing-summary').textContent.trim();
+        var commentary = card.querySelector('.commentary-input').value.trim();
+
+        // Company + ticker header
+        lines.push(company + ' (' + ticker + ')');
+        // AI summary
+        lines.push(summary);
+
+        // User commentary (only if they wrote something)
+        if (commentary) {
+            lines.push('');
+            lines.push('My take: ' + commentary);
+        }
+
+        // Separator between filings (skip after the last one)
+        if (index < cards.length - 1) {
+            lines.push('');
+            lines.push('---');
+            lines.push('');
+        }
+    });
+
+    document.getElementById('email-preview').textContent = lines.join('\n');
+}
+
+// Update preview whenever commentary changes
+document.querySelectorAll('.commentary-input').forEach(function(textarea) {
+    textarea.addEventListener('input', updatePreview);
+});
+
+// Remove a filing from the compose list (doesn't remove from watchlist)
+document.querySelectorAll('.remove-filing-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        var card = this.closest('.filing-card');
+        card.remove();
+        updatePreview();
+
+        // If no filings left, go back to watchlist
+        if (document.querySelectorAll('#filing-entries .filing-card').length === 0) {
+            window.location.href = '/watchlist';
+        }
+    });
+});
+
+// Copy preview text to clipboard, then mark filings as sent
+document.getElementById('copy-btn').addEventListener('click', function() {
+    var previewText = document.getElementById('email-preview').textContent;
+    var btn = this;
+
+    navigator.clipboard.writeText(previewText).then(function() {
+        // Show success feedback on the button
+        var originalText = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.classList.remove('btn-primary');
+        btn.classList.add('btn-success');
+
+        // Collect the filing IDs that are still in the compose list
+        var filingIds = [];
+        document.querySelectorAll('#filing-entries .filing-card').forEach(function(card) {
+            filingIds.push(parseInt(card.dataset.filingId));
+        });
+
+        // Tell the server to mark these filings as "sent"
+        fetch('/mark-as-sent', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filing_ids: filingIds })
+        })
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            if (data.success) {
+                // Redirect back to watchlist after a short pause so user sees "Copied!"
+                setTimeout(function() {
+                    window.location.href = '/watchlist';
+                }, 1500);
+            }
+        });
+    }).catch(function(err) {
+        // Clipboard API can fail in some browsers / non-HTTPS contexts
+        // Fall back to selecting the text so user can Ctrl+C manually
+        var previewEl = document.getElementById('email-preview');
+        var range = document.createRange();
+        range.selectNodeContents(previewEl);
+        var selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        alert('Auto-copy didn\'t work — the text has been selected. Press Ctrl+C to copy it.');
+    });
+});
+
+// Generate the initial preview on page load
+updatePreview();
+</script>
+
+{% endblock %}

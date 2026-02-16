@@ -239,6 +239,24 @@ def _create_watchlist_table(conn):
         """)
 
     conn.commit()
+
+    # Migrate: add email_sent_at column if it doesn't exist yet
+    # This tracks when a filing was included in a weekly email
+    if _using_postgres():
+        cursor.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'watchlist'
+        """)
+        existing = {row[0] for row in cursor.fetchall()}
+    else:
+        cursor.execute("PRAGMA table_info(watchlist)")
+        existing = {row[1] for row in cursor.fetchall()}
+
+    if "email_sent_at" not in existing:
+        cursor.execute("ALTER TABLE watchlist ADD COLUMN email_sent_at TIMESTAMP NULL")
+        conn.commit()
+        print("[MIGRATE] Added 'email_sent_at' column to watchlist")
+
     print("[STARTUP] Watchlist table ready")
 
 
@@ -560,11 +578,12 @@ def get_all_watchlist_ids():
 
 def get_watchlist_filings():
     """Get all watchlisted filings with their notes, sorted by when they were added.
-    Returns filing data joined with watchlist notes."""
+    Returns filing data joined with watchlist notes and email sent status."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT f.*, w.notes as watchlist_notes, w.added_at as watchlist_added_at
+        SELECT f.*, w.notes as watchlist_notes, w.added_at as watchlist_added_at,
+               w.email_sent_at
         FROM filings f
         JOIN watchlist w ON f.id = w.filing_id
         ORDER BY w.added_at DESC
@@ -572,6 +591,43 @@ def get_watchlist_filings():
     results = _dict_rows(cursor.fetchall(), cursor)
     conn.close()
     return results
+
+
+def get_watchlist_filings_by_ids(filing_ids):
+    """Get specific watchlisted filings by their IDs.
+    Used by the email composer to load only selected filings."""
+    if not filing_ids:
+        return []
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    placeholders = ", ".join([p] * len(filing_ids))
+    cursor.execute(f"""
+        SELECT f.*, w.notes as watchlist_notes, w.added_at as watchlist_added_at
+        FROM filings f
+        JOIN watchlist w ON f.id = w.filing_id
+        WHERE f.id IN ({placeholders})
+        ORDER BY w.added_at DESC
+    """, tuple(filing_ids))
+    results = _dict_rows(cursor.fetchall(), cursor)
+    conn.close()
+    return results
+
+
+def mark_filings_email_sent(filing_ids):
+    """Mark filings as included in a weekly email by setting email_sent_at timestamp."""
+    if not filing_ids:
+        return
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    placeholders = ", ".join([p] * len(filing_ids))
+    cursor.execute(f"""
+        UPDATE watchlist SET email_sent_at = CURRENT_TIMESTAMP
+        WHERE filing_id IN ({placeholders})
+    """, tuple(filing_ids))
+    conn.commit()
+    conn.close()
 
 
 # ============================================================
