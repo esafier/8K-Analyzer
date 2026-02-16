@@ -9,7 +9,7 @@ from database import (
     get_categories, get_filing_count, get_filtered_filing_count,
     add_to_watchlist, remove_from_watchlist, update_watchlist_notes,
     get_watchlist_item, get_all_watchlist_ids, get_watchlist_filings,
-    update_last_backfill, get_last_backfill
+    update_last_backfill, get_last_backfill, update_filing_analysis
 )
 from fetcher import fetch_filings, fetch_filing_text
 from filter import filter_filings
@@ -156,6 +156,56 @@ def update_tag(filing_id):
     return redirect(url_for("filing_detail", filing_id=filing_id))
 
 
+@app.route("/reanalyze/<int:filing_id>", methods=["POST"])
+def reanalyze(filing_id):
+    """Re-analyze a single filing using GPT-5.2 for deeper analysis."""
+    from llm import classify_and_summarize
+    from config import LLM_MODEL_PREMIUM
+    import json
+
+    filing = get_filing_by_id(filing_id)
+    if not filing:
+        flash("Filing not found", "error")
+        return redirect(url_for("index"))
+
+    raw_text = filing.get("raw_text") or filing["raw_text"] if "raw_text" in filing else ""
+    if not raw_text:
+        flash("No filing text available to re-analyze", "error")
+        return redirect(url_for("filing_detail", filing_id=filing_id))
+
+    # Call the LLM with the premium model
+    llm_result = classify_and_summarize(raw_text, model=LLM_MODEL_PREMIUM)
+
+    if llm_result is None:
+        flash("Re-analysis failed — the API call didn't go through. Try again.", "error")
+        return redirect(url_for("filing_detail", filing_id=filing_id))
+
+    if not llm_result.get("relevant", False):
+        flash(f"GPT-5.2 says this filing is not relevant. Summary kept as-is.", "warning")
+        return redirect(url_for("filing_detail", filing_id=filing_id))
+
+    # Extract comp_details as JSON string for storage
+    comp_details = llm_result.get("comp_details")
+    if comp_details and any(v for v in comp_details.values()):
+        comp_details_str = json.dumps(comp_details)
+    else:
+        comp_details_str = None
+
+    # Update the filing in the database with GPT-5.2's analysis
+    update_filing_analysis(
+        filing_id=filing_id,
+        summary=llm_result.get("summary") or "",
+        auto_category=llm_result.get("category") or filing.get("auto_category"),
+        auto_subcategory=llm_result.get("subcategory") or filing.get("auto_subcategory"),
+        urgent=llm_result.get("urgent", False),
+        comp_details=comp_details_str,
+    )
+
+    tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
+    flash(f"Re-analyzed with GPT-5.2 ({tokens:,} tokens). Summary and categories updated.", "success")
+    return redirect(url_for("filing_detail", filing_id=filing_id))
+
+
 # ============================================================
 # WATCHLIST ROUTES
 # ============================================================
@@ -237,6 +287,7 @@ def backfill():
     if request.method == "POST":
         start_date = request.form.get("start_date", "")
         end_date = request.form.get("end_date", "")
+        model = request.form.get("model", "")  # Optional model override
 
         if not start_date or not end_date:
             flash("Please enter both start and end dates", "error")
@@ -245,21 +296,24 @@ def backfill():
         # Run the fetch in a background thread so the page doesn't hang
         thread = threading.Thread(
             target=run_backfill,
-            args=(start_date, end_date),
+            args=(start_date, end_date, model if model else None),
         )
         thread.daemon = True
         thread.start()
 
-        flash(f"Backfill started for {start_date} to {end_date}. This runs in the background — refresh the main page to see new filings as they appear.", "success")
+        model_label = model or "GPT-4o-mini"
+        flash(f"Backfill started for {start_date} to {end_date} using {model_label}. This runs in the background — refresh the main page to see new filings as they appear.", "success")
         return redirect(url_for("index"))
 
     return render_template("backfill.html")
 
 
-def run_backfill(start_date, end_date):
+def run_backfill(start_date, end_date, model=None):
     """Background task: fetch, filter, summarize, and store filings.
-    This is the main pipeline that ties all the pieces together."""
-    print(f"\n--- Starting backfill: {start_date} to {end_date} ---")
+    This is the main pipeline that ties all the pieces together.
+    Pass model="gpt-5.2" to use the premium model for this backfill."""
+    model_label = model or "GPT-4o-mini"
+    print(f"\n--- Starting backfill: {start_date} to {end_date} (model: {model_label}) ---")
 
     # Step 1: Fetch filing metadata from EDGAR
     filings_metadata = fetch_filings(start_date, end_date)
@@ -268,8 +322,8 @@ def run_backfill(start_date, end_date):
         print("No filings found in this date range")
         return
 
-    # Step 2: Filter (Stage 1 + Stage 2)
-    matched_filings = filter_filings(filings_metadata, fetch_text_func=fetch_filing_text)
+    # Step 2: Filter (Stage 1 + Stage 2), with optional model override for Stage 3
+    matched_filings = filter_filings(filings_metadata, fetch_text_func=fetch_filing_text, model=model)
 
     # Step 3: Summarize and store each matched filing
     stored_count = 0

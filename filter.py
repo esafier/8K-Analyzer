@@ -191,7 +191,7 @@ def determine_subcategory(text_lower, matched_keywords):
     return best_subcategory
 
 
-def filter_filings(filings_metadata, fetch_text_func=None):
+def filter_filings(filings_metadata, fetch_text_func=None, model=None):
     """Run both filter stages on a list of filings.
 
     Stage 1 runs on metadata only (fast).
@@ -201,6 +201,7 @@ def filter_filings(filings_metadata, fetch_text_func=None):
         filings_metadata: List of filing metadata dicts from fetcher.py
         fetch_text_func: Function to call to get filing text (from fetcher.py).
                          Signature: fetch_text_func(filing_url, cik, accession_no) -> str
+        model: Which LLM model to use for Stage 3 (default: LLM_MODEL from config)
 
     Returns:
         List of filing dicts that passed both stages, enriched with category info
@@ -297,7 +298,7 @@ def filter_filings(filings_metadata, fetch_text_func=None):
 
         print(f"  Stage 3: LLM reviewing {i + 1}/{len(all_for_llm)} — {company}")
 
-        llm_result = classify_and_summarize(text)
+        llm_result = classify_and_summarize(text, model=model)
 
         if llm_result is not None:
             # LLM succeeded — use its classification and summary

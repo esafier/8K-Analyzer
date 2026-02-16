@@ -104,8 +104,11 @@ import os
 # Falls back to hardcoded key for local development
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
-# Which model to use. GPT-4o mini is cheap and good enough for classification.
+# Which model to use for daily classification and summarization (cheap, fast)
 LLM_MODEL = "gpt-4o-mini"
+
+# Premium model — use this when you want deeper/better analysis on specific filings
+LLM_MODEL_PREMIUM = "gpt-5.2"
 
 # Folder where prompt files are stored (prompt_v1.txt, prompt_v2.txt, etc.)
 # The "active" prompt used by the live pipeline is whichever one ACTIVE_PROMPT points to.

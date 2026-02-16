@@ -437,6 +437,24 @@ def update_user_tag(filing_id, tag):
     conn.close()
 
 
+def update_filing_analysis(filing_id, summary, auto_category, auto_subcategory, urgent, comp_details):
+    """Update a filing's LLM-generated fields after re-analysis.
+    Only touches analysis fields — leaves user_tag, raw_text, etc. untouched."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    urgent_val = 1 if urgent else 0
+    comp_val = _to_str(comp_details)
+    cursor.execute(f"""
+        UPDATE filings
+        SET summary = {p}, auto_category = {p}, auto_subcategory = {p},
+            urgent = {p}, comp_details = {p}
+        WHERE id = {p}
+    """, (summary, auto_category, auto_subcategory, urgent_val, comp_val, filing_id))
+    conn.commit()
+    conn.close()
+
+
 def get_categories():
     """Get all unique categories (combining auto and user tags).
     Used to populate filter dropdowns in the dashboard."""

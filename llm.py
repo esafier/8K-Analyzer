@@ -24,17 +24,22 @@ def _load_prompt(prompt_file=None):
         return f.read()
 
 
-def classify_and_summarize(filing_text, prompt_file=None):
+def classify_and_summarize(filing_text, prompt_file=None, model=None):
     """Send a filing to the LLM for classification and summarization.
 
     Args:
         filing_text: The plain text content of the 8-K filing
         prompt_file: Which prompt file to use (default: ACTIVE_PROMPT from config)
+        model: Which model to use (default: LLM_MODEL from config). Pass a model
+               name like "gpt-5.2" to override for premium analysis.
 
     Returns:
         Dictionary with keys: relevant, category, subcategory, summary
         Returns None if the API call fails
     """
+    # Use the default model from config unless a specific one was requested
+    use_model = model or LLM_MODEL
+
     # Load the prompt template and plug in the filing text
     template = _load_prompt(prompt_file)
     prompt = template.replace("{filing_text}", filing_text)
@@ -43,7 +48,7 @@ def classify_and_summarize(filing_text, prompt_file=None):
         client = OpenAI(api_key=OPENAI_API_KEY)
 
         response = client.chat.completions.create(
-            model=LLM_MODEL,
+            model=use_model,
             temperature=0,  # Deterministic output for consistent classifications
             response_format={"type": "json_object"},  # Force valid JSON output
             messages=[

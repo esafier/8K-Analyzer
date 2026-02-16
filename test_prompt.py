@@ -3,6 +3,7 @@
 # Usage:
 #   python test_prompt.py                          Test active prompt on 10 recent filings
 #   python test_prompt.py --prompt prompt_v2.txt   Test a specific prompt
+#   python test_prompt.py --model gpt-5.2          Test with a specific model
 #   python test_prompt.py --all                    Test against ALL filings in the database
 #   python test_prompt.py --count 20               Test against 20 filings
 #   python test_prompt.py --compare prompt_v1.txt prompt_v2.txt   Compare two prompts side-by-side
@@ -20,6 +21,17 @@ import os
 import time
 from config import DATABASE_PATH, PROMPTS_DIR, ACTIVE_PROMPT, LLM_MODEL
 from llm import classify_and_summarize
+
+# Pricing per 1M tokens for each model (update when prices change)
+MODEL_PRICING = {
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "gpt-5.2":     {"input": 1.75, "output": 14.00},
+}
+
+
+def get_cost_rates(model_name):
+    """Look up pricing for a model. Falls back to GPT-4o-mini rates if unknown."""
+    return MODEL_PRICING.get(model_name, MODEL_PRICING["gpt-4o-mini"])
 
 
 def get_test_filings(count=None):
@@ -39,7 +51,7 @@ def get_test_filings(count=None):
     return filings
 
 
-def run_prompt_on_filings(filings, prompt_file):
+def run_prompt_on_filings(filings, prompt_file, model=None):
     """Run a specific prompt against a list of filings. Returns results list."""
     results = []
     total_tokens_in = 0
@@ -52,8 +64,8 @@ def run_prompt_on_filings(filings, prompt_file):
 
         print(f"  [{i + 1}/{len(filings)}] {company} ({date}) — {items}")
 
-        # Call the LLM with this prompt
-        llm_result = classify_and_summarize(filing["raw_text"], prompt_file=prompt_file)
+        # Call the LLM with this prompt and optional model override
+        llm_result = classify_and_summarize(filing["raw_text"], prompt_file=prompt_file, model=model)
 
         if llm_result:
             total_tokens_in += llm_result.get("_tokens_in", 0)
@@ -70,7 +82,7 @@ def run_prompt_on_filings(filings, prompt_file):
     return results, total_tokens_in, total_tokens_out
 
 
-def print_single_results(results, tokens_in, tokens_out):
+def print_single_results(results, tokens_in, tokens_out, model_name):
     """Print results for a single prompt run — compare LLM output vs existing keyword labels."""
     print("\n" + "=" * 80)
     print("RESULTS: LLM vs Existing Keywords")
@@ -120,14 +132,15 @@ def print_single_results(results, tokens_in, tokens_out):
     print(f"  Category matches: {category_matches}/{total}")
     print(f"  Tokens used:      {tokens_in:,} in / {tokens_out:,} out")
 
-    # Cost estimate (GPT-4o mini pricing)
-    cost_in = tokens_in * 0.15 / 1_000_000
-    cost_out = tokens_out * 0.60 / 1_000_000
-    print(f"  Cost (GPT-4o mini): ${cost_in + cost_out:.4f}")
+    # Cost estimate based on the model used
+    rates = get_cost_rates(model_name)
+    cost_in = tokens_in * rates["input"] / 1_000_000
+    cost_out = tokens_out * rates["output"] / 1_000_000
+    print(f"  Cost ({model_name}): ${cost_in + cost_out:.4f}")
     print("=" * 80)
 
 
-def print_compare_results(results_a, results_b, prompt_a, prompt_b, tokens_a, tokens_b):
+def print_compare_results(results_a, results_b, prompt_a, prompt_b, tokens_a, tokens_b, model_name):
     """Print side-by-side comparison of two different prompts."""
     print("\n" + "=" * 80)
     print(f"COMPARISON: {prompt_a} vs {prompt_b}")
@@ -179,8 +192,9 @@ def print_compare_results(results_a, results_b, prompt_a, prompt_b, tokens_a, to
     print(f"  {prompt_b} matched keywords: {match_b}/{total}")
 
     # Cost comparison
-    cost_a = tokens_a[0] * 0.15 / 1_000_000 + tokens_a[1] * 0.60 / 1_000_000
-    cost_b = tokens_b[0] * 0.15 / 1_000_000 + tokens_b[1] * 0.60 / 1_000_000
+    rates = get_cost_rates(model_name)
+    cost_a = tokens_a[0] * rates["input"] / 1_000_000 + tokens_a[1] * rates["output"] / 1_000_000
+    cost_b = tokens_b[0] * rates["input"] / 1_000_000 + tokens_b[1] * rates["output"] / 1_000_000
     print(f"  {prompt_a} cost: ${cost_a:.4f}")
     print(f"  {prompt_b} cost: ${cost_b:.4f}")
     print("=" * 80)
@@ -202,6 +216,7 @@ def list_prompts():
 def main():
     parser = argparse.ArgumentParser(description="Test LLM prompts against existing filings")
     parser.add_argument("--prompt", default=None, help="Prompt file to test (default: active prompt)")
+    parser.add_argument("--model", default=None, help="Model to use (default: gpt-4o-mini). Try: gpt-5.2")
     parser.add_argument("--count", type=int, default=10, help="Number of filings to test (default: 10)")
     parser.add_argument("--all", action="store_true", help="Test against ALL filings")
     parser.add_argument("--compare", nargs=2, metavar=("PROMPT_A", "PROMPT_B"),
@@ -213,6 +228,9 @@ def main():
         list_prompts()
         return
 
+    # Which model to use (default from config, or override via --model)
+    model_name = args.model or LLM_MODEL
+
     # Figure out how many filings to test
     count = None if args.all else args.count
 
@@ -223,25 +241,25 @@ def main():
         return
 
     print(f"Testing against {len(filings)} filings from database")
-    print(f"Model: {LLM_MODEL}")
+    print(f"Model: {model_name}")
 
     if args.compare:
         # Compare two prompts
         prompt_a, prompt_b = args.compare
         print(f"\nRunning prompt A: {prompt_a}")
-        results_a, tin_a, tout_a = run_prompt_on_filings(filings, prompt_a)
+        results_a, tin_a, tout_a = run_prompt_on_filings(filings, prompt_a, model=args.model)
 
         print(f"\nRunning prompt B: {prompt_b}")
-        results_b, tin_b, tout_b = run_prompt_on_filings(filings, prompt_b)
+        results_b, tin_b, tout_b = run_prompt_on_filings(filings, prompt_b, model=args.model)
 
         print_compare_results(results_a, results_b, prompt_a, prompt_b,
-                              (tin_a, tout_a), (tin_b, tout_b))
+                              (tin_a, tout_a), (tin_b, tout_b), model_name)
     else:
         # Single prompt test
         prompt_file = args.prompt or ACTIVE_PROMPT
         print(f"Prompt: {prompt_file}\n")
-        results, tokens_in, tokens_out = run_prompt_on_filings(filings, prompt_file)
-        print_single_results(results, tokens_in, tokens_out)
+        results, tokens_in, tokens_out = run_prompt_on_filings(filings, prompt_file, model=args.model)
+        print_single_results(results, tokens_in, tokens_out, model_name)
 
 
 if __name__ == "__main__":
