@@ -171,6 +171,9 @@ def initialize_database():
     # Create app_status table for tracking backfill times, etc.
     _create_app_status_table(conn)
 
+    # Create market_caps table for caching stock market cap data
+    _create_market_caps_table(conn)
+
     # Log which database we're using and how many filings are stored
     # This helps us debug data loss issues on Render
     cursor.execute("SELECT COUNT(*) FROM filings")
@@ -724,6 +727,101 @@ def get_last_backfill():
     local_time = utc_time.astimezone(eastern)
 
     return {"type": backfill_type, "time": local_time}
+
+
+# ============================================================
+# MARKET CAP CACHE FUNCTIONS
+# ============================================================
+
+def _create_market_caps_table(conn):
+    """Create the market_caps table for caching stock market cap data.
+    Stores one row per ticker so multiple filings sharing a ticker
+    don't cause duplicate lookups."""
+    cursor = conn.cursor()
+
+    if _using_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS market_caps (
+                ticker TEXT PRIMARY KEY,
+                market_cap BIGINT,
+                fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS market_caps (
+                ticker TEXT PRIMARY KEY,
+                market_cap INTEGER,
+                fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+    conn.commit()
+    print("[STARTUP] Market caps table ready")
+
+
+def get_cached_market_caps(tickers):
+    """Look up cached market caps for a list of tickers.
+    Only returns entries that were fetched within the last 24 hours.
+    Returns a dict like {'AAPL': 3500000000000, 'MSFT': 2800000000000}."""
+    if not tickers:
+        return {}
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    placeholders = ", ".join([p] * len(tickers))
+
+    # Only return rows fetched within the last 24 hours
+    if _using_postgres():
+        cursor.execute(f"""
+            SELECT ticker, market_cap FROM market_caps
+            WHERE ticker IN ({placeholders})
+            AND fetched_at > NOW() - INTERVAL '24 hours'
+        """, tuple(tickers))
+    else:
+        cursor.execute(f"""
+            SELECT ticker, market_cap FROM market_caps
+            WHERE ticker IN ({placeholders})
+            AND fetched_at > datetime('now', '-24 hours')
+        """, tuple(tickers))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    # Build the result dict — include entries even if market_cap is NULL
+    # (NULL means "we checked and there's no data", which we still want to cache)
+    if _using_postgres():
+        return {row[0]: row[1] for row in rows}
+    else:
+        return {row["ticker"]: row["market_cap"] for row in rows}
+
+
+def upsert_market_caps(market_cap_dict):
+    """Insert or update cached market cap values.
+    market_cap_dict is like {'AAPL': 3500000000000, 'MSFT': None}.
+    None means the ticker was checked but has no market cap data."""
+    if not market_cap_dict:
+        return
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    for ticker, cap in market_cap_dict.items():
+        if _using_postgres():
+            cursor.execute(f"""
+                INSERT INTO market_caps (ticker, market_cap, fetched_at)
+                VALUES ({p}, {p}, CURRENT_TIMESTAMP)
+                ON CONFLICT (ticker) DO UPDATE
+                SET market_cap = {p}, fetched_at = CURRENT_TIMESTAMP
+            """, (ticker, cap, cap))
+        else:
+            cursor.execute(f"""
+                INSERT OR REPLACE INTO market_caps (ticker, market_cap, fetched_at)
+                VALUES ({p}, {p}, CURRENT_TIMESTAMP)
+            """, (ticker, cap))
+
+    conn.commit()
+    conn.close()
 
 
 # When this file is run directly, create the database

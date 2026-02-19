@@ -104,7 +104,12 @@
                 </td>
                 <td class="text-nowrap">{{ filing['filed_date'] }}</td>
                 <td>{{ filing['company'] }}</td>
-                <td><strong>{{ filing['ticker'] or '—' }}</strong></td>
+                <td>
+                    <strong>{{ filing['ticker'] or '—' }}</strong>
+                    {% if filing['ticker'] and market_caps.get(filing['ticker']) %}
+                    <br><span class="market-cap">{{ market_caps[filing['ticker']] | format_market_cap }}</span>
+                    {% endif %}
+                </td>
                 <td>
                     <!-- Show user tag if set, otherwise auto category -->
                     {% set display_category = filing['user_tag'] or filing['auto_category'] %}

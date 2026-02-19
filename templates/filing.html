@@ -11,6 +11,9 @@
                 <span class="badge bg-danger fs-6">URGENT</span>
             {% endif %}
             <span class="badge bg-secondary fs-6">{{ filing['ticker'] or 'No Ticker' }}</span>
+            {% if market_cap %}
+            <span class="badge bg-light text-dark border fs-6">{{ market_cap | format_market_cap }}</span>
+            {% endif %}
         </div>
     </div>
     <div class="card-body">

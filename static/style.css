@@ -30,6 +30,12 @@ tr.clickable-row:has(.badge.bg-danger) {
     border-left: 3px solid #dc3545;
 }
 
+/* Market cap subtitle shown under tickers */
+.market-cap {
+    font-size: 0.75rem;
+    color: #888;
+}
+
 /* Comp details table on the filing detail page */
 .comp-details-table th {
     width: 200px;

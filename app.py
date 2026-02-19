@@ -22,6 +22,23 @@ app = Flask(__name__)
 app.secret_key = "8k-analyzer-secret-key"  # Needed for flash messages
 
 
+# --- Jinja filter: turn raw market cap numbers into readable strings ---
+def format_market_cap(value):
+    """Turn 1234567890 into '$1.2B', 450000000 into '$450M', etc."""
+    if value is None:
+        return ""
+    if value >= 1_000_000_000_000:
+        return f"${value / 1_000_000_000_000:.1f}T"
+    elif value >= 1_000_000_000:
+        return f"${value / 1_000_000_000:.1f}B"
+    elif value >= 1_000_000:
+        return f"${value / 1_000_000:.0f}M"
+    else:
+        return f"${value:,.0f}"
+
+app.jinja_env.filters["format_market_cap"] = format_market_cap
+
+
 @app.route("/")
 def index():
     """Main dashboard page — shows the list of filtered filings."""
@@ -69,6 +86,16 @@ def index():
     # Get watchlisted filing IDs so we can show star icons
     watchlist_ids = get_all_watchlist_ids()
 
+    # Fetch market cap data for tickers on this page
+    # Wrapped in try/except so a yfinance failure never breaks the dashboard
+    market_caps = {}
+    try:
+        from market_cap import get_market_cap_map
+        unique_tickers = list({f['ticker'] for f in filings if f.get('ticker')})
+        market_caps = get_market_cap_map(unique_tickers)
+    except Exception as e:
+        print(f"[MARKET CAP] Failed to load market caps: {e}")
+
     # Count filings matching current filters so we know total pages
     filtered_count = get_filtered_filing_count(
         category=category if category else None,
@@ -94,6 +121,7 @@ def index():
         per_page=per_page,
         total_pages=total_pages,
         watchlist_ids=watchlist_ids,
+        market_caps=market_caps,
     )
 
 
@@ -134,6 +162,16 @@ def filing_detail(filing_id):
     is_watchlisted = watchlist_entry is not None
     watchlist_notes = watchlist_entry.get("notes", "") if watchlist_entry else ""
 
+    # Fetch market cap for this ticker
+    market_cap = None
+    if filing.get("ticker"):
+        try:
+            from market_cap import get_market_cap_map
+            caps = get_market_cap_map([filing["ticker"]])
+            market_cap = caps.get(filing["ticker"].strip().upper())
+        except Exception as e:
+            print(f"[MARKET CAP] Failed for {filing.get('ticker')}: {e}")
+
     return render_template(
         "filing.html",
         filing=filing,
@@ -141,6 +179,7 @@ def filing_detail(filing_id):
         back_url=back_url,
         is_watchlisted=is_watchlisted,
         watchlist_notes=watchlist_notes,
+        market_cap=market_cap,
     )
 
 
@@ -229,7 +268,16 @@ def watchlist():
         else:
             filing["_comp"] = None
 
-    return render_template("watchlist.html", filings=filings)
+    # Fetch market caps for watchlist tickers
+    market_caps = {}
+    try:
+        from market_cap import get_market_cap_map
+        unique_tickers = list({f['ticker'] for f in filings if f.get('ticker')})
+        market_caps = get_market_cap_map(unique_tickers)
+    except Exception as e:
+        print(f"[MARKET CAP] Failed to load market caps for watchlist: {e}")
+
+    return render_template("watchlist.html", filings=filings, market_caps=market_caps)
 
 
 @app.route("/watchlist/add/<int:filing_id>", methods=["POST"])

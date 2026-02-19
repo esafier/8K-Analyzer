@@ -24,6 +24,9 @@
                             </a>
                             <div class="d-flex gap-2 align-items-center flex-wrap">
                                 <span class="badge bg-secondary">{{ filing['ticker'] or 'No Ticker' }}</span>
+                                {% if filing['ticker'] and market_caps.get(filing['ticker']) %}
+                                <span class="badge bg-light text-dark border">{{ market_caps[filing['ticker']] | format_market_cap }}</span>
+                                {% endif %}
                                 {% if filing['urgent'] %}
                                 <span class="badge bg-danger">URGENT</span>
                                 {% endif %}
