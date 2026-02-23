@@ -442,6 +442,18 @@ def run_backfill(start_date, end_date, model=None):
 
     print(f"--- Backfill complete: {stored_count} filings stored ---\n")
 
+    # Step 4: Pre-fetch market caps so the dashboard loads instantly
+    # One batch call to yfinance for all new tickers, results get cached in DB
+    tickers_to_fetch = list({f['ticker'] for f in matched_filings if f.get('ticker')})
+    if tickers_to_fetch:
+        try:
+            from market_cap import get_market_cap_map
+            print(f"[MARKET CAP] Pre-fetching market caps for {len(tickers_to_fetch)} tickers...")
+            get_market_cap_map(tickers_to_fetch)
+            print(f"[MARKET CAP] Done — cached for next 24 hours")
+        except Exception as e:
+            print(f"[MARKET CAP] Pre-fetch failed (not critical): {e}")
+
     # Record that a backfill completed (for front page display)
     update_last_backfill("web")
 

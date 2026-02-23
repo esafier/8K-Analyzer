@@ -45,6 +45,16 @@ def daily_fetch_job():
 
     print(f"  Daily fetch complete: {stored} new filings stored")
 
+    # Pre-fetch market caps so the dashboard has them ready
+    tickers_to_fetch = list({f['ticker'] for f in matched if f.get('ticker')})
+    if tickers_to_fetch:
+        try:
+            from market_cap import get_market_cap_map
+            print(f"  [MARKET CAP] Pre-fetching for {len(tickers_to_fetch)} tickers...")
+            get_market_cap_map(tickers_to_fetch)
+        except Exception as e:
+            print(f"  [MARKET CAP] Pre-fetch failed (not critical): {e}")
+
     # Record that a scheduled fetch completed (for front page display)
     update_last_backfill("scheduled")
 

@@ -97,10 +97,20 @@ def parse_filing_metadata(hit):
             full_name = display_names[0]
             company_name = full_name
 
-            # Extract ticker from parentheses (look for 1-5 uppercase letters)
-            ticker_match = re.search(r'\(([A-Z]{1,5})\)', full_name)
+            # Extract ticker from parentheses — handles both "(AAPL)" and "(AXL, DCH)"
+            # The [\),] at the end matches either closing paren or comma,
+            # so we grab the first ticker when multiple are listed
+            ticker_match = re.search(r'\(([A-Z]{1,5})[\),]', full_name)
             if ticker_match:
                 ticker = ticker_match.group(1)
+
+            # Fallback: if EDGAR didn't include a ticker, look it up by CIK
+            # using SEC's master company_tickers.json (cached locally)
+            if not ticker and cik:
+                from cik_lookup import get_ticker_by_cik
+                ticker = get_ticker_by_cik(cik)
+                if ticker:
+                    print(f"    CIK lookup found ticker: {ticker} for {company_name}")
 
             # Clean company name — remove (TICKER) and (CIK ...) parts
             company_name = re.sub(r'\s*\([^)]*\)\s*', ' ', full_name).strip()

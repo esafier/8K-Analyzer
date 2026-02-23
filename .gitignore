@@ -10,3 +10,6 @@ __pycache__/
 
 # Virtual environment
 venv/
+
+# Cached SEC CIK-to-ticker mapping (auto-downloaded, ~6MB)
+cik_tickers_cache.json
