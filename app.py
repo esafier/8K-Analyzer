@@ -233,7 +233,7 @@ def deep_analysis(filing_id):
         flash("Filing not found", "error")
         return redirect(url_for("index"))
 
-    raw_text = filing["raw_text"] if "raw_text" in filing else ""
+    raw_text = filing["raw_text"] or ""
     if not raw_text:
         flash("No filing text available to analyze", "error")
         return redirect(url_for("filing_detail", filing_id=filing_id))
