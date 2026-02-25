@@ -12,7 +12,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt && python -c "import pg8000; print('pg8000 OK')"
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --timeout 120
     envVars:
       - key: DATABASE_URL
         fromDatabase:
