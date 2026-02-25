@@ -226,31 +226,38 @@ def update_tag(filing_id):
 @app.route("/deep-analysis/<int:filing_id>", methods=["POST"])
 def deep_analysis(filing_id):
     """Run a comprehensive investor-focused deep analysis on a filing."""
-    from llm import deep_analyze
+    try:
+        from llm import deep_analyze
 
-    filing = get_filing_by_id(filing_id)
-    if not filing:
-        flash("Filing not found", "error")
-        return redirect(url_for("index"))
+        filing = get_filing_by_id(filing_id)
+        if not filing:
+            flash("Filing not found", "error")
+            return redirect(url_for("index"))
 
-    raw_text = filing["raw_text"] or ""
-    if not raw_text:
-        flash("No filing text available to analyze", "error")
+        raw_text = filing["raw_text"] or ""
+        if not raw_text:
+            flash("No filing text available to analyze", "error")
+            return redirect(url_for("filing_detail", filing_id=filing_id))
+
+        # Call the LLM with the deep analysis prompt (uses GPT-5.2 by default)
+        result = deep_analyze(raw_text)
+
+        if result is None:
+            flash("Deep analysis failed — the API call didn't go through. Try again.", "error")
+            return redirect(url_for("filing_detail", filing_id=filing_id))
+
+        # Store the analysis text in its own column (doesn't touch summary/category)
+        update_deep_analysis(filing_id, result["analysis"])
+
+        tokens = result.get("_tokens_in", 0) + result.get("_tokens_out", 0)
+        flash(f"Deep analysis complete ({tokens:,} tokens used).", "success")
         return redirect(url_for("filing_detail", filing_id=filing_id))
 
-    # Call the LLM with the deep analysis prompt (uses GPT-5.2 by default)
-    result = deep_analyze(raw_text)
-
-    if result is None:
-        flash("Deep analysis failed — the API call didn't go through. Try again.", "error")
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] Deep analysis failed: {traceback.format_exc()}")
+        flash(f"Deep analysis error: {e}", "error")
         return redirect(url_for("filing_detail", filing_id=filing_id))
-
-    # Store the analysis text in its own column (doesn't touch summary/category)
-    update_deep_analysis(filing_id, result["analysis"])
-
-    tokens = result.get("_tokens_in", 0) + result.get("_tokens_out", 0)
-    flash(f"Deep analysis complete ({tokens:,} tokens used).", "success")
-    return redirect(url_for("filing_detail", filing_id=filing_id))
 
 
 # ============================================================
