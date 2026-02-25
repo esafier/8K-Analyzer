@@ -10,11 +10,15 @@ python test_prompt.py --list              # See all available prompts
 
 A few updates for the program:
 
-Add the ability to save filings.
+Add the ability to save filings. and write notes.
 Improve prompt/summary (how do i try a v2?)
 CEO or CAO and was it voluntary
 Need to fix page handling
-
+Did they forfeit options 
+Date and order of filings
+"benefiical ownership cap" "blocker" "prefunded warrants"? AGH
+Add market cap
+Automate sending of watchlist
 ---
 
 ## Update: Urgency Flags + Structured Comp Data (Feb 2026)

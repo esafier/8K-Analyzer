@@ -4,7 +4,7 @@
 import json
 import os
 from openai import OpenAI
-from config import OPENAI_API_KEY, LLM_MODEL, PROMPTS_DIR, ACTIVE_PROMPT
+from config import OPENAI_API_KEY, LLM_MODEL, LLM_MODEL_PREMIUM, PROMPTS_DIR, ACTIVE_PROMPT
 
 
 def _load_prompt(prompt_file=None):
@@ -68,4 +68,48 @@ def classify_and_summarize(filing_text, prompt_file=None, model=None):
 
     except Exception as e:
         print(f"    LLM call failed: {e}")
+        return None
+
+
+def deep_analyze(filing_text, model=None):
+    """Send a filing to the LLM for comprehensive investor analysis.
+
+    Unlike classify_and_summarize() which returns structured JSON for
+    classification, this returns free-form text with section headers
+    (Executive Summary, Bullish/Bearish Signals, etc.) for rich display.
+
+    Args:
+        filing_text: The plain text content of the 8-K filing
+        model: Which model to use (default: LLM_MODEL_PREMIUM / GPT-5.2)
+
+    Returns:
+        Dictionary with keys: analysis (str), _tokens_in (int), _tokens_out (int)
+        Returns None if the API call fails
+    """
+    use_model = model or LLM_MODEL_PREMIUM
+
+    # Load the deep analysis prompt (separate from the classification prompt)
+    template = _load_prompt("prompt_deep_analysis.txt")
+    prompt = template.replace("{filing_text}", filing_text)
+
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
+        response = client.chat.completions.create(
+            model=use_model,
+            temperature=0,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+        )
+
+        usage = response.usage
+        return {
+            "analysis": response.choices[0].message.content,
+            "_tokens_in": usage.prompt_tokens,
+            "_tokens_out": usage.completion_tokens,
+        }
+
+    except Exception as e:
+        print(f"    Deep analysis LLM call failed: {e}")
         return None

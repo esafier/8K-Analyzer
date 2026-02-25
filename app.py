@@ -2,7 +2,9 @@
 # Run this file to start the dashboard: python app.py
 
 import os
+import re
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from markupsafe import escape
 import math
 from database import (
     initialize_database, get_filings, get_filing_by_id, update_user_tag,
@@ -38,6 +40,30 @@ def format_market_cap(value):
         return f"${value:,.0f}"
 
 app.jinja_env.filters["format_market_cap"] = format_market_cap
+
+
+def render_deep_analysis(text):
+    """Convert deep analysis text (### headers and - bullets) into HTML.
+    Escapes the text first for safety, then adds formatting."""
+    if not text:
+        return ""
+    text = str(escape(text))
+    # Convert ### headers to styled headings
+    text = re.sub(
+        r'^### (.+)$',
+        r'<h6 class="mt-3 mb-2 text-primary fw-bold">\1</h6>',
+        text, flags=re.MULTILINE,
+    )
+    # Convert bullet points to list items
+    text = re.sub(r'^- (.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
+    # Wrap consecutive <li> items in <ul> tags
+    text = re.sub(r'((?:<li>.*?</li>\n?)+)', r'<ul class="mb-2">\1</ul>', text)
+    # Paragraph spacing
+    text = text.replace('\n\n', '<br><br>')
+    text = text.replace('\n', '<br>')
+    return text
+
+app.jinja_env.filters["render_deep_analysis"] = render_deep_analysis
 
 
 @app.route("/")
@@ -197,53 +223,33 @@ def update_tag(filing_id):
     return redirect(url_for("filing_detail", filing_id=filing_id))
 
 
-@app.route("/reanalyze/<int:filing_id>", methods=["POST"])
-def reanalyze(filing_id):
-    """Re-analyze a single filing using GPT-5.2 for deeper analysis."""
-    from llm import classify_and_summarize
-    from config import LLM_MODEL_PREMIUM
-    import json
+@app.route("/deep-analysis/<int:filing_id>", methods=["POST"])
+def deep_analysis(filing_id):
+    """Run a comprehensive investor-focused deep analysis on a filing."""
+    from llm import deep_analyze
 
     filing = get_filing_by_id(filing_id)
     if not filing:
         flash("Filing not found", "error")
         return redirect(url_for("index"))
 
-    raw_text = filing.get("raw_text") or filing["raw_text"] if "raw_text" in filing else ""
+    raw_text = filing.get("raw_text", "") or ""
     if not raw_text:
-        flash("No filing text available to re-analyze", "error")
+        flash("No filing text available to analyze", "error")
         return redirect(url_for("filing_detail", filing_id=filing_id))
 
-    # Call the LLM with the premium model
-    llm_result = classify_and_summarize(raw_text, model=LLM_MODEL_PREMIUM)
+    # Call the LLM with the deep analysis prompt (uses GPT-5.2 by default)
+    result = deep_analyze(raw_text)
 
-    if llm_result is None:
-        flash("Re-analysis failed — the API call didn't go through. Try again.", "error")
+    if result is None:
+        flash("Deep analysis failed — the API call didn't go through. Try again.", "error")
         return redirect(url_for("filing_detail", filing_id=filing_id))
 
-    if not llm_result.get("relevant", False):
-        flash(f"GPT-5.2 says this filing is not relevant. Summary kept as-is.", "warning")
-        return redirect(url_for("filing_detail", filing_id=filing_id))
+    # Store the analysis text in its own column (doesn't touch summary/category)
+    update_deep_analysis(filing_id, result["analysis"])
 
-    # Extract comp_details as JSON string for storage
-    comp_details = llm_result.get("comp_details")
-    if comp_details and any(v for v in comp_details.values()):
-        comp_details_str = json.dumps(comp_details)
-    else:
-        comp_details_str = None
-
-    # Update the filing in the database with GPT-5.2's analysis
-    update_filing_analysis(
-        filing_id=filing_id,
-        summary=llm_result.get("summary") or "",
-        auto_category=llm_result.get("category") or filing.get("auto_category"),
-        auto_subcategory=llm_result.get("subcategory") or filing.get("auto_subcategory"),
-        urgent=llm_result.get("urgent", False),
-        comp_details=comp_details_str,
-    )
-
-    tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
-    flash(f"Re-analyzed with GPT-5.2 ({tokens:,} tokens). Summary and categories updated.", "success")
+    tokens = result.get("_tokens_in", 0) + result.get("_tokens_out", 0)
+    flash(f"Deep analysis complete ({tokens:,} tokens used).", "success")
     return redirect(url_for("filing_detail", filing_id=filing_id))
 
 
