@@ -10,7 +10,8 @@ from database import (
     add_to_watchlist, remove_from_watchlist, update_watchlist_notes,
     get_watchlist_item, get_all_watchlist_ids, get_watchlist_filings,
     get_watchlist_filings_by_ids, mark_filings_email_sent,
-    update_last_backfill, get_last_backfill, update_filing_analysis
+    update_last_backfill, get_last_backfill, update_filing_analysis,
+    update_deep_analysis
 )
 from fetcher import fetch_filings, fetch_filing_text
 from filter import filter_filings
@@ -409,6 +410,15 @@ def backfill():
         return redirect(url_for("index"))
 
     return render_template("backfill.html")
+
+
+@app.route("/clear-market-cap-cache", methods=["POST"])
+def clear_market_cap_cache():
+    """Flush failed (NULL) market cap entries so they get retried."""
+    from database import clear_failed_market_caps
+    deleted = clear_failed_market_caps()
+    flash(f"Cleared {deleted} failed market cap entries. They'll be refetched on next page load.", "success")
+    return redirect(url_for("index"))
 
 
 def run_backfill(start_date, end_date, model=None):

@@ -33,6 +33,19 @@
 
 <hr class="my-5">
 
+<h2 class="mb-4">Refresh Market Caps</h2>
+<p class="text-muted">If market caps aren't showing, this clears failed lookups from the cache so they get retried on the next page load.</p>
+
+<div class="card" style="max-width: 500px;">
+    <div class="card-body">
+        <form method="POST" action="/clear-market-cap-cache">
+            <button type="submit" class="btn btn-warning">Refresh Market Caps</button>
+        </form>
+    </div>
+</div>
+
+<hr class="my-5">
+
 <h2 class="mb-4">Clear Database</h2>
 <p class="text-muted">Delete all filings so you can re-backfill with the current prompt. Use this after updating the LLM prompt to repopulate with fresh summaries.</p>
 

@@ -2,34 +2,49 @@
 # Uses Yahoo Finance (via yfinance) as data source, with database caching
 # so we don't hit the API on every page load.
 
+import time
 import yfinance as yf
 from database import get_cached_market_caps, upsert_market_caps
 
+# How many tickers to fetch per yfinance call (avoids rate limiting)
+CHUNK_SIZE = 5
+CHUNK_DELAY = 1.0  # seconds between chunks
+
 
 def fetch_from_yfinance(tickers):
-    """Batch-fetch market caps from Yahoo Finance.
+    """Batch-fetch market caps from Yahoo Finance in small chunks.
     Returns dict like {'AAPL': 3500000000000, 'MSFT': 2800000000000}.
-    Tickers with no data get None (so we cache "no data" and don't refetch)."""
+    Only includes tickers where we got a definitive answer from Yahoo —
+    failed lookups are omitted so they can be retried next time."""
     if not tickers:
         return {}
 
     result = {}
-    try:
-        # yfinance handles multiple tickers in one call
-        data = yf.Tickers(" ".join(tickers))
-        for ticker in tickers:
-            try:
-                info = data.tickers[ticker].info
-                cap = info.get("marketCap")
-                # Treat zero or negative as "no data"
-                result[ticker] = cap if cap and cap > 0 else None
-            except Exception:
-                result[ticker] = None
-    except Exception as e:
-        print(f"[MARKET CAP] yfinance batch call failed: {e}")
-        # Return None for all tickers so we don't retry immediately
-        for ticker in tickers:
-            result[ticker] = None
+
+    # Process in small chunks to avoid Yahoo rate limits
+    for i in range(0, len(tickers), CHUNK_SIZE):
+        chunk = tickers[i:i + CHUNK_SIZE]
+
+        if i > 0:
+            time.sleep(CHUNK_DELAY)
+
+        try:
+            data = yf.Tickers(" ".join(chunk))
+            for ticker in chunk:
+                try:
+                    info = data.tickers[ticker].info
+                    cap = info.get("marketCap")
+                    # Treat zero or negative as "no data" — cache None
+                    # so we don't keep retrying tickers that genuinely have none
+                    result[ticker] = cap if cap and cap > 0 else None
+                except Exception:
+                    # Individual ticker failed — skip it (don't cache),
+                    # so it gets retried on the next page load
+                    print(f"[MARKET CAP] Could not fetch {ticker}, will retry later")
+        except Exception as e:
+            # Whole chunk failed (rate limit, network, etc.) — skip all,
+            # don't cache anything so they get retried next time
+            print(f"[MARKET CAP] Chunk failed ({', '.join(chunk)}): {e}")
 
     return result
 
