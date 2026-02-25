@@ -212,6 +212,11 @@ def _migrate_add_columns(conn):
         cursor.execute("ALTER TABLE filings ADD COLUMN comp_details TEXT DEFAULT NULL")
         print("[MIGRATE] Added 'comp_details' column")
 
+    # Add deep_analysis text column for comprehensive investor analysis
+    if "deep_analysis" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN deep_analysis TEXT DEFAULT NULL")
+        print("[MIGRATE] Added 'deep_analysis' column")
+
     conn.commit()
 
 
@@ -472,6 +477,21 @@ def update_filing_analysis(filing_id, summary, auto_category, auto_subcategory, 
             urgent = {p}, comp_details = {p}
         WHERE id = {p}
     """, (summary, auto_category, auto_subcategory, urgent_val, comp_val, filing_id))
+    conn.commit()
+    conn.close()
+
+
+def update_deep_analysis(filing_id, deep_analysis_text):
+    """Store the deep analysis text for a filing.
+    Separate from update_filing_analysis() so we don't touch
+    the classification fields (summary, category, etc.)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(
+        f"UPDATE filings SET deep_analysis = {p} WHERE id = {p}",
+        (deep_analysis_text, filing_id),
+    )
     conn.commit()
     conn.close()
 
@@ -822,6 +842,19 @@ def upsert_market_caps(market_cap_dict):
 
     conn.commit()
     conn.close()
+
+
+def clear_failed_market_caps():
+    """Remove cached entries where market_cap is NULL (failed lookups).
+    This lets them be retried on the next page load or backfill.
+    Entries with actual values are kept."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM market_caps WHERE market_cap IS NULL")
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 # When this file is run directly, create the database
