@@ -17,6 +17,9 @@
                 <a class="nav-link" href="/">Dashboard</a>
                 <a class="nav-link" href="/watchlist">Watchlist</a>
                 <a class="nav-link" href="/backfill">Backfill</a>
+                {% if session.get("authenticated") %}
+                <a class="nav-link text-secondary" href="/logout">Logout</a>
+                {% endif %}
             </div>
         </div>
     </nav>

@@ -3,7 +3,8 @@
 
 import os
 import re
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from datetime import datetime
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
 from markupsafe import escape
 import math
 from database import (
@@ -22,7 +23,9 @@ from database import insert_filing
 import threading
 
 app = Flask(__name__)
-app.secret_key = "8k-analyzer-secret-key"  # Needed for flash messages
+# SECRET_KEY is needed for sessions & flash messages.
+# On Render, set this to a random string. Locally, the fallback works fine.
+app.secret_key = os.environ.get("SECRET_KEY", "8k-analyzer-secret-key")
 
 
 # --- Jinja filter: turn raw market cap numbers into readable strings ---
@@ -64,6 +67,75 @@ def render_deep_analysis(text):
     return text
 
 app.jinja_env.filters["render_deep_analysis"] = render_deep_analysis
+
+
+# ============================================================
+# TRIAL ACCESS GATE
+# If TRIAL_CODE env var is set, visitors must enter the code
+# to use the app. If not set, the app works with no login.
+# ============================================================
+
+@app.before_request
+def check_trial_access():
+    """Block unauthenticated visitors when a trial code is configured."""
+    trial_code = os.environ.get("TRIAL_CODE")
+
+    # No trial code set → app is open (backwards compatible)
+    if not trial_code:
+        return None
+
+    # Allow the login page itself (otherwise infinite redirect loop)
+    if request.endpoint in ("login", "static"):
+        return None
+
+    # Check if user has a valid session
+    if session.get("authenticated"):
+        return None
+
+    # Not authenticated → send them to the login page
+    return redirect(url_for("login"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Login page where trial users enter their access code."""
+    trial_code = os.environ.get("TRIAL_CODE")
+
+    # If no trial code is configured, skip straight to the dashboard
+    if not trial_code:
+        return redirect(url_for("index"))
+
+    error = None
+
+    if request.method == "POST":
+        entered_code = request.form.get("access_code", "").strip()
+
+        # Check if the trial has expired
+        trial_expires = os.environ.get("TRIAL_EXPIRES", "")
+        if trial_expires:
+            try:
+                expiry_date = datetime.strptime(trial_expires, "%Y-%m-%d").date()
+                if datetime.now().date() > expiry_date:
+                    error = "This trial has expired."
+                    return render_template("login.html", error=error)
+            except ValueError:
+                pass  # Bad date format → ignore expiry check
+
+        # Check the code
+        if entered_code == trial_code:
+            session["authenticated"] = True
+            return redirect(url_for("index"))
+        else:
+            error = "Invalid access code. Please try again."
+
+    return render_template("login.html", error=error)
+
+
+@app.route("/logout")
+def logout():
+    """Clear the session and return to login page."""
+    session.clear()
+    return redirect(url_for("login"))
 
 
 @app.route("/")

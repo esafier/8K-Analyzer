@@ -20,3 +20,9 @@ services:
           property: connectionString
       - key: OPENAI_API_KEY
         sync: false  # You'll enter this manually in the Render dashboard
+      - key: SECRET_KEY
+        sync: false  # Random string for Flask sessions (e.g. "myapp-secret-2026")
+      - key: TRIAL_CODE
+        sync: false  # Access code you give to trial users (e.g. "TRIAL-8K-2026")
+      - key: TRIAL_EXPIRES
+        sync: false  # Expiry date in YYYY-MM-DD format (e.g. "2026-03-15")
