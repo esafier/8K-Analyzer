@@ -90,6 +90,9 @@ def check_trial_access():
 
     # Check if user has a valid session
     if session.get("authenticated"):
+        # Log page visits from trial users (visible in Render's Logs tab)
+        if request.endpoint != "static":
+            print(f"[TRIAL] {request.method} {request.path}")
         return None
 
     # Not authenticated → send them to the login page
