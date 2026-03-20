@@ -890,6 +890,12 @@ def _create_earnings_cache_table(conn):
         """)
 
     conn.commit()
+
+    # One-time fix: clear any cached NULL earnings dates from before
+    # the show_upcoming parameter was added (they'll refetch correctly now)
+    cursor.execute("DELETE FROM earnings_cache WHERE earnings_date IS NULL")
+    conn.commit()
+
     print("[STARTUP] Earnings cache table ready")
 
 

@@ -37,7 +37,7 @@ def fetch_from_api_ninjas(tickers):
             try:
                 response = requests.get(
                     API_URL,
-                    params={"ticker": ticker},
+                    params={"ticker": ticker, "show_upcoming": "true"},
                     headers={"X-Api-Key": API_NINJAS_KEY},
                     timeout=10,
                 )
