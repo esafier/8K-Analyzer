@@ -45,6 +45,28 @@ def format_market_cap(value):
 app.jinja_env.filters["format_market_cap"] = format_market_cap
 
 
+def format_earnings_date(earnings_info):
+    """Turn {'date': '2026-04-25', 'timing': 'before_market'} into 'Apr 25 (BMO)'.
+    BMO = before market open, AMC = after market close."""
+    if not earnings_info or not earnings_info.get("date"):
+        return ""
+    date_str = earnings_info["date"]
+    timing = earnings_info.get("timing", "")
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        formatted = dt.strftime("%b %d")
+    except ValueError:
+        return date_str  # If parsing fails, show raw date
+    # Add timing abbreviation if available
+    timing_map = {"before_market": "BMO", "after_market": "AMC", "during_market": "DMH"}
+    abbrev = timing_map.get(timing, "")
+    if abbrev:
+        return f"{formatted} ({abbrev})"
+    return formatted
+
+app.jinja_env.filters["format_earnings_date"] = format_earnings_date
+
+
 def render_deep_analysis(text):
     """Convert deep analysis text (### headers and - bullets) into HTML.
     Escapes the text first for safety, then adds formatting."""
@@ -166,6 +188,9 @@ def index():
         offset=offset,
     )
 
+    # Convert to plain dicts so .get() works on both SQLite and PostgreSQL
+    filings = [dict(f) for f in filings]
+
     # Parse comp_details JSON for each filing so templates can use it
     import json
     for filing in filings:
@@ -198,6 +223,14 @@ def index():
     except Exception as e:
         print(f"[MARKET CAP] Failed to load market caps: {e}")
 
+    # Fetch next earnings dates for tickers on this page
+    earnings = {}
+    try:
+        from earnings import get_earnings_map
+        earnings = get_earnings_map(unique_tickers)
+    except Exception as e:
+        print(f"[EARNINGS] Failed to load earnings: {e}")
+
     # Count filings matching current filters so we know total pages
     filtered_count = get_filtered_filing_count(
         category=category if category else None,
@@ -224,6 +257,7 @@ def index():
         total_pages=total_pages,
         watchlist_ids=watchlist_ids,
         market_caps=market_caps,
+        earnings=earnings,
     )
 
 
@@ -274,6 +308,16 @@ def filing_detail(filing_id):
         except Exception as e:
             print(f"[MARKET CAP] Failed for {filing.get('ticker')}: {e}")
 
+    # Fetch next earnings date for this ticker
+    earnings_info = None
+    if filing.get("ticker"):
+        try:
+            from earnings import get_earnings_map
+            e_map = get_earnings_map([filing["ticker"]])
+            earnings_info = e_map.get(filing["ticker"].strip().upper())
+        except Exception as e:
+            print(f"[EARNINGS] Failed for {filing.get('ticker')}: {e}")
+
     return render_template(
         "filing.html",
         filing=filing,
@@ -282,6 +326,7 @@ def filing_detail(filing_id):
         is_watchlisted=is_watchlisted,
         watchlist_notes=watchlist_notes,
         market_cap=market_cap,
+        earnings_info=earnings_info,
     )
 
 
@@ -366,7 +411,15 @@ def watchlist():
     except Exception as e:
         print(f"[MARKET CAP] Failed to load market caps for watchlist: {e}")
 
-    return render_template("watchlist.html", filings=filings, market_caps=market_caps)
+    # Fetch next earnings dates for watchlist tickers
+    earnings = {}
+    try:
+        from earnings import get_earnings_map
+        earnings = get_earnings_map(unique_tickers)
+    except Exception as e:
+        print(f"[EARNINGS] Failed to load earnings for watchlist: {e}")
+
+    return render_template("watchlist.html", filings=filings, market_caps=market_caps, earnings=earnings)
 
 
 @app.route("/watchlist/add/<int:filing_id>", methods=["POST"])
@@ -512,48 +565,74 @@ def clear_market_cap_cache():
 def run_backfill(start_date, end_date, model=None):
     """Background task: fetch, filter, summarize, and store filings.
     This is the main pipeline that ties all the pieces together.
-    Pass model="gpt-5.2" to use the premium model for this backfill."""
-    model_label = model or "GPT-4o-mini"
-    print(f"\n--- Starting backfill: {start_date} to {end_date} (model: {model_label}) ---")
+    Pass model="gpt-5.2" to use the premium model for this backfill.
 
-    # Step 1: Fetch filing metadata from EDGAR
-    filings_metadata = fetch_filings(start_date, end_date)
+    NOTE: flush=True on every print() — Gunicorn runs with buffered stdout,
+    so without it the daemon thread's output never appears in Render logs."""
+    try:
+        import sys
+        model_label = model or "GPT-4o-mini"
+        print(f"\n--- Starting backfill: {start_date} to {end_date} (model: {model_label}) ---", flush=True)
 
-    if not filings_metadata:
-        print("No filings found in this date range")
-        return
+        # Step 1: Fetch filing metadata from EDGAR
+        filings_metadata = fetch_filings(start_date, end_date)
 
-    # Step 2: Filter (Stage 1 + Stage 2), with optional model override for Stage 3
-    matched_filings = filter_filings(filings_metadata, fetch_text_func=fetch_filing_text, model=model)
+        if not filings_metadata:
+            print("No filings found in this date range", flush=True)
+            return
 
-    # Step 3: Summarize and store each matched filing
-    stored_count = 0
-    for filing in matched_filings:
-        # Only generate a fallback summary if the LLM didn't already provide one
-        if not filing.get("summary"):
-            keywords = filing.get("matched_keywords", "").split(",")
-            filing["summary"] = extract_summary(filing.get("raw_text", ""), keywords)
+        print(f"[BACKFILL] {len(filings_metadata)} filings fetched, starting filter pipeline...", flush=True)
 
-        # Save to database
-        insert_filing(filing)
-        stored_count += 1
+        # Step 2: Filter (Stage 1 + Stage 2), with optional model override for Stage 3
+        matched_filings = filter_filings(filings_metadata, fetch_text_func=fetch_filing_text, model=model)
 
-    print(f"--- Backfill complete: {stored_count} filings stored ---\n")
+        print(f"[BACKFILL] Filter done — {len(matched_filings)} filings passed all stages", flush=True)
 
-    # Step 4: Pre-fetch market caps so the dashboard loads instantly
-    # One batch call to yfinance for all new tickers, results get cached in DB
-    tickers_to_fetch = list({f['ticker'] for f in matched_filings if f.get('ticker')})
-    if tickers_to_fetch:
-        try:
-            from market_cap import get_market_cap_map
-            print(f"[MARKET CAP] Pre-fetching market caps for {len(tickers_to_fetch)} tickers...")
-            get_market_cap_map(tickers_to_fetch)
-            print(f"[MARKET CAP] Done — cached for next 24 hours")
-        except Exception as e:
-            print(f"[MARKET CAP] Pre-fetch failed (not critical): {e}")
+        # Step 3: Summarize and store each matched filing
+        stored_count = 0
+        for filing in matched_filings:
+            # Only generate a fallback summary if the LLM didn't already provide one
+            if not filing.get("summary"):
+                keywords = filing.get("matched_keywords", "").split(",")
+                filing["summary"] = extract_summary(filing.get("raw_text", ""), keywords)
 
-    # Record that a backfill completed (for front page display)
-    update_last_backfill("web")
+            # Save to database
+            insert_filing(filing)
+            stored_count += 1
+
+        print(f"--- Backfill complete: {stored_count} filings stored ---", flush=True)
+
+        # Step 4: Pre-fetch market caps so the dashboard loads instantly
+        # One batch call to yfinance for all new tickers, results get cached in DB
+        tickers_to_fetch = list({f['ticker'] for f in matched_filings if f.get('ticker')})
+        if tickers_to_fetch:
+            try:
+                from market_cap import get_market_cap_map
+                print(f"[MARKET CAP] Pre-fetching market caps for {len(tickers_to_fetch)} tickers...", flush=True)
+                get_market_cap_map(tickers_to_fetch)
+                print(f"[MARKET CAP] Done — cached for next 24 hours", flush=True)
+            except Exception as e:
+                print(f"[MARKET CAP] Pre-fetch failed (not critical): {e}", flush=True)
+
+            # Also pre-fetch earnings dates
+            try:
+                from earnings import get_earnings_map
+                print(f"[EARNINGS] Pre-fetching earnings for {len(tickers_to_fetch)} tickers...", flush=True)
+                get_earnings_map(tickers_to_fetch)
+                print(f"[EARNINGS] Done — cached for next 12 hours", flush=True)
+            except Exception as e:
+                print(f"[EARNINGS] Pre-fetch failed (not critical): {e}", flush=True)
+
+        # Record that a backfill completed (for front page display)
+        update_last_backfill("web")
+        print(f"[BACKFILL] All done — last_backfill timestamp updated", flush=True)
+
+    except Exception as e:
+        # Without this, daemon thread crashes are completely silent
+        print(f"[BACKFILL ERROR] Backfill failed with exception: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
 
 
 # Initialize the database when the app starts

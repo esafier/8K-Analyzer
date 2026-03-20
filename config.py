@@ -104,6 +104,10 @@ import os
 # Falls back to hardcoded key for local development
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
+# API Ninjas key — used for market cap and earnings calendar data
+# Get one at https://api-ninjas.com (paid plan needed for earnings features)
+API_NINJAS_KEY = os.environ.get("API_NINJAS_KEY", "")
+
 # Which model to use for daily classification and summarization (cheap, fast)
 LLM_MODEL = "gpt-4o-mini"
 

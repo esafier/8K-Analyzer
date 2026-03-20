@@ -55,6 +55,14 @@ def daily_fetch_job():
         except Exception as e:
             print(f"  [MARKET CAP] Pre-fetch failed (not critical): {e}")
 
+        # Pre-fetch earnings dates so the dashboard has them ready
+        try:
+            from earnings import get_earnings_map
+            print(f"  [EARNINGS] Pre-fetching for {len(tickers_to_fetch)} tickers...")
+            get_earnings_map(tickers_to_fetch)
+        except Exception as e:
+            print(f"  [EARNINGS] Pre-fetch failed (not critical): {e}")
+
     # Record that a scheduled fetch completed (for front page display)
     update_last_backfill("scheduled")
 

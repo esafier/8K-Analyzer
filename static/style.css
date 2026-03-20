@@ -36,6 +36,12 @@ tr.clickable-row:has(.badge.bg-danger) {
     color: #888;
 }
 
+/* Earnings date subtitle shown under tickers */
+.earnings-date {
+    font-size: 0.75rem;
+    color: #17a2b8;
+}
+
 /* Comp details table on the filing detail page */
 .comp-details-table th {
     width: 200px;

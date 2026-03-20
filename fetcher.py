@@ -60,7 +60,7 @@ def search_8k_filings(start_date, end_date, page=0):
         return {"total": total, "hits": hits}
 
     except requests.exceptions.RequestException as e:
-        print(f"  Error searching EDGAR: {e}")
+        print(f"  Error searching EDGAR: {e}", flush=True)
         return {"total": 0, "hits": []}
 
 
@@ -231,7 +231,7 @@ def fetch_filings(start_date, end_date, max_filings=None):
     Returns:
         List of filing metadata dictionaries (deduplicated by accession number)
     """
-    print(f"Fetching 8-K filings from {start_date} to {end_date}...")
+    print(f"Fetching 8-K filings from {start_date} to {end_date}...", flush=True)
 
     seen_accessions = set()  # Track accession numbers to avoid duplicates
     all_filings = []
@@ -246,7 +246,7 @@ def fetch_filings(start_date, end_date, max_filings=None):
         hits = result["hits"]
 
         if page == 0:
-            print(f"  Found {total} total results (includes duplicates from exhibits)")
+            print(f"  Found {total} total results (includes duplicates from exhibits)", flush=True)
 
         if not hits:
             break
@@ -257,7 +257,7 @@ def fetch_filings(start_date, end_date, max_filings=None):
                 seen_accessions.add(metadata["accession_no"])
                 all_filings.append(metadata)
 
-        print(f"  Processed page {page + 1} ({len(all_filings)} unique filings so far)")
+        print(f"  Processed page {page + 1} ({len(all_filings)} unique filings so far)", flush=True)
 
         # Check if we've gotten all results or hit our limit
         if (page + 1) * RESULTS_PER_PAGE >= total:
@@ -268,7 +268,7 @@ def fetch_filings(start_date, end_date, max_filings=None):
 
         page += 1
 
-    print(f"  Done! Retrieved {len(all_filings)} unique filings")
+    print(f"  Done! Retrieved {len(all_filings)} unique filings", flush=True)
     return all_filings
 
 

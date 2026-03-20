@@ -109,6 +109,9 @@
                     {% if filing['ticker'] and market_caps.get(filing['ticker']) %}
                     <br><span class="market-cap">{{ market_caps[filing['ticker']] | format_market_cap }}</span>
                     {% endif %}
+                    {% if filing['ticker'] and earnings.get(filing['ticker']) %}
+                    <br><span class="earnings-date">Earnings: {{ earnings[filing['ticker']] | format_earnings_date }}</span>
+                    {% endif %}
                 </td>
                 <td>
                     <!-- Show user tag if set, otherwise auto category -->

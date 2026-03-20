@@ -27,6 +27,9 @@
                                 {% if filing['ticker'] and market_caps.get(filing['ticker']) %}
                                 <span class="badge bg-light text-dark border">{{ market_caps[filing['ticker']] | format_market_cap }}</span>
                                 {% endif %}
+                                {% if filing['ticker'] and earnings.get(filing['ticker']) %}
+                                <span class="badge bg-info">Earnings: {{ earnings[filing['ticker']] | format_earnings_date }}</span>
+                                {% endif %}
                                 {% if filing['urgent'] %}
                                 <span class="badge bg-danger">URGENT</span>
                                 {% endif %}

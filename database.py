@@ -174,6 +174,9 @@ def initialize_database():
     # Create market_caps table for caching stock market cap data
     _create_market_caps_table(conn)
 
+    # Create earnings_cache table for caching next earnings dates
+    _create_earnings_cache_table(conn)
+
     # Log which database we're using and how many filings are stored
     # This helps us debug data loss issues on Render
     cursor.execute("SELECT COUNT(*) FROM filings")
@@ -855,6 +858,111 @@ def clear_failed_market_caps():
     conn.commit()
     conn.close()
     return deleted
+
+
+# ============================================================
+# EARNINGS CACHE FUNCTIONS
+# ============================================================
+
+def _create_earnings_cache_table(conn):
+    """Create the earnings_cache table for caching next earnings dates.
+    Stores one row per ticker with the next upcoming earnings date
+    and timing (before/after market)."""
+    cursor = conn.cursor()
+
+    if _using_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS earnings_cache (
+                ticker TEXT PRIMARY KEY,
+                earnings_date TEXT,
+                earnings_timing TEXT,
+                fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS earnings_cache (
+                ticker TEXT PRIMARY KEY,
+                earnings_date TEXT,
+                earnings_timing TEXT,
+                fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+    conn.commit()
+    print("[STARTUP] Earnings cache table ready")
+
+
+def get_cached_earnings(tickers):
+    """Look up cached earnings dates for a list of tickers.
+    Only returns entries fetched within the last 12 hours.
+    Returns a dict like {'AAPL': {'date': '2026-04-25', 'timing': 'after_market'}}."""
+    if not tickers:
+        return {}
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    placeholders = ", ".join([p] * len(tickers))
+
+    # 12-hour TTL — earnings dates don't change often, but refresh after they pass
+    if _using_postgres():
+        cursor.execute(f"""
+            SELECT ticker, earnings_date, earnings_timing FROM earnings_cache
+            WHERE ticker IN ({placeholders})
+            AND fetched_at > NOW() - INTERVAL '12 hours'
+        """, tuple(tickers))
+    else:
+        cursor.execute(f"""
+            SELECT ticker, earnings_date, earnings_timing FROM earnings_cache
+            WHERE ticker IN ({placeholders})
+            AND fetched_at > datetime('now', '-12 hours')
+        """, tuple(tickers))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    # Build the result dict — include entries even if date is NULL
+    # (NULL means "we checked and there's no upcoming earnings")
+    if _using_postgres():
+        return {row[0]: {"date": row[1], "timing": row[2]} for row in rows}
+    else:
+        return {row["ticker"]: {"date": row["earnings_date"], "timing": row["earnings_timing"]} for row in rows}
+
+
+def upsert_earnings(earnings_dict):
+    """Insert or update cached earnings date values.
+    earnings_dict is like {'AAPL': {'date': '2026-04-25', 'timing': 'after_market'}}.
+    None value means the ticker was checked but has no upcoming earnings."""
+    if not earnings_dict:
+        return
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    for ticker, info in earnings_dict.items():
+        # info is either a dict with 'date' and 'timing', or None
+        if info is None:
+            earnings_date = None
+            earnings_timing = None
+        else:
+            earnings_date = info.get("date")
+            earnings_timing = info.get("timing")
+
+        if _using_postgres():
+            cursor.execute(f"""
+                INSERT INTO earnings_cache (ticker, earnings_date, earnings_timing, fetched_at)
+                VALUES ({p}, {p}, {p}, CURRENT_TIMESTAMP)
+                ON CONFLICT (ticker) DO UPDATE
+                SET earnings_date = {p}, earnings_timing = {p}, fetched_at = CURRENT_TIMESTAMP
+            """, (ticker, earnings_date, earnings_timing, earnings_date, earnings_timing))
+        else:
+            cursor.execute(f"""
+                INSERT OR REPLACE INTO earnings_cache (ticker, earnings_date, earnings_timing, fetched_at)
+                VALUES ({p}, {p}, {p}, CURRENT_TIMESTAMP)
+            """, (ticker, earnings_date, earnings_timing))
+
+    conn.commit()
+    conn.close()
 
 
 # When this file is run directly, create the database

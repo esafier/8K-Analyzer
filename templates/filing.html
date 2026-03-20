@@ -14,6 +14,9 @@
             {% if market_cap %}
             <span class="badge bg-light text-dark border fs-6">{{ market_cap | format_market_cap }}</span>
             {% endif %}
+            {% if earnings_info and earnings_info.date %}
+            <span class="badge bg-info fs-6">Earnings: {{ earnings_info | format_earnings_date }}</span>
+            {% endif %}
         </div>
     </div>
     <div class="card-body">
@@ -26,6 +29,9 @@
                     <tr><th>CIK</th><td>{{ filing['cik'] }}</td></tr>
                     <tr><th>Accession No.</th><td>{{ filing['accession_no'] }}</td></tr>
                     <tr><th>Item Codes</th><td>{{ filing['item_codes'] }}</td></tr>
+                    {% if earnings_info and earnings_info.date %}
+                    <tr><th>Next Earnings</th><td>{{ earnings_info | format_earnings_date }}</td></tr>
+                    {% endif %}
                     <tr>
                         <th>SEC Filing</th>
                         <td><a href="{{ filing['filing_url'] }}" target="_blank">View on SEC.gov</a></td>
