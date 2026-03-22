@@ -498,7 +498,16 @@ def compose_email():
         else:
             filing["_comp"] = None
 
-    return render_template("compose_email.html", filings=filings)
+    # Fetch market caps for the selected filings' tickers
+    market_caps = {}
+    try:
+        from market_cap import get_market_cap_map
+        unique_tickers = list({f['ticker'] for f in filings if f.get('ticker')})
+        market_caps = get_market_cap_map(unique_tickers)
+    except Exception as e:
+        print(f"[MARKET CAP] Failed to load market caps for email composer: {e}")
+
+    return render_template("compose_email.html", filings=filings, market_caps=market_caps)
 
 
 @app.route("/mark-as-sent", methods=["POST"])

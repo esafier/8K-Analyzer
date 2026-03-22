@@ -13,11 +13,16 @@
 <!-- Editable filing entries -->
 <div id="filing-entries">
     {% for filing in filings %}
-    <div class="card mb-3 filing-card" data-filing-id="{{ filing['id'] }}">
+    {% set mcap = market_caps.get(filing['ticker'], None) if filing['ticker'] else None %}
+    <div class="card mb-3 filing-card" data-filing-id="{{ filing['id'] }}"
+         data-market-cap="{{ mcap|format_market_cap if mcap else '' }}">
         <div class="card-header d-flex justify-content-between align-items-center">
             <div>
                 <strong class="filing-company">{{ filing['company'] }}</strong>
                 <span class="badge bg-secondary filing-ticker">{{ filing['ticker'] or 'No Ticker' }}</span>
+                {% if mcap %}
+                <span class="badge bg-dark filing-mcap">{{ mcap|format_market_cap }}</span>
+                {% endif %}
                 <span class="badge
                     {% if filing['auto_category'] == 'Management Change' %}bg-primary
                     {% elif filing['auto_category'] == 'Compensation' %}bg-success
@@ -39,7 +44,7 @@
 
             <!-- Editable commentary (pre-filled from watchlist notes) -->
             <div>
-                <label class="form-label small fw-bold">Your Commentary:</label>
+                <label class="form-label small fw-bold">Your Notes:</label>
                 <textarea class="form-control commentary-input" rows="3"
                     placeholder="What's interesting about this filing...">{{ filing['watchlist_notes'] or '' }}</textarea>
             </div>
@@ -76,18 +81,23 @@ function updatePreview() {
     cards.forEach(function(card, index) {
         var company = card.querySelector('.filing-company').textContent.trim();
         var ticker = card.querySelector('.filing-ticker').textContent.trim();
+        var mcap = card.dataset.marketCap;  // e.g. "$1.2B" or ""
         var summary = card.querySelector('.filing-summary').textContent.trim();
         var commentary = card.querySelector('.commentary-input').value.trim();
 
-        // Company + ticker header
-        lines.push(company + ' (' + ticker + ')');
+        // Company + ticker + market cap header
+        var header = company + ' (' + ticker + ')';
+        if (mcap) {
+            header += ' — ' + mcap;
+        }
+        lines.push(header);
         // AI summary
         lines.push(summary);
 
-        // User commentary (only if they wrote something)
+        // User notes (only if they wrote something)
         if (commentary) {
             lines.push('');
-            lines.push('My take: ' + commentary);
+            lines.push('Notes: ' + commentary);
         }
 
         // Separator between filings (skip after the last one)
