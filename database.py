@@ -507,29 +507,24 @@ def get_filings_for_resummarize(date_from=None, date_to=None):
 
     Returns list of dicts with id, company, ticker, raw_text, etc.
     """
+    from datetime import datetime, timedelta
+
     conn = get_connection()
     cursor = conn.cursor()
     p = _placeholder()
 
-    if date_from and date_to:
-        query = f"""
-            SELECT * FROM filings
-            WHERE raw_text IS NOT NULL AND raw_text != ''
-              AND filed_date >= {p} AND filed_date <= {p}
-            ORDER BY filed_date DESC
-        """
-        cursor.execute(query, (date_from, date_to))
-    else:
-        # Default: grab filings from the most recent filed_date going back 7 days
-        query = """
-            SELECT * FROM filings
-            WHERE raw_text IS NOT NULL AND raw_text != ''
-              AND filed_date >= (
-                  SELECT DATE(MAX(filed_date), '-7 days') FROM filings
-              )
-            ORDER BY filed_date DESC
-        """
-        cursor.execute(query)
+    if not date_from or not date_to:
+        # Default: last 7 days — compute in Python so it works on both SQLite and PostgreSQL
+        date_to = datetime.now().strftime("%Y-%m-%d")
+        date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    query = f"""
+        SELECT * FROM filings
+        WHERE raw_text IS NOT NULL AND raw_text != ''
+          AND filed_date >= {p} AND filed_date <= {p}
+        ORDER BY filed_date DESC
+    """
+    cursor.execute(query, (date_from, date_to))
 
     results = _dict_rows(cursor.fetchall(), cursor)
     conn.close()
