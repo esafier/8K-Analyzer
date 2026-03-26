@@ -33,6 +33,38 @@
 
 <hr class="my-5">
 
+<h2 class="mb-4">Re-Summarize Filings</h2>
+<p class="text-muted">Re-run the LLM on filings already in the database to fix bad or missing summaries. No need to re-fetch from SEC — uses the stored filing text.</p>
+
+<div class="card" style="max-width: 500px;">
+    <div class="card-body">
+        <form method="POST" action="/resummarize">
+            <div class="mb-3">
+                <label class="form-label">Start Date <span class="text-muted">(optional — leave blank for most recent)</span></label>
+                <input type="date" name="date_from" class="form-control">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">End Date <span class="text-muted">(optional)</span></label>
+                <input type="date" name="date_to" class="form-control">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">AI Model</label>
+                <select name="model" class="form-select">
+                    <option value="">GPT-4o-mini (default — fast &amp; cheap)</option>
+                    <option value="gpt-5.2">GPT-5.2 (premium — better analysis, higher cost)</option>
+                </select>
+            </div>
+            <p class="text-muted small">
+                This re-sends each filing through the LLM to get a fresh summary and classification.
+                Useful when the LLM was down or credits ran out during a backfill.
+            </p>
+            <button type="submit" class="btn btn-outline-primary">Re-Summarize</button>
+        </form>
+    </div>
+</div>
+
+<hr class="my-5">
+
 <h2 class="mb-4">Refresh Market Caps</h2>
 <p class="text-muted">If market caps aren't showing, this clears failed lookups from the cache so they get retried on the next page load.</p>
 

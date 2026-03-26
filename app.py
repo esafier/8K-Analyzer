@@ -14,7 +14,7 @@ from database import (
     get_watchlist_item, get_all_watchlist_ids, get_watchlist_filings,
     get_watchlist_filings_by_ids, mark_filings_email_sent,
     update_last_backfill, get_last_backfill, update_filing_analysis,
-    update_deep_analysis
+    update_deep_analysis, get_filings_for_resummarize
 )
 from fetcher import fetch_filings, fetch_filing_text
 from filter import filter_filings
@@ -560,6 +560,101 @@ def backfill():
         return redirect(url_for("index"))
 
     return render_template("backfill.html")
+
+
+@app.route("/resummarize", methods=["POST"])
+def resummarize():
+    """Re-run LLM summaries on existing filings (no re-fetch from SEC needed).
+
+    Useful when the LLM was down or credits ran out during a backfill.
+    Uses the raw_text already stored in the database."""
+    date_from = request.form.get("date_from", "")
+    date_to = request.form.get("date_to", "")
+    model = request.form.get("model", "")
+
+    # Run in background so the page doesn't hang
+    thread = threading.Thread(
+        target=run_resummarize,
+        args=(date_from or None, date_to or None, model if model else None),
+    )
+    thread.daemon = True
+    thread.start()
+
+    date_label = f"{date_from} to {date_to}" if date_from else "most recent filings"
+    model_label = model or "GPT-4o-mini"
+    flash(f"Re-summarize started for {date_label} using {model_label}. Refresh the main page to see updated summaries.", "success")
+    return redirect(url_for("index"))
+
+
+def run_resummarize(date_from=None, date_to=None, model=None):
+    """Background task: re-run LLM classification + summary on existing filings.
+
+    Pulls raw_text from the database (already stored from the original backfill),
+    sends it through the LLM, and updates the summary/category/subcategory fields.
+    No SEC fetching needed — just LLM calls."""
+    import json
+    from llm import classify_and_summarize
+    from fetcher import strip_cover_page
+
+    model_label = model or "GPT-4o-mini"
+    print(f"\n--- Re-summarize started (model: {model_label}) ---", flush=True)
+
+    filings = get_filings_for_resummarize(date_from, date_to)
+
+    if not filings:
+        print("No filings found to re-summarize.", flush=True)
+        return
+
+    print(f"Found {len(filings)} filings to re-summarize", flush=True)
+
+    updated = 0
+    failed = 0
+
+    for i, filing in enumerate(filings):
+        company = filing.get("company", "Unknown")
+        filing_id = filing["id"]
+        raw_text = filing.get("raw_text", "")
+
+        if not raw_text:
+            print(f"  [{i+1}/{len(filings)}] {company} — no raw_text, skipping", flush=True)
+            continue
+
+        print(f"  [{i+1}/{len(filings)}] {company} — sending to LLM...", flush=True)
+
+        # Strip cover page before sending to LLM (cleaner input = better output)
+        cleaned_text = strip_cover_page(raw_text)
+
+        llm_result = classify_and_summarize(cleaned_text, model=model)
+
+        if llm_result and llm_result.get("relevant"):
+            # LLM succeeded — update the database with new summary and classification
+            summary = llm_result.get("summary") or ""
+            category = llm_result.get("category") or filing.get("auto_category")
+            subcategory = llm_result.get("subcategory") or filing.get("auto_subcategory")
+            urgent = llm_result.get("urgent", False)
+            comp_details = llm_result.get("comp_details")
+
+            # Only store comp_details if it has real values
+            comp_json = None
+            if comp_details and any(v for v in comp_details.values()):
+                comp_json = json.dumps(comp_details)
+
+            update_filing_analysis(filing_id, summary, category, subcategory, urgent, comp_json)
+            updated += 1
+
+            tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
+            print(f"    Updated — {category} / {subcategory} ({tokens} tokens)", flush=True)
+
+        elif llm_result and not llm_result.get("relevant"):
+            # LLM says not relevant — keep existing data but log it
+            print(f"    LLM says not relevant — keeping existing summary", flush=True)
+
+        else:
+            # LLM call failed again
+            failed += 1
+            print(f"    LLM FAILED — summary unchanged", flush=True)
+
+    print(f"--- Re-summarize complete: {updated} updated, {failed} failed ---", flush=True)
 
 
 @app.route("/clear-market-cap-cache", methods=["POST"])

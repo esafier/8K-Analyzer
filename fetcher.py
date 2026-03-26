@@ -9,6 +9,33 @@ from bs4 import BeautifulSoup
 from config import USER_AGENT, TARGET_ITEM_CODES, REQUEST_DELAY, RESULTS_PER_PAGE
 
 
+def strip_cover_page(text):
+    """Remove SEC cover page boilerplate from the beginning of filing text.
+
+    Every 8-K filing starts with a cover page that has the company name,
+    CIK, checkboxes for filer status (emerging growth, accelerated filer, etc.),
+    and other form metadata. The actual content starts at "Item X.XX".
+
+    This function finds the first Item reference and strips everything before it,
+    so the summarizer only sees the real filing content.
+
+    Args:
+        text: Full plain text of the filing (already extracted from HTML)
+
+    Returns:
+        Text with cover page removed, or original text if no Item marker found
+    """
+    # Look for the first "Item X.XX" pattern — that's where real content begins
+    # Matches patterns like "Item 5.02", "Item 1.01", "ITEM 8.01", etc.
+    item_match = re.search(r'\bItem\s+\d+\.\d{2}\b', text, re.IGNORECASE)
+    if item_match:
+        # Keep everything from the Item marker onward
+        return text[item_match.start():]
+
+    # No Item marker found — return original text as-is (unusual but possible)
+    return text
+
+
 # Headers for the EFTS search API — needs browser-like headers to work
 REQUEST_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -209,6 +236,11 @@ def fetch_filing_text(filing_url, cik, accession_no):
 
         text = doc_soup.get_text(separator=" ", strip=True)
         text = re.sub(r'\s+', ' ', text)
+
+        # Strip the SEC cover page — it's all boilerplate before the actual content.
+        # The real 8-K content starts at "Item X.XX" (e.g., "Item 5.02", "Item 1.01").
+        # Everything before that is filer info, checkboxes, and form headers.
+        text = strip_cover_page(text)
 
         return text
 

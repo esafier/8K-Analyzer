@@ -499,6 +499,43 @@ def update_deep_analysis(filing_id, deep_analysis_text):
     conn.close()
 
 
+def get_filings_for_resummarize(date_from=None, date_to=None):
+    """Get filings that have raw_text stored, so we can re-run LLM on them.
+
+    If dates are provided, only returns filings in that range.
+    If no dates, returns the most recent batch (last 7 days of filed_date).
+
+    Returns list of dicts with id, company, ticker, raw_text, etc.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    if date_from and date_to:
+        query = f"""
+            SELECT * FROM filings
+            WHERE raw_text IS NOT NULL AND raw_text != ''
+              AND filed_date >= {p} AND filed_date <= {p}
+            ORDER BY filed_date DESC
+        """
+        cursor.execute(query, (date_from, date_to))
+    else:
+        # Default: grab filings from the most recent filed_date going back 7 days
+        query = """
+            SELECT * FROM filings
+            WHERE raw_text IS NOT NULL AND raw_text != ''
+              AND filed_date >= (
+                  SELECT DATE(MAX(filed_date), '-7 days') FROM filings
+              )
+            ORDER BY filed_date DESC
+        """
+        cursor.execute(query)
+
+    results = _dict_rows(cursor.fetchall(), cursor)
+    conn.close()
+    return results
+
+
 def get_categories():
     """Get all unique categories (combining auto and user tags).
     Used to populate filter dropdowns in the dashboard."""

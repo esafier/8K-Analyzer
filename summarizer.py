@@ -30,6 +30,29 @@ _BOILERPLATE_SIGNALS = [
     "date of report", "securities and exchange", "hereby incorporated",
     "filed herewith", "exhibit", "signature page", "forward-looking statements",
     "safe harbor", "private securities litigation",
+    # SEC cover page boilerplate — appears on virtually every 8-K filing
+    "emerging growth company", "indicate by check mark",
+    "elected not to use the extended transition",
+    "smaller reporting company", "large accelerated filer",
+    "non-accelerated filer", "accelerated filer",
+    "well-known seasoned issuer", "shell company",
+    "exact name of registrant", "state or other jurisdiction",
+    "commission file number", "irs employer identification",
+    "address of principal executive", "registrant's telephone number",
+    "check the appropriate box below", "title of each class",
+    "trading symbol", "name of each exchange",
+]
+
+# Sentences matching any of these patterns are almost certainly boilerplate
+# and should be completely excluded from summary consideration
+_HARD_SKIP_PATTERNS = [
+    "emerging growth company",
+    "indicate by check mark",
+    "elected not to use the extended transition",
+    "check the appropriate box",
+    "title of each class",
+    "exact name of registrant",
+    "irs employer identification",
 ]
 
 # Patterns that indicate a sentence has a person's name (useful for summaries)
@@ -73,6 +96,11 @@ def extract_summary(text, matched_keywords=None, max_sentences=2):
 
     for i, sentence in enumerate(sentences):
         sentence_lower = sentence.lower()
+
+        # Hard skip: sentences that are clearly SEC boilerplate get excluded entirely
+        if any(pattern in sentence_lower for pattern in _HARD_SKIP_PATTERNS):
+            continue
+
         score = 0
 
         # +2 points per keyword found in this sentence
@@ -97,9 +125,10 @@ def extract_summary(text, matched_keywords=None, max_sentences=2):
         if _NAME_PREFIXES.search(sentence):
             score += 2
 
-        # Penalty for boilerplate-heavy sentences — subtract 1 per boilerplate phrase
+        # Penalty for boilerplate-heavy sentences — subtract 3 per boilerplate phrase
+        # (was -1, but that's too weak — boilerplate near the top could still score positive)
         boilerplate_count = sum(1 for bp in _BOILERPLATE_SIGNALS if bp in sentence_lower)
-        score -= boilerplate_count
+        score -= boilerplate_count * 3
 
         if score > 0:
             scored_sentences.append((score, i, sentence))
