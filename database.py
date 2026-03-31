@@ -539,7 +539,9 @@ def get_departure_history(cik, exclude_accession, months=12):
         ORDER BY filed_date DESC
     """, (cik, exclude_accession, cutoff_date))
 
-    results = _dict_rows(cursor.fetchall(), cursor)
+    # Convert to real dicts so .get() works on both SQLite and Postgres
+    columns = [desc[0] for desc in cursor.description]
+    results = [dict(zip(columns, row)) for row in cursor.fetchall()]
     conn.close()
     return results
 

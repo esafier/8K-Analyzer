@@ -426,6 +426,7 @@ def deep_analysis(filing_id):
         # --- Departure clustering: check for other 5.02 filings from same company ---
         item_codes = filing.get("item_codes", "")
         departure_str = ""
+        departures = []
         if "5.02" in item_codes:
             cik = filing.get("cik", "")
             accession = filing.get("accession_no", "")
@@ -486,13 +487,21 @@ def deep_analysis(filing_id):
         # Store the analysis text in its own column (doesn't touch summary/category)
         update_deep_analysis(filing_id, result["analysis"])
 
-        # Show token breakdown in the flash message
+        # Show token breakdown and context info in the flash message
         analysis_tokens = result.get("_tokens_in", 0) + result.get("_tokens_out", 0)
         total_tokens = analysis_tokens + web_search_tokens
         token_parts = [f"{analysis_tokens:,} analysis"]
         if web_search_tokens:
             token_parts.append(f"{web_search_tokens:,} web search")
-        flash(f"Signal analysis complete ({total_tokens:,} tokens: {', '.join(token_parts)}).", "success")
+        context_notes = []
+        if "5.02" in item_codes:
+            context_notes.append(f"{len(departures)} prior departure(s) found")
+        if web_search_str:
+            context_notes.append("web search included")
+        msg = f"Signal analysis complete ({total_tokens:,} tokens: {', '.join(token_parts)})."
+        if context_notes:
+            msg += f" Context: {'; '.join(context_notes)}."
+        flash(msg, "success")
         return redirect(url_for("filing_detail", filing_id=filing_id))
 
     except Exception as e:
