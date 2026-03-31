@@ -152,6 +152,10 @@
                 {% if not filing.get('deep_analysis') %}
                 <form method="POST" action="/deep-analysis/{{ filing['id'] }}" class="d-inline"
                       onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').innerHTML='Analyzing...';">
+                    <select name="prompt_version" class="form-select form-select-sm d-inline-block" style="width: auto;">
+                        <option value="v1">Prompt V1</option>
+                        <option value="v2" selected>Prompt V2</option>
+                    </select>
                     <button type="submit" class="btn btn-outline-info btn-sm">
                         Signal Analysis
                     </button>
@@ -170,6 +174,10 @@
                 <h5 class="mb-0">Signal Analysis</h5>
                 <form method="POST" action="/deep-analysis/{{ filing['id'] }}" class="d-inline"
                       onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').innerHTML='Re-analyzing...';">
+                    <select name="prompt_version" class="form-select form-select-sm d-inline-block" style="width: auto;">
+                        <option value="v1">Prompt V1</option>
+                        <option value="v2" selected>Prompt V2</option>
+                    </select>
                     <button type="submit" class="btn btn-outline-secondary btn-sm">
                         Re-run
                     </button>

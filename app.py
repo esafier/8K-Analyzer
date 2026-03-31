@@ -435,8 +435,11 @@ def deep_analysis(filing_id):
             f"- Extracted Comp Details: {comp_str}"
         )
 
+        # Check which prompt version the user selected (default to v1)
+        prompt_version = request.form.get("prompt_version", "v1")
+
         # Call the LLM with signal analysis prompt + web search
-        result = signal_analyze(raw_text, context_block)
+        result = signal_analyze(raw_text, context_block, prompt_version=prompt_version)
 
         if result is None:
             flash("Signal analysis failed — the API call didn't go through. Try again.", "error")

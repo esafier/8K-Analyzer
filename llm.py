@@ -121,7 +121,7 @@ def deep_analyze(filing_text, model=None):
 LLM_MODEL_SIGNAL = "gpt-4o"
 
 
-def signal_analyze(filing_text, context_block, model=None):
+def signal_analyze(filing_text, context_block, model=None, prompt_version="v1"):
     """Run skeptical buy-side signal analysis on a filing using web search.
 
     Uses the OpenAI Responses API (not Chat Completions) so the model can
@@ -133,6 +133,8 @@ def signal_analyze(filing_text, context_block, model=None):
         context_block: Pre-formatted string with company context (ticker,
                        market cap, stock price, earnings date, comp details)
         model: Which model to use (default: gpt-4o). Must support web_search.
+        prompt_version: "v1" for original prompt, "v2" for hardened prompt
+                        with data quality gates and broader filing type coverage.
 
     Returns:
         Dictionary with keys: analysis (str), _tokens_in (int), _tokens_out (int)
@@ -140,8 +142,9 @@ def signal_analyze(filing_text, context_block, model=None):
     """
     use_model = model or LLM_MODEL_SIGNAL
 
-    # Load the signal analysis prompt and plug in both placeholders
-    template = _load_prompt("prompt_signal_analysis.txt")
+    # Pick the prompt file based on version toggle
+    prompt_file = "prompt_signal_analysis_v2.txt" if prompt_version == "v2" else "prompt_signal_analysis.txt"
+    template = _load_prompt(prompt_file)
     prompt = template.replace("{filing_text}", filing_text)
     prompt = prompt.replace("{context_block}", context_block)
 
