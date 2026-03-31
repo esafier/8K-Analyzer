@@ -68,7 +68,7 @@ app.jinja_env.filters["format_earnings_date"] = format_earnings_date
 
 
 def render_deep_analysis(text):
-    """Convert deep analysis text (### headers and - bullets) into HTML.
+    """Convert deep analysis text (### headers, - bullets, **bold**) into HTML.
     Escapes the text first for safety, then adds formatting."""
     if not text:
         return ""
@@ -79,6 +79,8 @@ def render_deep_analysis(text):
         r'<h6 class="mt-3 mb-2 text-primary fw-bold">\1</h6>',
         text, flags=re.MULTILINE,
     )
+    # Convert **bold** text to <strong> tags (for BULL/BEAR labels etc.)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
     # Convert bullet points to list items
     text = re.sub(r'^- (.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
     # Wrap consecutive <li> items in <ul> tags
@@ -345,9 +347,13 @@ def update_tag(filing_id):
 
 @app.route("/deep-analysis/<int:filing_id>", methods=["POST"])
 def deep_analysis(filing_id):
-    """Run a comprehensive investor-focused deep analysis on a filing."""
+    """Run skeptical buy-side signal analysis on a filing.
+
+    Gathers company context (market cap, stock price, earnings date) and
+    sends it to the LLM along with the filing text. The LLM can also
+    search the web for recent news and departure history."""
     try:
-        from llm import deep_analyze
+        from llm import signal_analyze
 
         filing = get_filing_by_id(filing_id)
         if not filing:
@@ -359,24 +365,94 @@ def deep_analysis(filing_id):
             flash("No filing text available to analyze", "error")
             return redirect(url_for("filing_detail", filing_id=filing_id))
 
-        # Call the LLM with the deep analysis prompt (uses GPT-5.2 by default)
-        result = deep_analyze(raw_text)
+        # --- Gather context to pre-inject into the prompt ---
+        ticker = filing.get("ticker", "")
+        mcap_str = ""
+        earnings_str = ""
+        price_str = ""
+
+        if ticker:
+            # Market cap (reuse existing cache)
+            try:
+                from market_cap import get_market_cap_map
+                caps = get_market_cap_map([ticker])
+                mcap_val = caps.get(ticker.strip().upper())
+                mcap_str = format_market_cap(mcap_val) if mcap_val else "Not available"
+            except Exception:
+                mcap_str = "Not available"
+
+            # Next earnings date (reuse existing cache)
+            try:
+                from earnings import get_earnings_map
+                e_map = get_earnings_map([ticker])
+                e_info = e_map.get(ticker.strip().upper())
+                earnings_str = format_earnings_date(e_info) if e_info else "Not available"
+            except Exception:
+                earnings_str = "Not available"
+
+            # Current stock price (new — from API Ninjas)
+            try:
+                from stock_price import get_stock_price
+                price = get_stock_price(ticker)
+                price_str = f"${price:.2f}" if price else "Not available"
+            except Exception:
+                price_str = "Not available"
+
+        # Parse comp_details for injection
+        import json
+        comp_str = "None extracted"
+        raw_comp = filing.get("comp_details") or ""
+        if raw_comp and isinstance(raw_comp, str):
+            try:
+                comp_data = json.loads(raw_comp)
+                # Format comp details as readable text
+                parts = []
+                if comp_data.get("grant_value"):
+                    parts.append(f"Grant Value: {comp_data['grant_value']}")
+                if comp_data.get("grant_type"):
+                    parts.append(f"Grant Type: {comp_data['grant_type']}")
+                if comp_data.get("vesting_target_price"):
+                    parts.append(f"Vesting Target Price: {comp_data['vesting_target_price']}")
+                if comp_data.get("performance_hurdles"):
+                    parts.append(f"Performance Hurdles: {comp_data['performance_hurdles']}")
+                if comp_data.get("stock_vs_cash_election"):
+                    parts.append(f"Stock vs Cash Election: {comp_data['stock_vs_cash_election']}")
+                if parts:
+                    comp_str = "; ".join(parts)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Build the context block that gets injected into the prompt
+        context_block = (
+            f"- Company: {filing.get('company', 'Unknown')}\n"
+            f"- Ticker: {ticker or 'Unknown'}\n"
+            f"- Market Cap: {mcap_str}\n"
+            f"- Current Stock Price: {price_str}\n"
+            f"- Next Earnings Date: {earnings_str}\n"
+            f"- Filing Date: {filing.get('filed_date', 'Unknown')}\n"
+            f"- Item Codes: {filing.get('item_codes', 'Unknown')}\n"
+            f"- Auto Category: {filing.get('auto_category', '')} / {filing.get('auto_subcategory', '')}\n"
+            f"- Extracted Comp Details: {comp_str}"
+        )
+
+        # Call the LLM with signal analysis prompt + web search
+        result = signal_analyze(raw_text, context_block)
 
         if result is None:
-            flash("Deep analysis failed — the API call didn't go through. Try again.", "error")
+            flash("Signal analysis failed — the API call didn't go through. Try again.", "error")
             return redirect(url_for("filing_detail", filing_id=filing_id))
 
         # Store the analysis text in its own column (doesn't touch summary/category)
         update_deep_analysis(filing_id, result["analysis"])
 
         tokens = result.get("_tokens_in", 0) + result.get("_tokens_out", 0)
-        flash(f"Deep analysis complete ({tokens:,} tokens used).", "success")
+        flash(f"Signal analysis complete ({tokens:,} tokens used).", "success")
         return redirect(url_for("filing_detail", filing_id=filing_id))
 
     except Exception as e:
         import traceback
-        print(f"[ERROR] Deep analysis failed: {traceback.format_exc()}")
-        flash(f"Deep analysis error: {e}", "error")
+        print(f"[ERROR] Signal analysis failed: {traceback.format_exc()}")
+        flash(f"Signal analysis error: {e}", "error")
         return redirect(url_for("filing_detail", filing_id=filing_id))
 
 

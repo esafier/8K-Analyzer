@@ -2,7 +2,7 @@ flask==3.1.0
 requests==2.32.3
 beautifulsoup4==4.12.3
 schedule==1.2.2
-openai>=1.0.0
+openai>=1.66.0
 gunicorn==22.0.0
 pg8000==1.31.2
 python-dotenv==1.0.1

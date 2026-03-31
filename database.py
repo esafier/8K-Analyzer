@@ -177,6 +177,9 @@ def initialize_database():
     # Create earnings_cache table for caching next earnings dates
     _create_earnings_cache_table(conn)
 
+    # Create stock_prices table for caching current stock prices
+    _create_stock_prices_table(conn)
+
     # Log which database we're using and how many filings are stored
     # This helps us debug data loss issues on Render
     cursor.execute("SELECT COUNT(*) FROM filings")
@@ -998,6 +1001,97 @@ def upsert_earnings(earnings_dict):
                 INSERT OR REPLACE INTO earnings_cache (ticker, earnings_date, earnings_timing, fetched_at)
                 VALUES ({p}, {p}, {p}, CURRENT_TIMESTAMP)
             """, (ticker, earnings_date, earnings_timing))
+
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# STOCK PRICE CACHE FUNCTIONS
+# ============================================================
+
+def _create_stock_prices_table(conn):
+    """Create the stock_prices table for caching current stock prices.
+    Used by signal analysis to evaluate price hurdles and detect spring-loading."""
+    cursor = conn.cursor()
+
+    if _using_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stock_prices (
+                ticker TEXT PRIMARY KEY,
+                price REAL,
+                fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stock_prices (
+                ticker TEXT PRIMARY KEY,
+                price REAL,
+                fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+    conn.commit()
+    print("[STARTUP] Stock prices table ready")
+
+
+def get_cached_stock_price(ticker):
+    """Look up cached stock price for a single ticker.
+    Only returns if fetched within the last 1 hour (prices move fast).
+    Returns the price as a float, or None if not cached/stale."""
+    if not ticker:
+        return None
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    # 1-hour TTL — stock prices change throughout the day
+    if _using_postgres():
+        cursor.execute(f"""
+            SELECT price FROM stock_prices
+            WHERE ticker = {p}
+            AND fetched_at > NOW() - INTERVAL '1 hour'
+        """, (ticker.upper(),))
+    else:
+        cursor.execute(f"""
+            SELECT price FROM stock_prices
+            WHERE ticker = {p}
+            AND fetched_at > datetime('now', '-1 hour')
+        """, (ticker.upper(),))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+    if _using_postgres():
+        return row[0]
+    else:
+        return row["price"]
+
+
+def upsert_stock_price(ticker, price):
+    """Insert or update a cached stock price.
+    price can be None if the lookup failed (caches the miss)."""
+    if not ticker:
+        return
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    if _using_postgres():
+        cursor.execute(f"""
+            INSERT INTO stock_prices (ticker, price, fetched_at)
+            VALUES ({p}, {p}, CURRENT_TIMESTAMP)
+            ON CONFLICT (ticker) DO UPDATE
+            SET price = {p}, fetched_at = CURRENT_TIMESTAMP
+        """, (ticker.upper(), price, price))
+    else:
+        cursor.execute(f"""
+            INSERT OR REPLACE INTO stock_prices (ticker, price, fetched_at)
+            VALUES ({p}, {p}, CURRENT_TIMESTAMP)
+        """, (ticker.upper(), price))
 
     conn.commit()
     conn.close()

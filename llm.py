@@ -1,5 +1,6 @@
-# llm.py — Handles OpenAI API calls for filing classification and summarization
-# Used by Stage 3 of the filtering pipeline and by test_prompt.py
+# llm.py — Handles OpenAI API calls for filing classification, summarization,
+# and signal analysis. Used by Stage 3 of the filtering pipeline, by
+# test_prompt.py, and by the signal analysis feature on the dashboard.
 
 import json
 import os
@@ -112,4 +113,57 @@ def deep_analyze(filing_text, model=None):
 
     except Exception as e:
         print(f"    Deep analysis LLM call failed: {e}")
+        return None
+
+
+# Default model for signal analysis — must support web_search in Responses API.
+# GPT-5.2 does NOT support web_search, so we use gpt-4o (or gpt-5) here.
+LLM_MODEL_SIGNAL = "gpt-4o"
+
+
+def signal_analyze(filing_text, context_block, model=None):
+    """Run skeptical buy-side signal analysis on a filing using web search.
+
+    Uses the OpenAI Responses API (not Chat Completions) so the model can
+    search the web for recent news, departure history, and other context
+    it needs beyond what's pre-injected in the context block.
+
+    Args:
+        filing_text: The plain text content of the 8-K filing
+        context_block: Pre-formatted string with company context (ticker,
+                       market cap, stock price, earnings date, comp details)
+        model: Which model to use (default: gpt-4o). Must support web_search.
+
+    Returns:
+        Dictionary with keys: analysis (str), _tokens_in (int), _tokens_out (int)
+        Returns None if the API call fails
+    """
+    use_model = model or LLM_MODEL_SIGNAL
+
+    # Load the signal analysis prompt and plug in both placeholders
+    template = _load_prompt("prompt_signal_analysis.txt")
+    prompt = template.replace("{filing_text}", filing_text)
+    prompt = prompt.replace("{context_block}", context_block)
+
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
+        # Uses the Responses API with web_search tool — different from
+        # Chat Completions used elsewhere. The model can search the web
+        # during generation to gather news, departure history, etc.
+        response = client.responses.create(
+            model=use_model,
+            tools=[{"type": "web_search"}],
+            input=prompt,
+        )
+
+        usage = response.usage
+        return {
+            "analysis": response.output_text,
+            "_tokens_in": usage.input_tokens,
+            "_tokens_out": usage.output_tokens,
+        }
+
+    except Exception as e:
+        print(f"    Signal analysis LLM call failed: {e}")
         return None
