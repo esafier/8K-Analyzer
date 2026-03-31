@@ -354,7 +354,7 @@ def deep_analysis(filing_id):
     it to the LLM along with the filing text."""
     try:
         from llm import signal_analyze, web_search_context
-        from database import get_departure_history
+        from fetcher import get_edgar_departure_history
 
         filing = get_filing_by_id(filing_id)
         if not filing:
@@ -423,22 +423,20 @@ def deep_analysis(filing_id):
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        # --- Departure clustering: check for other 5.02 filings from same company ---
+        # --- Departure clustering: query EDGAR for other 5.02 filings from same company ---
         item_codes = filing.get("item_codes", "")
         departure_str = ""
         departures = []
         if "5.02" in item_codes:
             cik = filing.get("cik", "")
             accession = filing.get("accession_no", "")
-            departures = get_departure_history(cik, accession)
+            departures = get_edgar_departure_history(cik, accession)
             if departures:
                 dep_lines = []
                 for dep in departures:
-                    sub = dep.get("auto_subcategory") or "Departure"
-                    date = dep.get("filed_date", "Unknown date")
-                    # Truncate summary to keep context block reasonable
-                    summary = (dep.get("summary") or "")[:150]
-                    dep_lines.append(f"  - {sub} (filed {date}): {summary}")
+                    date = dep.get("filing_date", "Unknown date")
+                    items = dep.get("items", "5.02")
+                    dep_lines.append(f"  - 8-K filed {date} (Items: {items})")
                 departure_str = "\n".join(dep_lines)
             else:
                 departure_str = "No other Item 5.02 filings found in past 12 months"

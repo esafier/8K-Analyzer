@@ -312,6 +312,69 @@ def fetch_daily():
     return fetch_filings(yesterday, today)
 
 
+def get_edgar_departure_history(cik, exclude_accession="", months=12):
+    """Query EDGAR directly for other 5.02 filings from the same company.
+
+    Uses SEC's company submissions API (data.sec.gov) to look back up to
+    12 months for departure/management change filings. No local database
+    needed — this searches the full EDGAR record.
+
+    Args:
+        cik: The company's CIK number (e.g., "0000796343")
+        exclude_accession: Accession number to skip (the current filing)
+        months: How far back to look (default 12)
+
+    Returns:
+        List of dicts: [{filing_date, items, accession_no}, ...]
+        Returns empty list on failure.
+    """
+    if not cik:
+        return []
+
+    # SEC API expects CIK zero-padded to 10 digits
+    padded_cik = cik.zfill(10)
+    url = f"https://data.sec.gov/submissions/CIK{padded_cik}.json"
+
+    try:
+        resp = requests.get(url, headers=FILING_HEADERS, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"  EDGAR departure history lookup failed: {e}")
+        return []
+
+    recent = data.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    dates = recent.get("filingDate", [])
+    accessions = recent.get("accessionNumber", [])
+    items = recent.get("items", [])
+
+    cutoff = (datetime.now() - timedelta(days=months * 30)).strftime("%Y-%m-%d")
+
+    # Normalize the accession we want to skip (EDGAR uses dashes, our DB may not)
+    skip = exclude_accession.replace("-", "")
+
+    results = []
+    for i in range(len(forms)):
+        if forms[i] not in ("8-K", "8-K/A"):
+            continue
+        if dates[i] < cutoff:
+            break  # Dates are sorted newest-first, so we can stop early
+        item_str = items[i] if i < len(items) else ""
+        if "5.02" not in item_str:
+            continue
+        # Skip the filing we're currently analyzing
+        if accessions[i].replace("-", "") == skip:
+            continue
+        results.append({
+            "filing_date": dates[i],
+            "items": item_str,
+            "accession_no": accessions[i],
+        })
+
+    return results
+
+
 # When run directly, do a quick test fetch
 if __name__ == "__main__":
     filings = fetch_filings("2026-01-20", "2026-01-28", max_filings=10)
