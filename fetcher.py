@@ -393,7 +393,7 @@ def get_edgar_departure_history(cik, exclude_accession="", months=12):
     # Normalize the accession we want to skip (EDGAR uses dashes, our DB may not)
     skip = exclude_accession.replace("-", "")
 
-    # First pass: identify the 5.02 filings (max 5 to keep fetch time reasonable)
+    # First pass: identify all 5.02 filings within the lookback period
     matches = []
     for i in range(len(forms)):
         if forms[i] not in ("8-K", "8-K/A"):
@@ -412,8 +412,6 @@ def get_edgar_departure_history(cik, exclude_accession="", months=12):
             "accession_no": accessions[i],
             "primary_doc": primary_doc,
         })
-        if len(matches) >= 5:
-            break
 
     # Second pass: fetch each filing to extract departure details
     results = []
