@@ -312,12 +312,50 @@ def fetch_daily():
     return fetch_filings(yesterday, today)
 
 
+def _fetch_502_snippet(cik, accession_no, primary_doc):
+    """Fetch the Item 5.02 section from a filing and return a brief snippet.
+
+    Downloads the filing HTML, extracts text, and grabs the first ~800
+    characters after "Item 5.02" — enough to capture who departed,
+    their title, and the basic circumstances.
+
+    Returns:
+        String snippet, or empty string on failure.
+    """
+    acc_nodash = accession_no.replace("-", "")
+    # CIK in the URL path should not have leading zeros
+    cik_stripped = cik.lstrip("0") or "0"
+    url = f"https://www.sec.gov/Archives/edgar/data/{cik_stripped}/{acc_nodash}/{primary_doc}"
+
+    try:
+        resp = requests.get(url, headers=FILING_HEADERS, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        text = soup.get_text(separator=" ", strip=True)
+
+        # Find the Item 5.02 section and grab enough to identify who/what
+        match = re.search(r"Item\s+5\.02", text, re.IGNORECASE)
+        if match:
+            # Skip the standard header ("Departure of Directors or Certain Officers...")
+            # and grab the substance
+            snippet = text[match.start():match.start() + 800]
+            # Trim to last complete sentence
+            last_period = snippet.rfind(".")
+            if last_period > 200:
+                snippet = snippet[:last_period + 1]
+            return snippet
+    except Exception as e:
+        print(f"  Failed to fetch 5.02 snippet from {url}: {e}")
+
+    return ""
+
+
 def get_edgar_departure_history(cik, exclude_accession="", months=12):
     """Query EDGAR directly for other 5.02 filings from the same company.
 
     Uses SEC's company submissions API (data.sec.gov) to look back up to
-    12 months for departure/management change filings. No local database
-    needed — this searches the full EDGAR record.
+    12 months for departure/management change filings, then fetches each
+    filing to extract who departed and their role.
 
     Args:
         cik: The company's CIK number (e.g., "0000796343")
@@ -325,7 +363,7 @@ def get_edgar_departure_history(cik, exclude_accession="", months=12):
         months: How far back to look (default 12)
 
     Returns:
-        List of dicts: [{filing_date, items, accession_no}, ...]
+        List of dicts: [{filing_date, items, accession_no, snippet}, ...]
         Returns empty list on failure.
     """
     if not cik:
@@ -347,29 +385,48 @@ def get_edgar_departure_history(cik, exclude_accession="", months=12):
     forms = recent.get("form", [])
     dates = recent.get("filingDate", [])
     accessions = recent.get("accessionNumber", [])
-    items = recent.get("items", [])
+    items_list = recent.get("items", [])
+    primary_docs = recent.get("primaryDocument", [])
 
     cutoff = (datetime.now() - timedelta(days=months * 30)).strftime("%Y-%m-%d")
 
     # Normalize the accession we want to skip (EDGAR uses dashes, our DB may not)
     skip = exclude_accession.replace("-", "")
 
-    results = []
+    # First pass: identify the 5.02 filings (max 5 to keep fetch time reasonable)
+    matches = []
     for i in range(len(forms)):
         if forms[i] not in ("8-K", "8-K/A"):
             continue
         if dates[i] < cutoff:
             break  # Dates are sorted newest-first, so we can stop early
-        item_str = items[i] if i < len(items) else ""
+        item_str = items_list[i] if i < len(items_list) else ""
         if "5.02" not in item_str:
             continue
-        # Skip the filing we're currently analyzing
         if accessions[i].replace("-", "") == skip:
             continue
-        results.append({
+        primary_doc = primary_docs[i] if i < len(primary_docs) else ""
+        matches.append({
             "filing_date": dates[i],
             "items": item_str,
             "accession_no": accessions[i],
+            "primary_doc": primary_doc,
+        })
+        if len(matches) >= 5:
+            break
+
+    # Second pass: fetch each filing to extract departure details
+    results = []
+    for m in matches:
+        snippet = ""
+        if m["primary_doc"]:
+            snippet = _fetch_502_snippet(padded_cik, m["accession_no"], m["primary_doc"])
+            time.sleep(0.2)  # Respect SEC rate limits
+        results.append({
+            "filing_date": m["filing_date"],
+            "items": m["items"],
+            "accession_no": m["accession_no"],
+            "snippet": snippet,
         })
 
     return results

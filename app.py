@@ -435,8 +435,12 @@ def deep_analysis(filing_id):
                 dep_lines = []
                 for dep in departures:
                     date = dep.get("filing_date", "Unknown date")
-                    items = dep.get("items", "5.02")
-                    dep_lines.append(f"  - 8-K filed {date} (Items: {items})")
+                    snippet = dep.get("snippet", "")
+                    if snippet:
+                        dep_lines.append(f"  [{date}] {snippet}")
+                    else:
+                        items = dep.get("items", "5.02")
+                        dep_lines.append(f"  [{date}] 8-K with Items: {items} (details unavailable)")
                 departure_str = "\n".join(dep_lines)
             else:
                 departure_str = "No other Item 5.02 filings found in past 12 months"
