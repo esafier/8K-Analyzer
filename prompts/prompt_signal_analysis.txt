@@ -4,18 +4,9 @@ Your default stance is skeptical. Do not take the company's framing at face valu
 
 ## AVAILABLE CONTEXT
 
-The following data has been pre-gathered. Use it directly — do NOT search for this information.
+The following data has been pre-gathered. Use it directly — do NOT search for this information. If departure history or recent news is included below, incorporate it into your signal analysis.
 
 {context_block}
-
-## WEB SEARCH INSTRUCTIONS
-
-You have access to web_search. Use it to look up:
-1. Recent material news about this company (M&A, regulatory actions, product launches, earnings surprises, restatements) — 1 search
-2. Any other executive departures at this company in the past 12 months (for departure clustering detection) — 1 search if the filing involves a departure
-3. Any other context you think is critical for interpreting this filing
-
-Do NOT search for information already provided above (stock price, market cap, earnings date). Keep searches targeted — 2-3 max, not exhaustive research.
 
 ## OUTPUT STRUCTURE
 

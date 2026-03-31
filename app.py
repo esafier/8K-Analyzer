@@ -349,11 +349,12 @@ def update_tag(filing_id):
 def deep_analysis(filing_id):
     """Run skeptical buy-side signal analysis on a filing.
 
-    Gathers company context (market cap, stock price, earnings date) and
-    sends it to the LLM along with the filing text. The LLM can also
-    search the web for recent news and departure history."""
+    Gathers company context (market cap, stock price, earnings date,
+    departure history, and optionally web search results) and sends
+    it to the LLM along with the filing text."""
     try:
-        from llm import signal_analyze
+        from llm import signal_analyze, web_search_context
+        from database import get_departure_history
 
         filing = get_filing_by_id(filing_id)
         if not filing:
@@ -422,6 +423,35 @@ def deep_analysis(filing_id):
             except (json.JSONDecodeError, TypeError):
                 pass
 
+        # --- Departure clustering: check for other 5.02 filings from same company ---
+        item_codes = filing.get("item_codes", "")
+        departure_str = ""
+        if "5.02" in item_codes:
+            cik = filing.get("cik", "")
+            accession = filing.get("accession_no", "")
+            departures = get_departure_history(cik, accession)
+            if departures:
+                dep_lines = []
+                for dep in departures:
+                    sub = dep.get("auto_subcategory") or "Departure"
+                    date = dep.get("filed_date", "Unknown date")
+                    # Truncate summary to keep context block reasonable
+                    summary = (dep.get("summary") or "")[:150]
+                    dep_lines.append(f"  - {sub} (filed {date}): {summary}")
+                departure_str = "\n".join(dep_lines)
+            else:
+                departure_str = "No other Item 5.02 filings found in past 12 months"
+
+        # --- Optional web search: gather recent news if user checked the box ---
+        web_search_str = ""
+        web_search_tokens = 0
+        if request.form.get("web_search"):
+            company = filing.get("company", "")
+            ws_result = web_search_context(company, ticker)
+            if ws_result:
+                web_search_str = ws_result["context"]
+                web_search_tokens = ws_result.get("_tokens_in", 0) + ws_result.get("_tokens_out", 0)
+
         # Build the context block that gets injected into the prompt
         context_block = (
             f"- Company: {filing.get('company', 'Unknown')}\n"
@@ -435,10 +465,18 @@ def deep_analysis(filing_id):
             f"- Extracted Comp Details: {comp_str}"
         )
 
+        # Append departure history if this is a 5.02 filing
+        if departure_str:
+            context_block += f"\n- Recent Departures at This Company (from SEC filings):\n{departure_str}"
+
+        # Append web search results if the user requested them
+        if web_search_str:
+            context_block += f"\n- Recent News (web search):\n{web_search_str}"
+
         # Check which prompt version the user selected (default to v1)
         prompt_version = request.form.get("prompt_version", "v1")
 
-        # Call the LLM with signal analysis prompt + web search
+        # Call the LLM with signal analysis prompt (all context pre-gathered)
         result = signal_analyze(raw_text, context_block, prompt_version=prompt_version)
 
         if result is None:
@@ -448,8 +486,13 @@ def deep_analysis(filing_id):
         # Store the analysis text in its own column (doesn't touch summary/category)
         update_deep_analysis(filing_id, result["analysis"])
 
-        tokens = result.get("_tokens_in", 0) + result.get("_tokens_out", 0)
-        flash(f"Signal analysis complete ({tokens:,} tokens used).", "success")
+        # Show token breakdown in the flash message
+        analysis_tokens = result.get("_tokens_in", 0) + result.get("_tokens_out", 0)
+        total_tokens = analysis_tokens + web_search_tokens
+        token_parts = [f"{analysis_tokens:,} analysis"]
+        if web_search_tokens:
+            token_parts.append(f"{web_search_tokens:,} web search")
+        flash(f"Signal analysis complete ({total_tokens:,} tokens: {', '.join(token_parts)}).", "success")
         return redirect(url_for("filing_detail", filing_id=filing_id))
 
     except Exception as e:

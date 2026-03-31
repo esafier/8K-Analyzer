@@ -502,6 +502,48 @@ def update_deep_analysis(filing_id, deep_analysis_text):
     conn.close()
 
 
+def get_departure_history(cik, exclude_accession, months=12):
+    """Find other Item 5.02 (departure) filings from the same company.
+
+    Used by signal analysis to detect departure clustering — multiple
+    executives leaving the same company is a bearish signal. Queries
+    the local database (not EDGAR) so it only finds filings we've
+    already fetched and stored.
+
+    Args:
+        cik: The company's CIK number (10-digit string)
+        exclude_accession: Accession number of the current filing (skip it)
+        months: How far back to look (default 12 months)
+
+    Returns:
+        List of dicts with filed_date, auto_subcategory, summary (truncated)
+    """
+    from datetime import datetime, timedelta
+
+    if not cik:
+        return []
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    cutoff_date = (datetime.now() - timedelta(days=months * 30)).strftime("%Y-%m-%d")
+
+    cursor.execute(f"""
+        SELECT filed_date, auto_subcategory, summary
+        FROM filings
+        WHERE cik = {p}
+          AND accession_no != {p}
+          AND item_codes LIKE '%5.02%'
+          AND filed_date >= {p}
+        ORDER BY filed_date DESC
+    """, (cik, exclude_accession, cutoff_date))
+
+    results = _dict_rows(cursor.fetchall(), cursor)
+    conn.close()
+    return results
+
+
 def get_filings_for_resummarize(date_from=None, date_to=None):
     """Get filings that have raw_text stored, so we can re-run LLM on them.
 
