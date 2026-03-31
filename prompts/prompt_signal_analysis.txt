@@ -16,6 +16,16 @@ Two to three lines. Company name, ticker, what they do, market cap, current stoc
 ### FILING SUMMARY
 Three to five sentences. What this filing discloses, who it involves (name, title, tenure if available), the effective date, and what Item(s) are triggered. Plain language — translate legal boilerplate into what actually happened.
 
+### DEPARTURE HISTORY
+Include this section if "Recent Departures at This Company" appears in the context above. For each prior departure, extract and list:
+- **Name** and **title** of the person who departed
+- **Date** of departure
+- **Circumstances** (resigned, retired, terminated, not standing for re-election)
+
+Then add a brief assessment: Is this filing part of a pattern? Is the pace of turnover unusual for a company this size? Are the departures concentrated in one function (e.g., multiple finance leaders) or spread across the org?
+
+If no departure history is provided in the context, skip this section entirely.
+
 ### COMP/DEPARTURE MECHANICS
 Only if relevant. For compensation filings: break down the structure concisely — base, bonus, equity (type, amount, vesting, hurdles). For departures: separation terms, consulting arrangements, accelerated vesting, non-competes, cooperation clauses. Extract the mechanics that matter for signal analysis — do NOT reproduce the full filing.
 
