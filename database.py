@@ -3,7 +3,9 @@
 # and SQLite (local development fallback)
 
 import os
+import ssl
 import sqlite3
+import threading
 from config import DATABASE_PATH
 
 # Try to import pg8000 for PostgreSQL support
@@ -28,43 +30,114 @@ def _using_postgres():
     return _get_database_url() is not None and HAS_PG
 
 
-def get_connection():
-    """Open a database connection. Uses PostgreSQL if DATABASE_URL is set,
-    otherwise falls back to local SQLite file."""
-    if _using_postgres():
-        # Parse the DATABASE_URL into components that pg8000 needs
-        url = _get_database_url()
-        # URL format: postgres://user:password@host:port/dbname
-        # Strip the scheme prefix
-        if url.startswith("postgres://"):
-            url = url[len("postgres://"):]
-        elif url.startswith("postgresql://"):
-            url = url[len("postgresql://"):]
+# ============================================================
+# CONNECTION POOL for PostgreSQL
+# Reuses database connections instead of opening a new one for
+# every query. Each new connection costs 50-200ms (TCP + SSL +
+# auth over the network). A pool turns that into <1ms.
+# ============================================================
 
-        # Split into user_info@host_info/dbname
-        user_info, rest = url.split("@", 1)
-        host_info, dbname = rest.split("/", 1)
-        user, password = user_info.split(":", 1)
-        if ":" in host_info:
-            host, port = host_info.split(":", 1)
-            port = int(port)
+_pg_pool = []           # list of idle PostgreSQL connections
+_pg_pool_lock = threading.Lock()
+_PG_POOL_MAX = 5        # max idle connections to keep around
+
+
+def _parse_database_url():
+    """Parse DATABASE_URL into the components pg8000 needs."""
+    url = _get_database_url()
+    if url.startswith("postgres://"):
+        url = url[len("postgres://"):]
+    elif url.startswith("postgresql://"):
+        url = url[len("postgresql://"):]
+
+    user_info, rest = url.split("@", 1)
+    host_info, dbname = rest.split("/", 1)
+    user, password = user_info.split(":", 1)
+    if ":" in host_info:
+        host, port = host_info.split(":", 1)
+        port = int(port)
+    else:
+        host = host_info
+        port = 5432
+
+    return user, password, host, port, dbname
+
+
+def _create_pg_connection():
+    """Create a fresh PostgreSQL connection."""
+    user, password, host, port, dbname = _parse_database_url()
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    return pg8000.dbapi.connect(
+        user=user,
+        password=password,
+        host=host,
+        port=port,
+        database=dbname,
+        ssl_context=ssl_context
+    )
+
+
+def _get_pg_connection():
+    """Get a PostgreSQL connection from the pool, or create a new one."""
+    with _pg_pool_lock:
+        while _pg_pool:
+            conn = _pg_pool.pop()
+            try:
+                # Quick check that the connection is still alive
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+                return conn
+            except Exception:
+                # Connection went stale — discard it and try next
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    # Pool was empty (or all stale) — create a fresh connection
+    return _create_pg_connection()
+
+
+def _return_pg_connection(conn):
+    """Return a PostgreSQL connection to the pool for reuse."""
+    try:
+        # Reset any uncommitted transaction state so the next user gets a clean connection
+        conn.rollback()
+    except Exception:
+        # Connection is broken — discard it
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return
+
+    with _pg_pool_lock:
+        if len(_pg_pool) < _PG_POOL_MAX:
+            _pg_pool.append(conn)
         else:
-            host = host_info
-            port = 5432
+            # Pool is full — close the extra connection
+            try:
+                conn.close()
+            except Exception:
+                pass
 
-        import ssl
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
 
-        conn = pg8000.dbapi.connect(
-            user=user,
-            password=password,
-            host=host,
-            port=port,
-            database=dbname,
-            ssl_context=ssl_context
-        )
+def get_connection():
+    """Get a database connection. Uses the PostgreSQL pool if DATABASE_URL is set,
+    otherwise falls back to local SQLite file.
+    IMPORTANT: Always call conn.close() when done — for PostgreSQL this returns
+    the connection to the pool instead of actually closing it."""
+    if _using_postgres():
+        conn = _get_pg_connection()
+        # Override close() so callers return the connection to the pool
+        # instead of actually closing it. This means all existing code
+        # (which calls conn.close()) works without any changes.
+        conn._real_close = conn.close
+        conn.close = lambda: _return_pg_connection(conn)
         return conn
     else:
         conn = sqlite3.connect(DATABASE_PATH)
@@ -864,7 +937,7 @@ def _create_market_caps_table(conn):
 
 def get_cached_market_caps(tickers):
     """Look up cached market caps for a list of tickers.
-    Only returns entries that were fetched within the last 24 hours.
+    Only returns entries that were fetched within the last 7 days.
     Returns a dict like {'AAPL': 3500000000000, 'MSFT': 2800000000000}."""
     if not tickers:
         return {}
@@ -873,18 +946,18 @@ def get_cached_market_caps(tickers):
     p = _placeholder()
     placeholders = ", ".join([p] * len(tickers))
 
-    # Only return rows fetched within the last 24 hours
+    # Only return rows fetched within the last 7 days
     if _using_postgres():
         cursor.execute(f"""
             SELECT ticker, market_cap FROM market_caps
             WHERE ticker IN ({placeholders})
-            AND fetched_at > NOW() - INTERVAL '24 hours'
+            AND fetched_at > NOW() - INTERVAL '7 days'
         """, tuple(tickers))
     else:
         cursor.execute(f"""
             SELECT ticker, market_cap FROM market_caps
             WHERE ticker IN ({placeholders})
-            AND fetched_at > datetime('now', '-24 hours')
+            AND fetched_at > datetime('now', '-7 days')
         """, tuple(tickers))
 
     rows = cursor.fetchall()
@@ -980,7 +1053,7 @@ def _create_earnings_cache_table(conn):
 
 def get_cached_earnings(tickers):
     """Look up cached earnings dates for a list of tickers.
-    Only returns entries fetched within the last 12 hours.
+    Only returns entries fetched within the last 48 hours.
     Returns a dict like {'AAPL': {'date': '2026-04-25', 'timing': 'after_market'}}."""
     if not tickers:
         return {}
@@ -989,18 +1062,18 @@ def get_cached_earnings(tickers):
     p = _placeholder()
     placeholders = ", ".join([p] * len(tickers))
 
-    # 12-hour TTL — earnings dates don't change often, but refresh after they pass
+    # 48-hour TTL — earnings dates don't change often, refresh every couple days
     if _using_postgres():
         cursor.execute(f"""
             SELECT ticker, earnings_date, earnings_timing FROM earnings_cache
             WHERE ticker IN ({placeholders})
-            AND fetched_at > NOW() - INTERVAL '12 hours'
+            AND fetched_at > NOW() - INTERVAL '48 hours'
         """, tuple(tickers))
     else:
         cursor.execute(f"""
             SELECT ticker, earnings_date, earnings_timing FROM earnings_cache
             WHERE ticker IN ({placeholders})
-            AND fetched_at > datetime('now', '-12 hours')
+            AND fetched_at > datetime('now', '-2 days')
         """, tuple(tickers))
 
     rows = cursor.fetchall()
