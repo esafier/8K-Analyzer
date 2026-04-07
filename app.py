@@ -14,7 +14,8 @@ from database import (
     get_watchlist_item, get_all_watchlist_ids, get_watchlist_filings,
     get_watchlist_filings_by_ids, mark_filings_email_sent,
     update_last_backfill, get_last_backfill, update_filing_analysis,
-    update_deep_analysis, get_filings_for_resummarize
+    update_deep_analysis, get_filings_for_resummarize,
+    create_backfill_run, complete_backfill_run, get_recent_backfill_runs
 )
 from fetcher import fetch_filings, fetch_filing_text
 from filter import filter_filings
@@ -692,7 +693,9 @@ def backfill():
         flash(f"Backfill started for {start_date} to {end_date} using {model_label}. This runs in the background — refresh the main page to see new filings as they appear.", "success")
         return redirect(url_for("index"))
 
-    return render_template("backfill.html")
+    # Show recent backfill runs so the user can see stats
+    recent_runs = get_recent_backfill_runs(limit=10)
+    return render_template("backfill.html", recent_runs=recent_runs)
 
 
 @app.route("/resummarize", methods=["POST"])
@@ -806,16 +809,21 @@ def run_backfill(start_date, end_date, model=None):
 
     NOTE: flush=True on every print() — Gunicorn runs with buffered stdout,
     so without it the daemon thread's output never appears in Render logs."""
+    run_id = None
     try:
         import sys
         model_label = model or "GPT-4o-mini"
         print(f"\n--- Starting backfill: {start_date} to {end_date} (model: {model_label}) ---", flush=True)
+
+        # Create a tracking record so we can see stats when this finishes
+        run_id = create_backfill_run("web", start_date, end_date, model_label)
 
         # Step 1: Fetch filing metadata from EDGAR
         filings_metadata = fetch_filings(start_date, end_date)
 
         if not filings_metadata:
             print("No filings found in this date range", flush=True)
+            complete_backfill_run(run_id, fetched=0, filtered=0, new=0, skipped=0)
             return
 
         print(f"[BACKFILL] {len(filings_metadata)} filings fetched, starting filter pipeline...", flush=True)
@@ -826,18 +834,29 @@ def run_backfill(start_date, end_date, model=None):
         print(f"[BACKFILL] Filter done — {len(matched_filings)} filings passed all stages", flush=True)
 
         # Step 3: Summarize and store each matched filing
-        stored_count = 0
+        new_count = 0
+        skipped_count = 0
         for filing in matched_filings:
             # Only generate a fallback summary if the LLM didn't already provide one
             if not filing.get("summary"):
                 keywords = filing.get("matched_keywords", "").split(",")
                 filing["summary"] = extract_summary(filing.get("raw_text", ""), keywords)
 
-            # Save to database
-            insert_filing(filing)
-            stored_count += 1
+            # Save to database — returns True if this was a new filing
+            was_new = insert_filing(filing)
+            if was_new:
+                new_count += 1
+            else:
+                skipped_count += 1
 
-        print(f"--- Backfill complete: {stored_count} filings stored ---", flush=True)
+        print(f"--- Backfill complete: {new_count} new, {skipped_count} already existed ---", flush=True)
+
+        # Record final stats for this run
+        complete_backfill_run(run_id,
+                             fetched=len(filings_metadata),
+                             filtered=len(matched_filings),
+                             new=new_count,
+                             skipped=skipped_count)
 
         # Step 4: Pre-fetch market caps so the dashboard loads instantly
         # One batch call to yfinance for all new tickers, results get cached in DB
@@ -870,6 +889,12 @@ def run_backfill(start_date, end_date, model=None):
         import traceback
         traceback.print_exc()
         sys.stdout.flush()
+        # Mark the run as failed so it shows up on the backfill page
+        if run_id:
+            try:
+                complete_backfill_run(run_id, status="failed")
+            except Exception:
+                pass
 
 
 # Initialize the database when the app starts

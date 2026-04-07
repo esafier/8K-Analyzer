@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from fetcher import fetch_filings, fetch_filing_text
 from filter import filter_filings
 from summarizer import extract_summary
-from database import initialize_database, insert_filing, update_last_backfill
+from database import initialize_database, insert_filing, update_last_backfill, create_backfill_run, complete_backfill_run
 
 
 def daily_fetch_job():
@@ -23,11 +23,15 @@ def daily_fetch_job():
 
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Running daily fetch for {yesterday}...")
 
+    # Track this run so it shows up on the backfill page
+    run_id = create_backfill_run("scheduled", yesterday, today, "GPT-4o-mini")
+
     # Step 1: Fetch filing metadata
     filings_metadata = fetch_filings(yesterday, today)
 
     if not filings_metadata:
         print("  No filings found")
+        complete_backfill_run(run_id, fetched=0, filtered=0, new=0, skipped=0)
         return
 
     # Step 2: Filter
@@ -35,15 +39,26 @@ def daily_fetch_job():
 
     # Step 3: Store results (LLM summary is already set in filter stage 3;
     # only fall back to sentence scorer if LLM didn't provide one)
-    stored = 0
+    new_count = 0
+    skipped_count = 0
     for filing in matched:
         if not filing.get("summary"):
             keywords = filing.get("matched_keywords", "").split(",")
             filing["summary"] = extract_summary(filing.get("raw_text", ""), keywords)
-        insert_filing(filing)
-        stored += 1
+        was_new = insert_filing(filing)
+        if was_new:
+            new_count += 1
+        else:
+            skipped_count += 1
 
-    print(f"  Daily fetch complete: {stored} new filings stored")
+    print(f"  Daily fetch complete: {new_count} new, {skipped_count} already existed")
+
+    # Record final stats
+    complete_backfill_run(run_id,
+                         fetched=len(filings_metadata),
+                         filtered=len(matched),
+                         new=new_count,
+                         skipped=skipped_count)
 
     # Pre-fetch market caps so the dashboard has them ready
     tickers_to_fetch = list({f['ticker'] for f in matched if f.get('ticker')})

@@ -31,6 +31,53 @@
     </div>
 </div>
 
+{% if recent_runs %}
+<hr class="my-5">
+<h2 class="mb-4">Recent Backfill Runs</h2>
+<p class="text-muted">Shows how many filings were new vs. already in the database for each run.</p>
+
+<div class="table-responsive">
+    <table class="table table-sm table-hover">
+        <thead class="table-light">
+            <tr>
+                <th>Date Range</th>
+                <th>Model</th>
+                <th>Type</th>
+                <th>Fetched</th>
+                <th>Filtered</th>
+                <th>New</th>
+                <th>Already Had</th>
+                <th>Status</th>
+                <th>When</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for run in recent_runs %}
+            <tr>
+                <td>{{ run.date_range_start }} to {{ run.date_range_end }}</td>
+                <td>{{ run.model }}</td>
+                <td><span class="badge bg-secondary">{{ run.backfill_type }}</span></td>
+                <td>{{ run.fetched_count }}</td>
+                <td>{{ run.filtered_count }}</td>
+                <td><strong class="text-success">{{ run.new_count }}</strong></td>
+                <td>{{ run.skipped_count }}</td>
+                <td>
+                    {% if run.status == 'running' %}
+                        <span class="badge bg-warning text-dark">Running...</span>
+                    {% elif run.status == 'completed' %}
+                        <span class="badge bg-success">Done</span>
+                    {% else %}
+                        <span class="badge bg-danger">Failed</span>
+                    {% endif %}
+                </td>
+                <td>{{ run.completed_at or run.started_at }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 <hr class="my-5">
 
 <h2 class="mb-4">Re-Summarize Filings</h2>

@@ -244,6 +244,9 @@ def initialize_database():
     # Create app_status table for tracking backfill times, etc.
     _create_app_status_table(conn)
 
+    # Create backfill_runs table for tracking stats from each backfill
+    _create_backfill_runs_table(conn)
+
     # Create market_caps table for caching stock market cap data
     _create_market_caps_table(conn)
 
@@ -369,7 +372,8 @@ def _to_str(value):
 
 def insert_filing(filing_data):
     """Save a new filing to the database.
-    filing_data is a dictionary with keys matching the column names."""
+    filing_data is a dictionary with keys matching the column names.
+    Returns True if the filing was new (inserted), False if it already existed."""
     conn = get_connection()
     cursor = conn.cursor()
     p = _placeholder()
@@ -428,8 +432,11 @@ def insert_filing(filing_data):
             comp_details_val,
         ))
 
+    # Check if the row was actually inserted (not a duplicate)
+    was_new = cursor.rowcount > 0
     conn.commit()
     conn.close()
+    return was_new
 
 
 def get_filings(category=None, search=None, date_from=None, date_to=None, urgent_only=False, limit=100, offset=0):
@@ -902,6 +909,131 @@ def get_last_backfill():
     local_time = utc_time.astimezone(eastern)
 
     return {"type": backfill_type, "time": local_time}
+
+
+# ============================================================
+# BACKFILL RUN TRACKING (logs stats for each backfill)
+# ============================================================
+
+def _create_backfill_runs_table(conn):
+    """Create the backfill_runs table for tracking stats from each backfill.
+    Records how many filings were fetched, filtered, and newly inserted
+    so you can confirm you've reviewed all new filings."""
+    cursor = conn.cursor()
+
+    if _using_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS backfill_runs (
+                id SERIAL PRIMARY KEY,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                backfill_type TEXT,
+                date_range_start TEXT,
+                date_range_end TEXT,
+                model TEXT,
+                fetched_count INTEGER DEFAULT 0,
+                filtered_count INTEGER DEFAULT 0,
+                new_count INTEGER DEFAULT 0,
+                skipped_count INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'running'
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS backfill_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                backfill_type TEXT,
+                date_range_start TEXT,
+                date_range_end TEXT,
+                model TEXT,
+                fetched_count INTEGER DEFAULT 0,
+                filtered_count INTEGER DEFAULT 0,
+                new_count INTEGER DEFAULT 0,
+                skipped_count INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'running'
+            )
+        """)
+
+    conn.commit()
+    print("[STARTUP] Backfill runs table ready")
+
+
+def create_backfill_run(backfill_type, date_start, date_end, model):
+    """Start tracking a new backfill run. Returns the run's ID."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    if _using_postgres():
+        cursor.execute(f"""
+            INSERT INTO backfill_runs (backfill_type, date_range_start, date_range_end, model)
+            VALUES ({p}, {p}, {p}, {p})
+            RETURNING id
+        """, (backfill_type, date_start, date_end, model))
+        run_id = cursor.fetchone()[0]
+    else:
+        cursor.execute(f"""
+            INSERT INTO backfill_runs (backfill_type, date_range_start, date_range_end, model)
+            VALUES ({p}, {p}, {p}, {p})
+        """, (backfill_type, date_start, date_end, model))
+        run_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+    return run_id
+
+
+def complete_backfill_run(run_id, fetched=0, filtered=0, new=0, skipped=0, status="completed"):
+    """Record final stats for a backfill run once it finishes (or fails)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    cursor.execute(f"""
+        UPDATE backfill_runs
+        SET completed_at = CURRENT_TIMESTAMP,
+            fetched_count = {p},
+            filtered_count = {p},
+            new_count = {p},
+            skipped_count = {p},
+            status = {p}
+        WHERE id = {p}
+    """, (fetched, filtered, new, skipped, status, run_id))
+
+    conn.commit()
+    conn.close()
+
+
+def get_recent_backfill_runs(limit=10):
+    """Get the most recent backfill runs for display on the backfill page.
+    Returns a list of dicts with all run stats."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    cursor.execute(f"""
+        SELECT id, started_at, completed_at, backfill_type,
+               date_range_start, date_range_end, model,
+               fetched_count, filtered_count, new_count, skipped_count, status
+        FROM backfill_runs
+        ORDER BY started_at DESC
+        LIMIT {p}
+    """, (limit,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    # Convert to dicts so the template can access by name
+    columns = ["id", "started_at", "completed_at", "backfill_type",
+               "date_range_start", "date_range_end", "model",
+               "fetched_count", "filtered_count", "new_count", "skipped_count", "status"]
+
+    if _using_postgres():
+        return [dict(zip(columns, row)) for row in rows]
+    else:
+        return [dict(zip(columns, row)) for row in rows]
 
 
 # ============================================================
