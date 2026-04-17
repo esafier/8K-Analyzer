@@ -299,6 +299,31 @@ def _migrate_add_columns(conn):
         cursor.execute("ALTER TABLE filings ADD COLUMN deep_analysis TEXT DEFAULT NULL")
         print("[MIGRATE] Added 'deep_analysis' column")
 
+    # Add filing_document_url (primary 8-K document URL for one-click navigation)
+    if "filing_document_url" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN filing_document_url TEXT DEFAULT NULL")
+        print("[MIGRATE] Added 'filing_document_url' column")
+
+    # Add is_complex flag — set when filing doesn't fit structured buckets cleanly
+    if "is_complex" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN is_complex INTEGER DEFAULT 0")
+        print("[MIGRATE] Added 'is_complex' column")
+
+    # Add narrative_summary — free-text fallback for complex filings
+    if "narrative_summary" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN narrative_summary TEXT DEFAULT NULL")
+        print("[MIGRATE] Added 'narrative_summary' column")
+
+    # Add relevant_reason — LLM's justification when relevant:false
+    if "relevant_reason" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN relevant_reason TEXT DEFAULT NULL")
+        print("[MIGRATE] Added 'relevant_reason' column")
+
+    # Add structured_summary — JSON blob holding the full v3 payload (departures[], etc.)
+    if "structured_summary" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN structured_summary TEXT DEFAULT NULL")
+        print("[MIGRATE] Added 'structured_summary' column")
+
     conn.commit()
 
 
