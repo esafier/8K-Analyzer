@@ -117,7 +117,7 @@ LLM_MODEL_PREMIUM = "gpt-5.2"
 # Folder where prompt files are stored (prompt_v1.txt, prompt_v2.txt, etc.)
 # The "active" prompt used by the live pipeline is whichever one ACTIVE_PROMPT points to.
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
-ACTIVE_PROMPT = "prompt_v2.txt"
+ACTIVE_PROMPT = "prompt_v3.txt"
 
 # --- Database ---
 # If DATABASE_URL is set (Render provides this), use PostgreSQL

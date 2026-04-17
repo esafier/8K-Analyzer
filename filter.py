@@ -21,6 +21,22 @@ BOILERPLATE_PHRASES = [
 ]
 
 
+def _build_legacy_summary(llm_result):
+    """Build a short display summary for older templates/emails from v3 output."""
+    narrative = llm_result.get("narrative_summary")
+    if narrative:
+        return narrative
+
+    parts = []
+    for d in llm_result.get("departures", [])[:2]:
+        parts.append(f"{d.get('name')} ({d.get('title')}) — {d.get('stated_reason') or 'departure'}")
+    for a in llm_result.get("appointments", [])[:2]:
+        parts.append(f"{a.get('name')} appointed {a.get('title')}")
+    for c in llm_result.get("comp_events", [])[:1]:
+        parts.append(f"Comp: {c.get('executive')} — {c.get('grant_type')} {c.get('grant_value') or ''}")
+    return "; ".join(parts) if parts else (llm_result.get("summary") or "")
+
+
 def stage1_item_code_filter(filing_metadata):
     """Stage 1: Check if the filing has any of our target item codes.
 
@@ -302,30 +318,57 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
         llm_result = classify_and_summarize(text, model=model)
 
         if llm_result is not None:
-            # LLM succeeded — use its classification and summary
             is_relevant = llm_result.get("relevant", False)
 
             if is_relevant:
-                # LLM says it's relevant — use LLM's category/summary
-                filing["auto_category"] = llm_result.get("category") or filing.get("auto_category")
-                filing["auto_subcategory"] = llm_result.get("subcategory") or filing.get("auto_subcategory")
-                filing["summary"] = llm_result.get("summary") or ""
+                # --- v3 fields ---
+                filing["auto_category"] = (
+                    llm_result.get("top_level_category")
+                    or llm_result.get("category")
+                    or filing.get("auto_category")
+                )
 
-                # Extract urgency flag and comp details from LLM response
-                filing["urgent"] = llm_result.get("urgent", False)
+                # Subcategories: prefer v3 array, fall back to legacy single string
+                from summary_utils import serialize_subcategories
+                subcats = llm_result.get("subcategories")
+                if subcats is None:
+                    legacy = llm_result.get("subcategory")
+                    subcats = [legacy] if legacy else []
+                filing["auto_subcategory"] = serialize_subcategories(subcats)
+
+                filing["urgent"] = bool(llm_result.get("urgent", False))
+                filing["is_complex"] = bool(llm_result.get("is_complex", False))
+                filing["narrative_summary"] = llm_result.get("narrative_summary")
+                filing["relevant_reason"] = None  # only set on rejection path
+
+                # Build structured_summary blob from the event arrays
+                structured = {
+                    "reasoning": llm_result.get("reasoning"),
+                    "departures": llm_result.get("departures", []),
+                    "appointments": llm_result.get("appointments", []),
+                    "comp_events": llm_result.get("comp_events", []),
+                    "other": llm_result.get("other", []),
+                }
+                filing["structured_summary"] = json.dumps(structured)
+
+                # Legacy "summary" field stays populated for older templates/emails.
+                # Use narrative if present, else a brief assembly from the first event.
+                filing["summary"] = _build_legacy_summary(llm_result)
+
+                # Legacy comp_details stays supported for backward compat
                 comp_details = llm_result.get("comp_details")
                 if comp_details and any(v for v in comp_details.values()):
-                    # Only store comp_details if at least one field has a value
                     filing["comp_details"] = json.dumps(comp_details)
                 else:
                     filing["comp_details"] = None
 
                 final_passed.append(filing)
                 tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
-                print(f"    LLM: RELEVANT — {filing['auto_category']} / {filing['auto_subcategory']} ({tokens} tokens)")
+                cats_display = subcats[0] if subcats else "—"
+                print(f"    LLM: RELEVANT — {filing['auto_category']} / {cats_display} ({tokens} tokens)")
             else:
-                # LLM says not relevant — skip it (even if keywords matched)
-                print(f"    LLM: NOT RELEVANT — filtered out")
+                reason = llm_result.get("relevant_reason") or "(no reason given)"
+                print(f"    LLM: NOT RELEVANT — {reason}")
         else:
             # LLM failed — fall back to keyword classification + sentence-scorer summary
             print(f"    LLM FAILED — falling back to keyword classification")
