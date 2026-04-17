@@ -236,11 +236,12 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
         is_near_miss_candidate = "5.02" in items  # Only 5.02 near-misses go to LLM (8.01 is too broad)
 
         # Download the filing text
-        text = fetch_text_func(
+        text, doc_url = fetch_text_func(
             filing.get("filing_url", ""),
             filing.get("cik", ""),
             filing.get("accession_no", "")
         )
+        filing["filing_document_url"] = doc_url
 
         if not text:
             if "5.02" in items:
