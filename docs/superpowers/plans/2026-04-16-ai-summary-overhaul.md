@@ -93,7 +93,7 @@ def tmp_sqlite_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "DATABASE_PATH", str(db_file), raising=False)
 
     # Initialize schema
-    database.init_db()
+    database.initialize_database()
     yield str(db_file)
 ```
 
@@ -264,7 +264,7 @@ import sqlite3
 
 
 def test_new_columns_exist_after_init(tmp_sqlite_db):
-    """After init_db() runs, the filings table must have the new v3 columns."""
+    """After initialize_database() runs, the filings table must have the new v3 columns."""
     conn = sqlite3.connect(tmp_sqlite_db)
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(filings)")
@@ -278,10 +278,10 @@ def test_new_columns_exist_after_init(tmp_sqlite_db):
 
 
 def test_migration_is_idempotent(tmp_sqlite_db):
-    """Calling init_db() a second time must not fail (columns already exist)."""
+    """Calling initialize_database() a second time must not fail (columns already exist)."""
     import database
-    # init_db was called by the fixture; call it again
-    database.init_db()  # Should not raise
+    # initialize_database was called by the fixture; call it again
+    database.initialize_database()  # Should not raise
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**

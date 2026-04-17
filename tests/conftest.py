@@ -22,5 +22,5 @@ def tmp_sqlite_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "DATABASE_PATH", str(db_file), raising=False)
 
     # Initialize schema
-    database.init_db()
+    database.initialize_database()
     yield str(db_file)
