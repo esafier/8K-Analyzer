@@ -68,6 +68,18 @@ def format_earnings_date(earnings_info):
 app.jinja_env.filters["format_earnings_date"] = format_earnings_date
 
 
+# --- Jinja filters for v3 structured summary ---
+from summary_utils import parse_subcategories, structured_summary_for_display
+
+@app.template_filter("parse_subcategories")
+def _jinja_parse_subcategories(raw):
+    return parse_subcategories(raw)
+
+@app.template_filter("structured_summary")
+def _jinja_structured_summary(raw):
+    return structured_summary_for_display(raw)
+
+
 def render_deep_analysis(text):
     """Convert deep analysis text (### headers, - bullets, **bold**) into HTML.
     Escapes the text first for safety, then adds formatting."""
