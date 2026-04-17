@@ -68,7 +68,9 @@ def classify_and_summarize(filing_text, prompt_file=None, model=None):
         return result
 
     except Exception as e:
-        print(f"    LLM call failed: {e}")
+        # Include model, text length, and full error repr so Render logs reveal
+        # whether it's a 400 (bad model/params), 401 (auth), 429 (rate/quota), etc.
+        print(f"    LLM call failed [model={use_model}, text_len={len(filing_text)}]: {type(e).__name__}: {e!r}", flush=True)
         return None
 
 
