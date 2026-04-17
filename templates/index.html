@@ -77,7 +77,6 @@
                 <th>Company</th>
                 <th>Ticker</th>
                 <th>Category</th>
-                <th>Sub-Category</th>
                 <th>Summary</th>
                 <th>Link</th>
             </tr>
@@ -114,7 +113,6 @@
                     {% endif %}
                 </td>
                 <td>
-                    <!-- Show user tag if set, otherwise auto category -->
                     {% set display_category = filing['user_tag'] or filing['auto_category'] %}
                     <span class="badge
                         {% if display_category == 'Management Change' %}bg-primary
@@ -124,21 +122,24 @@
                         {% endif %}">
                         {{ display_category or 'Uncategorized' }}
                     </span>
-                </td>
-                <td class="text-muted small">{{ filing['auto_subcategory'] or '—' }}</td>
-                <td class="summary-cell">
-                    {% if filing['_comp'] %}
-                        {% if filing['_comp']['vesting_target_price'] %}
-                            <span class="badge bg-light text-dark border me-1">Target: {{ filing['_comp']['vesting_target_price'] }}</span>
-                        {% elif filing['_comp']['grant_value'] %}
-                            <span class="badge bg-light text-dark border me-1">{{ filing['_comp']['grant_value'] }}</span>
-                        {% endif %}
+                    {% set subcats = filing['auto_subcategory'] | parse_subcategories %}
+                    {% if subcats %}
+                      <br>
+                      {% for s in subcats %}
+                        <span class="badge bg-light text-dark border" style="font-size:10px;margin-top:2px;">{{ s }}</span>
+                      {% endfor %}
                     {% endif %}
-                    {{ filing['summary'][:150] }}{{ '...' if filing['summary'] and filing['summary']|length > 150 }}
+                </td>
+                <td class="summary-cell" style="min-width: 320px; white-space: normal;">
+                    {% set structured = filing['structured_summary'] | structured_summary %}
+                    {% include '_structured_summary.html' %}
                 </td>
                 <td>
-                    <a href="{{ filing['filing_url'] }}" target="_blank" class="btn btn-sm btn-outline-primary"
-                       onclick="event.stopPropagation()">SEC</a>
+                    {% set doc_url = filing['filing_document_url'] or filing['filing_url'] %}
+                    <a href="{{ doc_url }}" target="_blank" class="btn btn-sm btn-outline-primary"
+                       onclick="event.stopPropagation()" title="Open 8-K document">
+                       Open filing
+                    </a>
                 </td>
             </tr>
             {% endfor %}

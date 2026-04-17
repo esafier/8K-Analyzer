@@ -68,6 +68,18 @@ def format_earnings_date(earnings_info):
 app.jinja_env.filters["format_earnings_date"] = format_earnings_date
 
 
+# --- Jinja filters for v3 structured summary ---
+from summary_utils import parse_subcategories, structured_summary_for_display
+
+@app.template_filter("parse_subcategories")
+def _jinja_parse_subcategories(raw):
+    return parse_subcategories(raw)
+
+@app.template_filter("structured_summary")
+def _jinja_structured_summary(raw):
+    return structured_summary_for_display(raw)
+
+
 def render_deep_analysis(text):
     """Convert deep analysis text (### headers, - bullets, **bold**) into HTML.
     Escapes the text first for safety, then adds formatting."""
@@ -763,23 +775,64 @@ def run_resummarize(date_from=None, date_to=None, model=None):
         llm_result = classify_and_summarize(cleaned_text, model=model)
 
         if llm_result and llm_result.get("relevant"):
-            # LLM succeeded — update the database with new summary and classification
-            summary = llm_result.get("summary") or ""
-            category = llm_result.get("category") or filing.get("auto_category")
-            subcategory = llm_result.get("subcategory") or filing.get("auto_subcategory")
-            urgent = llm_result.get("urgent", False)
-            comp_details = llm_result.get("comp_details")
+            # LLM succeeded — update the database with v3 structured fields
+            from summary_utils import serialize_subcategories
+            from filter import _build_legacy_summary
 
-            # Only store comp_details if it has real values
+            # v3 prefers top_level_category and subcategories array; fall back to v2 legacy fields
+            category = (
+                llm_result.get("top_level_category")
+                or llm_result.get("category")
+                or filing.get("auto_category")
+            )
+
+            subcats = llm_result.get("subcategories")
+            if subcats is None:
+                legacy = llm_result.get("subcategory")
+                subcats = [legacy] if legacy else []
+            auto_subcategory = serialize_subcategories(subcats)
+
+            urgent = bool(llm_result.get("urgent", False))
+            is_complex = bool(llm_result.get("is_complex", False))
+            narrative = llm_result.get("narrative_summary")
+
+            # Build structured_summary blob from the event arrays + reasoning.
+            # Use `or []` because the LLM sometimes emits explicit null instead of [].
+            structured = {
+                "reasoning": llm_result.get("reasoning"),
+                "departures": llm_result.get("departures") or [],
+                "appointments": llm_result.get("appointments") or [],
+                "comp_events": llm_result.get("comp_events") or [],
+                "other": llm_result.get("other") or [],
+            }
+            structured_json = json.dumps(structured)
+
+            # Legacy summary string for backward compatibility (emails, old templates)
+            summary = _build_legacy_summary(llm_result)
+
+            # Legacy comp_details (preserved as-is for backward compat)
+            comp_details = llm_result.get("comp_details")
             comp_json = None
             if comp_details and any(v for v in comp_details.values()):
                 comp_json = json.dumps(comp_details)
 
-            update_filing_analysis(filing_id, summary, category, subcategory, urgent, comp_json)
+            update_filing_analysis(
+                filing_id,
+                summary,
+                category,
+                auto_subcategory,
+                urgent,
+                comp_json,
+                structured_summary=structured_json,
+                is_complex=is_complex,
+                narrative_summary=narrative,
+                relevant_reason=None,
+            )
             updated += 1
 
             tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
-            print(f"    Updated — {category} / {subcategory} ({tokens} tokens)", flush=True)
+            subcat_display = subcats[0] if subcats else "—"
+            print(f"    Updated — {category} / {subcat_display} ({tokens} tokens)", flush=True)
 
         elif llm_result and not llm_result.get("relevant"):
             # LLM says not relevant — keep existing data but log it

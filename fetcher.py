@@ -184,7 +184,8 @@ def fetch_filing_text(filing_url, cik, accession_no):
         accession_no: Filing's accession number
 
     Returns:
-        Plain text content of the filing, or empty string on failure
+        Tuple of (text, doc_url): plain text content and the primary
+        document URL. Returns ("", None) on failure.
     """
     try:
         # First, get the index page to find the actual 8-K document
@@ -222,7 +223,7 @@ def fetch_filing_text(filing_url, cik, accession_no):
                     break
 
         if not doc_url:
-            return ""
+            return "", None
 
         # Now fetch the actual filing document
         time.sleep(REQUEST_DELAY)
@@ -242,11 +243,11 @@ def fetch_filing_text(filing_url, cik, accession_no):
         # Everything before that is filer info, checkboxes, and form headers.
         text = strip_cover_page(text)
 
-        return text
+        return text, doc_url
 
     except requests.exceptions.RequestException as e:
         print(f"  Error fetching filing text: {e}")
-        return ""
+        return "", None
 
 
 def fetch_filings(start_date, end_date, max_filings=None):
