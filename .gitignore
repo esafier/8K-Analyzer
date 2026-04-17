@@ -13,3 +13,12 @@ venv/
 
 # Cached SEC CIK-to-ticker mapping (auto-downloaded, ~6MB)
 cik_tickers_cache.json
+
+# Local Claude Code / Superpowers working files
+.claude/
+.superpowers/
+
+# Misc local artifacts
+architecture.html
+nul
+test_results.txt
