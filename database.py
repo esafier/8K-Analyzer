@@ -407,14 +407,23 @@ def insert_filing(filing_data):
     urgent_val = 1 if filing_data.get("urgent") else 0
     comp_details_val = _to_str(filing_data.get("comp_details"))
 
+    # New v3 fields
+    is_complex_val = 1 if filing_data.get("is_complex") else 0
+    filing_document_url_val = _to_str(filing_data.get("filing_document_url"))
+    narrative_summary_val = _to_str(filing_data.get("narrative_summary"))
+    relevant_reason_val = _to_str(filing_data.get("relevant_reason"))
+    structured_summary_val = _to_str(filing_data.get("structured_summary"))
+
     if _using_postgres():
         # PostgreSQL: use ON CONFLICT instead of INSERT OR IGNORE
         cursor.execute(f"""
             INSERT INTO filings
             (accession_no, company, ticker, cik, filed_date, item_codes,
              summary, auto_category, auto_subcategory, filing_url, raw_text,
-             matched_keywords, urgent, comp_details)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+             matched_keywords, urgent, comp_details,
+             filing_document_url, is_complex, narrative_summary,
+             relevant_reason, structured_summary)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
             ON CONFLICT (accession_no) DO NOTHING
         """, (
             _to_str(filing_data.get("accession_no")),
@@ -431,6 +440,11 @@ def insert_filing(filing_data):
             _to_str(filing_data.get("matched_keywords")),
             urgent_val,
             comp_details_val,
+            filing_document_url_val,
+            is_complex_val,
+            narrative_summary_val,
+            relevant_reason_val,
+            structured_summary_val,
         ))
     else:
         # SQLite: original INSERT OR IGNORE
@@ -438,8 +452,10 @@ def insert_filing(filing_data):
             INSERT OR IGNORE INTO filings
             (accession_no, company, ticker, cik, filed_date, item_codes,
              summary, auto_category, auto_subcategory, filing_url, raw_text,
-             matched_keywords, urgent, comp_details)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+             matched_keywords, urgent, comp_details,
+             filing_document_url, is_complex, narrative_summary,
+             relevant_reason, structured_summary)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
         """, (
             _to_str(filing_data.get("accession_no")),
             _to_str(filing_data.get("company")),
@@ -455,6 +471,11 @@ def insert_filing(filing_data):
             _to_str(filing_data.get("matched_keywords")),
             urgent_val,
             comp_details_val,
+            filing_document_url_val,
+            is_complex_val,
+            narrative_summary_val,
+            relevant_reason_val,
+            structured_summary_val,
         ))
 
     # Check if the row was actually inserted (not a duplicate)
@@ -553,6 +574,23 @@ def get_filing_by_id(filing_id):
     return result
 
 
+def get_filing_by_accession(accession_no):
+    """Fetch a single filing by its accession_no. Returns a dict or None.
+    Explicitly builds a dict from cursor columns to ensure cross-db consistency
+    (SQLite sqlite3.Row has different access patterns than Postgres)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"SELECT * FROM filings WHERE accession_no = {p}", (accession_no,))
+    row = cursor.fetchone()
+    if row is None:
+        conn.close()
+        return None
+    columns = [desc[0] for desc in cursor.description]
+    conn.close()
+    return dict(zip(columns, row))
+
+
 def clear_all_filings():
     """Delete all filings from the database. Used when you want to
     repopulate everything with an updated prompt."""
@@ -574,20 +612,36 @@ def update_user_tag(filing_id, tag):
     conn.close()
 
 
-def update_filing_analysis(filing_id, summary, auto_category, auto_subcategory, urgent, comp_details):
+def update_filing_analysis(
+    filing_id,
+    summary,
+    auto_category,
+    auto_subcategory,
+    urgent,
+    comp_details,
+    structured_summary=None,
+    is_complex=False,
+    narrative_summary=None,
+    relevant_reason=None,
+):
     """Update a filing's LLM-generated fields after re-analysis.
     Only touches analysis fields — leaves user_tag, raw_text, etc. untouched."""
     conn = get_connection()
     cursor = conn.cursor()
     p = _placeholder()
     urgent_val = 1 if urgent else 0
+    complex_val = 1 if is_complex else 0
     comp_val = _to_str(comp_details)
     cursor.execute(f"""
         UPDATE filings
         SET summary = {p}, auto_category = {p}, auto_subcategory = {p},
-            urgent = {p}, comp_details = {p}
+            urgent = {p}, comp_details = {p},
+            structured_summary = {p}, is_complex = {p},
+            narrative_summary = {p}, relevant_reason = {p}
         WHERE id = {p}
-    """, (summary, auto_category, auto_subcategory, urgent_val, comp_val, filing_id))
+    """, (summary, auto_category, auto_subcategory, urgent_val, comp_val,
+          structured_summary, complex_val, narrative_summary, relevant_reason,
+          filing_id))
     conn.commit()
     conn.close()
 
