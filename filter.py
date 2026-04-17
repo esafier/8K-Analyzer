@@ -22,18 +22,28 @@ BOILERPLATE_PHRASES = [
 
 
 def _build_legacy_summary(llm_result):
-    """Build a short display summary for older templates/emails from v3 output."""
+    """Build a short display summary for older templates/emails from v3 output.
+
+    Uses `or []` (not default arg) because the LLM sometimes emits explicit null
+    for event arrays instead of [], which would make `.get(key, [])` return None.
+    """
     narrative = llm_result.get("narrative_summary")
     if narrative:
         return narrative
 
     parts = []
-    for d in llm_result.get("departures", [])[:2]:
+    for d in (llm_result.get("departures") or [])[:2]:
         parts.append(f"{d.get('name')} ({d.get('title')}) — {d.get('stated_reason') or 'departure'}")
-    for a in llm_result.get("appointments", [])[:2]:
+    for a in (llm_result.get("appointments") or [])[:2]:
         parts.append(f"{a.get('name')} appointed {a.get('title')}")
-    for c in llm_result.get("comp_events", [])[:1]:
+    for c in (llm_result.get("comp_events") or [])[:1]:
         parts.append(f"Comp: {c.get('executive')} — {c.get('grant_type')} {c.get('grant_value') or ''}")
+    # Include other[] bullets so insider-transaction / role-change / edge-case filings
+    # still get a sensible legacy summary (used by emails, watchlist cards, DB search).
+    for o in (llm_result.get("other") or []):
+        parts.append(str(o))
+        if len(parts) >= 4:
+            break
     return "; ".join(parts) if parts else (llm_result.get("summary") or "")
 
 
@@ -341,13 +351,14 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
                 filing["narrative_summary"] = llm_result.get("narrative_summary")
                 filing["relevant_reason"] = None  # only set on rejection path
 
-                # Build structured_summary blob from the event arrays
+                # Build structured_summary blob from the event arrays.
+                # Use `or []` because the LLM sometimes emits explicit null instead of [].
                 structured = {
                     "reasoning": llm_result.get("reasoning"),
-                    "departures": llm_result.get("departures", []),
-                    "appointments": llm_result.get("appointments", []),
-                    "comp_events": llm_result.get("comp_events", []),
-                    "other": llm_result.get("other", []),
+                    "departures": llm_result.get("departures") or [],
+                    "appointments": llm_result.get("appointments") or [],
+                    "comp_events": llm_result.get("comp_events") or [],
+                    "other": llm_result.get("other") or [],
                 }
                 filing["structured_summary"] = json.dumps(structured)
 

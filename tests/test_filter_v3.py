@@ -123,3 +123,53 @@ def test_filter_records_relevant_reason_when_rejected():
 
     # Rejected filings are filtered out (existing behavior preserved)
     assert len(result) == 0
+
+
+def test_filter_handles_other_only_filing_with_null_arrays():
+    """Filing where everything lives in other[] (e.g., CEO forward sale) AND
+    the LLM emitted explicit null for empty event arrays. Both cases at once.
+
+    Legacy `summary` must still be non-empty (populated from other[]), and
+    `structured_summary` must not crash on null arrays.
+    """
+    from filter import filter_filings
+
+    def fake_fetch(url, cik, accession):
+        return "CEO entered forward sale contract.", "https://sec.gov/filing.htm"
+
+    # Use item 5.02 so Stage 2 passes (5.02 is a near-miss if keywords don't fire)
+    filings_meta = [{
+        "accession_no": "0001-26-000004",
+        "company": "Semiconductor Co", "ticker": "SMCO", "cik": "321",
+        "filed_date": "2026-04-10", "item_codes": "5.02",
+        "filing_url": "https://sec.gov/index.htm",
+        "items_list": ["5.02"],
+    }]
+
+    # LLM emits explicit null for empty arrays — code must handle both null and []
+    other_only = _v3_llm_response(
+        top_level_category="Other",
+        subcategories=["Insider Transaction", "Forward Sale"],
+        departures=None,
+        appointments=None,
+        comp_events=None,
+        other=[
+            "CEO Patricia Wong entered a variable prepaid forward contract covering 750K shares.",
+            "Signal: monetizing ~30% of direct holdings without a public sale.",
+        ],
+    )
+
+    with patch("filter.classify_and_summarize", return_value=other_only):
+        result = filter_filings(filings_meta, fetch_text_func=fake_fetch)
+
+    assert len(result) == 1
+    f = result[0]
+    # Legacy summary should contain the other[] bullets — NOT be empty
+    assert f["summary"], "legacy summary is empty — other[] bullets weren't included"
+    assert "Patricia Wong" in f["summary"] or "forward" in f["summary"].lower()
+    # structured_summary blob shouldn't crash and should contain the event arrays
+    structured = json.loads(f["structured_summary"])
+    assert structured["departures"] == []  # null -> []
+    assert structured["appointments"] == []
+    assert structured["comp_events"] == []
+    assert len(structured["other"]) == 2

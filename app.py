@@ -796,13 +796,14 @@ def run_resummarize(date_from=None, date_to=None, model=None):
             is_complex = bool(llm_result.get("is_complex", False))
             narrative = llm_result.get("narrative_summary")
 
-            # Build structured_summary blob from the event arrays + reasoning
+            # Build structured_summary blob from the event arrays + reasoning.
+            # Use `or []` because the LLM sometimes emits explicit null instead of [].
             structured = {
                 "reasoning": llm_result.get("reasoning"),
-                "departures": llm_result.get("departures", []),
-                "appointments": llm_result.get("appointments", []),
-                "comp_events": llm_result.get("comp_events", []),
-                "other": llm_result.get("other", []),
+                "departures": llm_result.get("departures") or [],
+                "appointments": llm_result.get("appointments") or [],
+                "comp_events": llm_result.get("comp_events") or [],
+                "other": llm_result.get("other") or [],
             }
             structured_json = json.dumps(structured)
 
