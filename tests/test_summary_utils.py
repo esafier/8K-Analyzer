@@ -47,3 +47,29 @@ class TestSerializeSubcategories:
     def test_strips_empty_strings_from_list(self):
         result = serialize_subcategories(["CFO Departure", "", None, "CFO Appointment"])
         assert json.loads(result) == ["CFO Departure", "CFO Appointment"]
+
+
+import json as _json
+from summary_utils import structured_summary_for_display
+
+
+class TestStructuredSummaryForDisplay:
+    def test_parses_json_blob(self):
+        raw = _json.dumps({
+            "departures": [{"name": "J. Smith", "title": "CFO"}],
+            "appointments": [], "comp_events": [], "other": [],
+            "reasoning": "one event",
+        })
+        result = structured_summary_for_display(raw)
+        assert result["departures"][0]["name"] == "J. Smith"
+        assert result["appointments"] == []
+        assert result["has_any_event"] is True
+
+    def test_handles_none(self):
+        result = structured_summary_for_display(None)
+        assert result["departures"] == []
+        assert result["has_any_event"] is False
+
+    def test_handles_malformed_json(self):
+        result = structured_summary_for_display("{broken")
+        assert result["has_any_event"] is False

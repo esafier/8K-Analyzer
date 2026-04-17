@@ -47,3 +47,35 @@ def serialize_subcategories(subcats: Optional[list[str]]) -> Optional[str]:
         return None
 
     return json.dumps(cleaned)
+
+
+def structured_summary_for_display(raw):
+    """Parse the structured_summary JSON column into a dict safe for templates.
+
+    Always returns a dict with the four event arrays, a reasoning field,
+    and a has_any_event convenience flag. Never raises on malformed input.
+    """
+    empty = {
+        "departures": [], "appointments": [], "comp_events": [], "other": [],
+        "reasoning": None, "has_any_event": False,
+    }
+    if not raw:
+        return empty
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return empty
+    except (json.JSONDecodeError, ValueError):
+        return empty
+
+    out = {
+        "departures": parsed.get("departures") or [],
+        "appointments": parsed.get("appointments") or [],
+        "comp_events": parsed.get("comp_events") or [],
+        "other": parsed.get("other") or [],
+        "reasoning": parsed.get("reasoning"),
+    }
+    out["has_any_event"] = any([
+        out["departures"], out["appointments"], out["comp_events"], out["other"],
+    ])
+    return out

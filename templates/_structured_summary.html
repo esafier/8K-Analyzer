@@ -1,0 +1,80 @@
+{# Renders a structured summary for a filing. Expects two context vars:
+     - structured: dict returned by structured_summary_for_display()
+     - filing: the filing row (for narrative_summary, is_complex, comp_details badges)
+#}
+<div class="structured-summary">
+  {% if filing['is_complex'] %}
+    <span class="badge bg-purple" style="background:#6f42c1;color:#fff;margin-bottom:6px;display:inline-block;">Complex</span>
+  {% endif %}
+
+  {% if structured.departures %}
+    <div class="ss-section ss-dep" style="margin-top:6px;">
+      <div class="ss-label" style="font-size:10px;font-weight:700;text-transform:uppercase;color:#dc3545;">Departure</div>
+      <ul class="ss-body" style="padding-left:14px;margin:2px 0 6px 0;">
+        {% for d in structured.departures %}
+          <li><b>{{ d.name }}</b>{% if d.title %}, {{ d.title }}{% endif %}
+            {% if d.effective_date %}<br><span class="text-muted small">Effective: {{ d.effective_date }}</span>{% endif %}
+            {% if d.stated_reason %}<br><span class="text-muted small">Reason: {{ d.stated_reason }}</span>{% endif %}
+            {% if d.successor_info %}<br><span class="text-muted small">Successor: {{ d.successor_info }}</span>{% endif %}
+            {% if d.signal %}<br><em class="small" style="color:#b45309;">Signal: {{ d.signal }}</em>{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {% if structured.appointments %}
+    <div class="ss-section ss-app">
+      <div class="ss-label" style="font-size:10px;font-weight:700;text-transform:uppercase;color:#0d6efd;">Appointment</div>
+      <ul class="ss-body" style="padding-left:14px;margin:2px 0 6px 0;">
+        {% for a in structured.appointments %}
+          <li><b>{{ a.name }}</b>{% if a.title %}, {{ a.title }}{% endif %}
+            {% if a.effective_date %} — effective {{ a.effective_date }}{% endif %}
+            {% if a.has_comp_details %} <span class="small text-muted">(see Comp below)</span>{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {% if structured.comp_events %}
+    <div class="ss-section ss-comp">
+      <div class="ss-label" style="font-size:10px;font-weight:700;text-transform:uppercase;color:#198754;">Compensation</div>
+      <ul class="ss-body" style="padding-left:14px;margin:2px 0 6px 0;">
+        {% for c in structured.comp_events %}
+          <li><b>{{ c.executive }}</b>
+            {% if c.grant_type %}<br><span class="text-muted small">Type: {{ c.grant_type }}</span>{% endif %}
+            {% if c.grant_value %}<br><span class="text-muted small">Value: {{ c.grant_value }}</span>{% endif %}
+            {% if c.vesting_schedule %}<br><span class="text-muted small">Vesting: {{ c.vesting_schedule }}</span>{% endif %}
+            {% if c.performance_hurdles %}<br><span class="text-muted small">Hurdles: {{ c.performance_hurdles }}</span>{% endif %}
+            {% if c.stock_price_targets %}<br><span class="text-muted small">Price targets: <b>{{ c.stock_price_targets }}</b></span>{% endif %}
+            {% if c.grant_date and c.grant_date != c.filing_date %}<br><span class="text-muted small">Granted: {{ c.grant_date }}</span>{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {% if structured.other %}
+    <div class="ss-section ss-other">
+      <div class="ss-label" style="font-size:10px;font-weight:700;text-transform:uppercase;color:#6c757d;">Other</div>
+      <ul class="ss-body" style="padding-left:14px;margin:2px 0 6px 0;">
+        {% for o in structured.other %}
+          <li>{{ o }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {% if filing['narrative_summary'] %}
+    <div class="ss-section ss-narrative" style="background:linear-gradient(to right,#f8f3ff,#fff);border-left:3px solid #6f42c1;padding:6px 10px;margin-top:6px;border-radius:4px;">
+      <div class="ss-label" style="font-size:10px;font-weight:700;text-transform:uppercase;color:#6f42c1;">Narrative</div>
+      <div class="small">{{ filing['narrative_summary'] }}</div>
+    </div>
+  {% endif %}
+
+  {% if not structured.has_any_event and not filing['narrative_summary'] %}
+    {# Fallback for legacy rows that only have the old `summary` field. #}
+    <div class="small">{{ filing['summary'] }}</div>
+  {% endif %}
+</div>
