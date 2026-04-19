@@ -705,6 +705,58 @@ def get_departure_history(cik, exclude_accession, months=12):
     return results
 
 
+def get_filings_missing_text(date_from=None, date_to=None):
+    """Get filings that are missing raw_text (failed SEC fetch during backfill).
+
+    These are the ones that got saved with empty summary because the LLM never
+    ran on them. This returns id, cik, accession_no, filing_url so we can
+    retry the SEC document fetch.
+    """
+    from datetime import datetime, timedelta
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    if not date_from or not date_to:
+        date_to = datetime.now().strftime("%Y-%m-%d")
+        date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    query = f"""
+        SELECT * FROM filings
+        WHERE (raw_text IS NULL OR raw_text = '')
+          AND filed_date >= {p} AND filed_date <= {p}
+        ORDER BY filed_date DESC
+    """
+    cursor.execute(query, (date_from, date_to))
+    results = _dict_rows(cursor.fetchall(), cursor)
+    conn.close()
+    return results
+
+
+def update_filing_raw_text(filing_id, raw_text, filing_document_url=None):
+    """Store the freshly-fetched filing text for a row that was missing it.
+
+    Separate from update_filing_analysis() so callers can re-fetch text first,
+    then analyze. Also stores the resolved document URL when available.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    if filing_document_url is not None:
+        cursor.execute(
+            f"UPDATE filings SET raw_text = {p}, filing_document_url = {p} WHERE id = {p}",
+            (raw_text, filing_document_url, filing_id),
+        )
+    else:
+        cursor.execute(
+            f"UPDATE filings SET raw_text = {p} WHERE id = {p}",
+            (raw_text, filing_id),
+        )
+    conn.commit()
+    conn.close()
+
+
 def get_filings_for_resummarize(date_from=None, date_to=None):
     """Get filings that have raw_text stored, so we can re-run LLM on them.
 

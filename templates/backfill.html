@@ -112,6 +112,42 @@
 
 <hr class="my-5">
 
+<h2 class="mb-4">Retry Missing Summaries</h2>
+<p class="text-muted">
+    Re-fetches the SEC document and runs the LLM for filings where the original backfill
+    couldn't download the text (empty summary + hard-coded "Management Change" category).
+    This is the only way to fix rows that "Re-Summarize" can't touch.
+</p>
+
+<div class="card" style="max-width: 500px;">
+    <div class="card-body">
+        <form method="POST" action="/retry-missing-summaries">
+            <div class="mb-3">
+                <label class="form-label">Start Date <span class="text-muted">(optional)</span></label>
+                <input type="date" name="date_from" class="form-control">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">End Date <span class="text-muted">(optional)</span></label>
+                <input type="date" name="date_to" class="form-control">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">AI Model</label>
+                <select name="model" class="form-select">
+                    <option value="">GPT-4o-mini (default — fast &amp; cheap)</option>
+                    <option value="gpt-5.2">GPT-5.2 (premium — better analysis, higher cost)</option>
+                </select>
+            </div>
+            <p class="text-muted small">
+                Leave dates blank to retry the last 7 days. Watch the Render logs — each row
+                will print "re-fetching SEC text..." then either "Updated" or "Fetch failed".
+            </p>
+            <button type="submit" class="btn btn-outline-warning">Retry Missing Summaries</button>
+        </form>
+    </div>
+</div>
+
+<hr class="my-5">
+
 <h2 class="mb-4">Refresh Market Caps</h2>
 <p class="text-muted">If market caps aren't showing, this clears failed lookups from the cache so they get retried on the next page load.</p>
 

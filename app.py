@@ -15,6 +15,7 @@ from database import (
     get_watchlist_filings_by_ids, mark_filings_email_sent,
     update_last_backfill, get_last_backfill, update_filing_analysis,
     update_deep_analysis, get_filings_for_resummarize,
+    get_filings_missing_text, update_filing_raw_text,
     create_backfill_run, complete_backfill_run, get_recent_backfill_runs
 )
 from fetcher import fetch_filings, fetch_filing_text
@@ -844,6 +845,132 @@ def run_resummarize(date_from=None, date_to=None, model=None):
             print(f"    LLM FAILED — summary unchanged", flush=True)
 
     print(f"--- Re-summarize complete: {updated} updated, {failed} failed ---", flush=True)
+
+
+@app.route("/retry-missing-summaries", methods=["POST"])
+def retry_missing_summaries():
+    """Re-fetch SEC text + run LLM for filings that got saved with empty raw_text.
+
+    These are the rows that Re-Summarize can't fix (it requires raw_text),
+    caused by transient SEC fetch failures during the original backfill."""
+    date_from = request.form.get("date_from", "")
+    date_to = request.form.get("date_to", "")
+    model = request.form.get("model", "")
+
+    thread = threading.Thread(
+        target=run_retry_missing_summaries,
+        args=(date_from or None, date_to or None, model if model else None),
+    )
+    thread.daemon = True
+    thread.start()
+
+    date_label = f"{date_from} to {date_to}" if date_from else "last 7 days"
+    model_label = model or "GPT-4o-mini"
+    flash(f"Retry started for filings missing summaries ({date_label}, {model_label}). Watch the logs.", "success")
+    return redirect(url_for("index"))
+
+
+def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
+    """Background task: for filings with empty raw_text, re-fetch from SEC
+    and run the LLM pipeline, then update the database."""
+    import json
+    from llm import classify_and_summarize
+    from fetcher import strip_cover_page
+    from summary_utils import serialize_subcategories
+    from filter import _build_legacy_summary
+
+    model_label = model or "GPT-4o-mini"
+    print(f"\n--- Retry missing summaries started (model: {model_label}) ---", flush=True)
+
+    filings = get_filings_missing_text(date_from, date_to)
+    if not filings:
+        print("No filings found with missing text.", flush=True)
+        return
+
+    print(f"Found {len(filings)} filings missing raw_text", flush=True)
+
+    fetched = 0
+    updated = 0
+    fetch_failed = 0
+    llm_failed = 0
+
+    for i, filing in enumerate(filings):
+        company = filing.get("company", "Unknown")
+        filing_id = filing["id"]
+        filing_url = filing.get("filing_url", "")
+        cik = filing.get("cik", "")
+        accession_no = filing.get("accession_no", "")
+
+        print(f"  [{i+1}/{len(filings)}] {company} — re-fetching SEC text...", flush=True)
+
+        text, doc_url = fetch_filing_text(filing_url, cik, accession_no)
+
+        if not text:
+            print(f"    Fetch failed — still no text available", flush=True)
+            fetch_failed += 1
+            continue
+
+        update_filing_raw_text(filing_id, text, filing_document_url=doc_url)
+        fetched += 1
+        print(f"    Fetched {len(text)} chars, running LLM...", flush=True)
+
+        cleaned_text = strip_cover_page(text)
+        llm_result = classify_and_summarize(cleaned_text, model=model)
+
+        if not llm_result:
+            print(f"    LLM FAILED — text saved but summary not updated", flush=True)
+            llm_failed += 1
+            continue
+
+        if not llm_result.get("relevant"):
+            print(f"    LLM says not relevant — keeping placeholder summary", flush=True)
+            continue
+
+        category = (
+            llm_result.get("top_level_category")
+            or llm_result.get("category")
+            or filing.get("auto_category")
+        )
+        subcats = llm_result.get("subcategories")
+        if subcats is None:
+            legacy = llm_result.get("subcategory")
+            subcats = [legacy] if legacy else []
+        auto_subcategory = serialize_subcategories(subcats)
+
+        structured = {
+            "reasoning": llm_result.get("reasoning"),
+            "departures": llm_result.get("departures") or [],
+            "appointments": llm_result.get("appointments") or [],
+            "comp_events": llm_result.get("comp_events") or [],
+            "other": llm_result.get("other") or [],
+        }
+        structured_json = json.dumps(structured)
+        summary = _build_legacy_summary(llm_result)
+
+        comp_details = llm_result.get("comp_details")
+        comp_json = None
+        if comp_details and any(v for v in comp_details.values()):
+            comp_json = json.dumps(comp_details)
+
+        update_filing_analysis(
+            filing_id,
+            summary,
+            category,
+            auto_subcategory,
+            bool(llm_result.get("urgent", False)),
+            comp_json,
+            structured_summary=structured_json,
+            is_complex=bool(llm_result.get("is_complex", False)),
+            narrative_summary=llm_result.get("narrative_summary"),
+            relevant_reason=None,
+        )
+        updated += 1
+        tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
+        subcat_display = subcats[0] if subcats else "—"
+        print(f"    Updated — {category} / {subcat_display} ({tokens} tokens)", flush=True)
+
+    print(f"--- Retry complete: {fetched} fetched, {updated} updated, "
+          f"{fetch_failed} fetch-failed, {llm_failed} llm-failed ---", flush=True)
 
 
 @app.route("/clear-market-cap-cache", methods=["POST"])
