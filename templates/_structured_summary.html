@@ -67,9 +67,15 @@
   {% endif %}
 
   {% if filing['narrative_summary'] %}
-    <div class="ss-section ss-narrative" style="background:linear-gradient(to right,#f8f3ff,#fff);border-left:3px solid #6f42c1;padding:6px 10px;margin-top:6px;border-radius:4px;">
-      <div class="ss-label" style="font-size:10px;font-weight:700;text-transform:uppercase;color:#6f42c1;">Narrative</div>
-      <div class="small">{{ filing['narrative_summary'] }}</div>
+    {% set narrative_id = 'narrative-' ~ filing['id'] %}
+    <div style="margin-top:6px;">
+      <button class="btn btn-sm btn-outline-secondary" style="font-size:11px;padding:1px 8px;"
+              onclick="var el=document.getElementById('{{ narrative_id }}');el.style.display=el.style.display==='none'?'block':'none';this.textContent=el.style.display==='none'?'Narrative ▶':'Narrative ▼';">
+        Narrative ▶
+      </button>
+      <div id="{{ narrative_id }}" style="display:none;margin-top:4px;background:linear-gradient(to right,#f8f3ff,#fff);border-left:3px solid #6f42c1;padding:6px 10px;border-radius:4px;">
+        <div class="small">{{ filing['narrative_summary'] }}</div>
+      </div>
     </div>
   {% endif %}
 
