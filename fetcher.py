@@ -1,12 +1,17 @@
 # fetcher.py — Pulls 8-K filings from SEC EDGAR full-text search API
 # Uses the free EFTS (EDGAR Full-Text Search) API at efts.sec.gov
 
+import random
 import requests
 import time
 import re
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from config import USER_AGENT, TARGET_ITEM_CODES, REQUEST_DELAY, RESULTS_PER_PAGE
+
+# How many times to retry a SEC request that comes back 429 (rate limited)
+# before giving up. Each retry uses exponential backoff with jitter.
+SEC_MAX_RETRIES = 3
 
 
 def strip_cover_page(text):
@@ -36,9 +41,10 @@ def strip_cover_page(text):
     return text
 
 
-# Headers for the EFTS search API — needs browser-like headers to work
+# Headers for the EFTS search API. Uses the SEC-compliant USER_AGENT — a fake
+# browser UA gets throttled harder by SEC's edge tier than an identifying one.
 REQUEST_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": USER_AGENT,
     "Accept": "application/json, text/javascript, */*",
     "Accept-Language": "en-US,en;q=0.9",
     "Origin": "https://www.sec.gov",
@@ -50,6 +56,54 @@ FILING_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "text/html",
 }
+
+
+def _sec_get_with_retry(url, headers, timeout=30, max_retries=SEC_MAX_RETRIES):
+    """GET a SEC URL, retrying on 429 with exponential backoff + jitter.
+
+    Honors the `Retry-After` response header when SEC sends one (sometimes a
+    number of seconds, sometimes an HTTP-date — we only handle the seconds form
+    since that's what SEC actually uses).
+
+    Returns the requests.Response on success. Raises the last RequestException
+    if every attempt fails (so callers can keep their existing try/except).
+    """
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except requests.exceptions.HTTPError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            last_exc = e
+            # Only retry rate-limit errors — other 4xx/5xx are likely permanent
+            if status != 429 or attempt == max_retries:
+                raise
+            # Prefer SEC's Retry-After hint if present; otherwise exponential backoff
+            retry_after = None
+            if e.response is not None:
+                ra_header = e.response.headers.get("Retry-After")
+                if ra_header:
+                    try:
+                        retry_after = float(ra_header)
+                    except ValueError:
+                        retry_after = None
+            backoff = retry_after if retry_after is not None else (2 ** attempt)
+            # Jitter spreads concurrent retries so they don't pile on at once
+            sleep_for = backoff + random.uniform(0, 0.5)
+            print(f"  SEC 429 on attempt {attempt + 1}/{max_retries + 1} — sleeping {sleep_for:.1f}s before retry: {url}", flush=True)
+            time.sleep(sleep_for)
+        except requests.exceptions.RequestException as e:
+            # Connection errors, timeouts, etc. — also worth one retry
+            last_exc = e
+            if attempt == max_retries:
+                raise
+            sleep_for = (2 ** attempt) + random.uniform(0, 0.5)
+            print(f"  SEC request failed on attempt {attempt + 1}/{max_retries + 1} ({type(e).__name__}) — sleeping {sleep_for:.1f}s: {url}", flush=True)
+            time.sleep(sleep_for)
+    # Defensive — loop above always returns or raises, but keeps type-checkers happy
+    raise last_exc if last_exc else RuntimeError("unreachable")
 
 # The EDGAR full-text search endpoint (free, no API key needed)
 SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
@@ -188,10 +242,10 @@ def fetch_filing_text(filing_url, cik, accession_no):
         document URL. Returns ("", None) on failure.
     """
     try:
-        # First, get the index page to find the actual 8-K document
+        # First, get the index page to find the actual 8-K document.
+        # _sec_get_with_retry handles 429s with exponential backoff + Retry-After.
         time.sleep(REQUEST_DELAY)
-        response = requests.get(filing_url, headers=FILING_HEADERS, timeout=30)
-        response.raise_for_status()
+        response = _sec_get_with_retry(filing_url, FILING_HEADERS, timeout=30)
 
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -223,12 +277,14 @@ def fetch_filing_text(filing_url, cik, accession_no):
                     break
 
         if not doc_url:
+            # Index page parsed but no 8-K doc link found — log so it doesn't
+            # silently turn into a blank-summary row with no trace in the logs.
+            print(f"  WARN: could not find 8-K document link in index page: {filing_url}", flush=True)
             return "", None
 
-        # Now fetch the actual filing document
+        # Now fetch the actual filing document — same retry treatment.
         time.sleep(REQUEST_DELAY)
-        doc_response = requests.get(doc_url, headers=FILING_HEADERS, timeout=30)
-        doc_response.raise_for_status()
+        doc_response = _sec_get_with_retry(doc_url, FILING_HEADERS, timeout=30)
 
         # Parse HTML and extract just the text
         doc_soup = BeautifulSoup(doc_response.text, "html.parser")

@@ -271,12 +271,15 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
 
         if not text:
             if "5.02" in items:
-                # Keep 5.02 filings even without text (can't LLM them though)
+                # Keep 5.02 filings even without text (can't LLM them though).
+                # Use a human-readable placeholder so the dashboard cell isn't
+                # ambiguously blank — these rows can be filled in later by the
+                # "Retry Missing Text / Summaries" job once SEC stops throttling.
                 filing["raw_text"] = ""
                 filing["auto_category"] = "Management Change"
                 filing["auto_subcategory"] = None
                 filing["matched_keywords"] = "item 5.02"
-                filing["summary"] = ""
+                filing["summary"] = "SEC rate-limited — pending retry"
                 stage2_passed.append(filing)
                 print(f"    MATCH (5.02 auto-pass, no text available)")
             else:
@@ -318,8 +321,10 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
         text = filing.get("raw_text", "")
 
         if not text:
-            # No text to analyze — keep it with keyword-based info
-            filing["summary"] = ""
+            # No text to analyze — keep keyword-based info plus whatever
+            # placeholder Stage 2 set on `summary` (e.g. the rate-limit notice).
+            # Don't overwrite that with "" — leaves the dashboard ambiguous.
+            filing.setdefault("summary", "")
             final_passed.append(filing)
             continue
 

@@ -5,9 +5,10 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-# Your contact info for SEC EDGAR (required by SEC policy)
-# Replace with your actual name and email
-USER_AGENT = "elyinvesting1@gmail.com"
+# Your contact info for SEC EDGAR (required by SEC policy).
+# SEC requires a "Sample Company Name AdminContact@samplecompany.com" format —
+# a bare email gets throttled harder. See https://www.sec.gov/os/accessing-edgar-data
+USER_AGENT = "8K Analyzer elyinvesting1@gmail.com"
 
 # --- Item Code Filtering (Stage 1) ---
 # These are the 8-K item codes we care about.
@@ -129,8 +130,10 @@ DATABASE_PATH = "filings.db"
 # Max filings to fetch per API call (SEC returns up to 100 per page)
 RESULTS_PER_PAGE = 100
 
-# Delay between API requests in seconds (SEC allows 10/sec, we'll be conservative)
-REQUEST_DELAY = 0.15
+# Delay between API requests in seconds. SEC allows 10/sec, but on Render we
+# share an egress IP with other tenants, so the per-IP budget is contested.
+# 0.3s ≈ 3.3 req/sec leaves headroom for noisy neighbors.
+REQUEST_DELAY = 0.3
 
 # EDGAR full-text search endpoint
 EDGAR_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"

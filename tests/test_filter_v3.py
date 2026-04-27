@@ -125,6 +125,34 @@ def test_filter_records_relevant_reason_when_rejected():
     assert len(result) == 0
 
 
+def test_502_with_no_text_uses_placeholder_summary():
+    """When SEC text fetch fails for a 5.02 filing, the row gets a human-readable
+    placeholder summary instead of a blank string. Prevents ambiguous-looking
+    blank cells on the dashboard for filings that are pending a retry."""
+    from filter import filter_filings
+
+    # Simulate SEC throttling: text fetch returns ("", None)
+    def failed_fetch(url, cik, accession):
+        return "", None
+
+    filings_meta = [{
+        "accession_no": "0001-26-000099",
+        "company": "Throttled Co", "ticker": "THRT", "cik": "999",
+        "filed_date": "2026-04-27", "item_codes": "5.02",
+        "filing_url": "https://sec.gov/index.htm",
+        "items_list": ["5.02"],
+    }]
+
+    result = filter_filings(filings_meta, fetch_text_func=failed_fetch)
+
+    assert len(result) == 1, "5.02 filings should still be kept when text fetch fails"
+    f = result[0]
+    # Summary must not be blank — must signal that a retry is pending
+    assert f["summary"], "summary should not be empty when SEC fetch fails"
+    assert "rate" in f["summary"].lower() or "retry" in f["summary"].lower(), \
+        f"summary should indicate rate-limit / pending retry, got: {f['summary']!r}"
+
+
 def test_filter_handles_other_only_filing_with_null_arrays():
     """Filing where everything lives in other[] (e.g., CEO forward sale) AND
     the LLM emitted explicit null for empty event arrays. Both cases at once.
