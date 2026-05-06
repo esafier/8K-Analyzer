@@ -62,3 +62,35 @@ def get_stock_price(ticker):
     upsert_stock_price(ticker, price)
 
     return price
+
+
+def get_stock_price_map(tickers):
+    """Return {ticker: price} for every ticker that successfully resolved.
+
+    Uses the existing get_stock_price() (which caches in the stock_prices table
+    with a 1-hour TTL). Per-ticker failures are swallowed so the dashboard
+    never breaks on a flaky API call. Tickers with no price are omitted.
+
+    Args:
+        tickers: iterable of ticker strings (case-insensitive)
+
+    Returns:
+        dict mapping uppercase ticker -> float price
+    """
+    if not tickers:
+        return {}
+
+    result = {}
+    for raw in tickers:
+        if not raw:
+            continue
+        ticker = raw.strip().upper()
+        try:
+            price = get_stock_price(ticker)
+            if price:
+                result[ticker] = price
+        except Exception as e:
+            # Don't let a single ticker failure break the dashboard
+            print(f"[STOCK PRICE MAP] Skipping {ticker}: {e}")
+
+    return result

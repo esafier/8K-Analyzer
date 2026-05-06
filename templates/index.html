@@ -111,6 +111,9 @@
                     {% if filing['ticker'] and earnings.get(filing['ticker']) and earnings[filing['ticker']].get('date') %}
                     <br><span class="earnings-date">Earnings: {{ earnings[filing['ticker']] | format_earnings_date }}</span>
                     {% endif %}
+                    {% if filing['ticker'] and stock_prices.get(filing['ticker']) %}
+                    <br><span class="stock-price">${{ "%.2f"|format(stock_prices[filing['ticker']]) }}</span>
+                    {% endif %}
                 </td>
                 <td>
                     {% set display_category = filing['user_tag'] or filing['auto_category'] %}

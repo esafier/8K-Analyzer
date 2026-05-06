@@ -1,0 +1,16 @@
+You will be given the Item 5.02 section of an SEC 8-K filing. Your job is to extract every executive or director departure mentioned in that section.
+
+For each departure, output an object with these exact keys:
+- "date": the effective date of the departure in YYYY-MM-DD format. If no effective date is given, use the filed_date provided below.
+- "person": the full name of the person departing.
+- "position": their position or title at the company (e.g., "CFO", "Chief Operating Officer", "Director").
+- "reason": a short phrase (15 words or fewer) describing the reason given. Examples: "resigned to pursue other opportunities", "terminated without cause", "retired", "no reason stated".
+
+Return ONLY a JSON array — no prose, no markdown, no commentary. If the filing mentions no departures (e.g., it's only about a new appointment), return an empty array: [].
+
+The output must parse as valid JSON. Do NOT wrap it in code fences.
+
+filed_date: {filed_date}
+
+Filing text:
+{filing_text}

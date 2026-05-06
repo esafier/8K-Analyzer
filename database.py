@@ -256,6 +256,9 @@ def initialize_database():
     # Create stock_prices table for caching current stock prices
     _create_stock_prices_table(conn)
 
+    # Create departure_extractions table for caching 5.02 LLM extractions
+    _create_departure_extractions_table(conn)
+
     # Log which database we're using and how many filings are stored
     # This helps us debug data loss issues on Render
     cursor.execute("SELECT COUNT(*) FROM filings")
@@ -1416,6 +1419,41 @@ def _create_stock_prices_table(conn):
     print("[STARTUP] Stock prices table ready")
 
 
+def _create_departure_extractions_table(conn):
+    """Create the departure_extractions table — caches per-filing LLM extractions
+    of executive departures (5.02 filings). Keyed by accession number, which is
+    immutable, so cached rows never go stale."""
+    cursor = conn.cursor()
+
+    if _using_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS departure_extractions (
+                accession_number TEXT PRIMARY KEY,
+                cik TEXT NOT NULL,
+                filed_date TEXT NOT NULL,
+                extractions_json TEXT NOT NULL,
+                has_error INTEGER NOT NULL DEFAULT 0,
+                extracted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS departure_extractions (
+                accession_number TEXT PRIMARY KEY,
+                cik TEXT NOT NULL,
+                filed_date TEXT NOT NULL,
+                extractions_json TEXT NOT NULL,
+                has_error INTEGER NOT NULL DEFAULT 0,
+                extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_departures_cik ON departure_extractions(cik)")
+
+    conn.commit()
+    print("[STARTUP] Departure extractions table ready")
+
+
 def get_cached_stock_price(ticker):
     """Look up cached stock price for a single ticker.
     Only returns if fetched within the last 1 hour (prices move fast).
@@ -1472,6 +1510,99 @@ def upsert_stock_price(ticker, price):
             INSERT OR REPLACE INTO stock_prices (ticker, price, fetched_at)
             VALUES ({p}, {p}, CURRENT_TIMESTAMP)
         """, (ticker.upper(), price))
+
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# DEPARTURE EXTRACTIONS CACHE FUNCTIONS
+# ============================================================
+
+def get_cached_departure_extraction(accession_number):
+    """Look up cached LLM extraction for a 5.02 filing.
+
+    Returns a real Python dict with keys: accession_number, cik, filed_date,
+    extractions (list of {date, person, position, reason}), has_error, extracted_at.
+    Returns None if not cached.
+    """
+    if not accession_number:
+        return None
+    import json
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    cursor.execute(f"""
+        SELECT accession_number, cik, filed_date, extractions_json, has_error, extracted_at
+        FROM departure_extractions
+        WHERE accession_number = {p}
+    """, (accession_number,))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+
+    if _using_postgres():
+        return {
+            "accession_number": row[0],
+            "cik": row[1],
+            "filed_date": row[2],
+            "extractions": json.loads(row[3] or "[]"),
+            "has_error": int(row[4] or 0),
+            "extracted_at": row[5],
+        }
+    else:
+        return {
+            "accession_number": row["accession_number"],
+            "cik": row["cik"],
+            "filed_date": row["filed_date"],
+            "extractions": json.loads(row["extractions_json"] or "[]"),
+            "has_error": int(row["has_error"] or 0),
+            "extracted_at": row["extracted_at"],
+        }
+
+
+def upsert_departure_extraction(accession_number, cik, filed_date, extractions, has_error):
+    """Insert or update a cached LLM extraction.
+
+    Args:
+        accession_number: SEC accession (e.g., "0001234567-25-000123")
+        cik: zero-padded or unpadded CIK string
+        filed_date: filing date as "YYYY-MM-DD"
+        extractions: list of dicts [{date, person, position, reason}]
+        has_error: True if extraction failed (cache the failure to avoid retrying forever)
+    """
+    if not accession_number:
+        return
+    import json
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    extractions_json = json.dumps(extractions or [])
+    err_int = 1 if has_error else 0
+
+    if _using_postgres():
+        cursor.execute(f"""
+            INSERT INTO departure_extractions
+            (accession_number, cik, filed_date, extractions_json, has_error, extracted_at)
+            VALUES ({p}, {p}, {p}, {p}, {p}, CURRENT_TIMESTAMP)
+            ON CONFLICT (accession_number) DO UPDATE
+            SET cik = {p}, filed_date = {p}, extractions_json = {p},
+                has_error = {p}, extracted_at = CURRENT_TIMESTAMP
+        """, (
+            accession_number, cik, filed_date, extractions_json, err_int,
+            cik, filed_date, extractions_json, err_int,
+        ))
+    else:
+        cursor.execute(f"""
+            INSERT OR REPLACE INTO departure_extractions
+            (accession_number, cik, filed_date, extractions_json, has_error, extracted_at)
+            VALUES ({p}, {p}, {p}, {p}, {p}, CURRENT_TIMESTAMP)
+        """, (accession_number, cik, filed_date, extractions_json, err_int))
 
     conn.commit()
     conn.close()
