@@ -289,6 +289,12 @@ def index():
 @app.route("/filing/<int:filing_id>")
 def filing_detail(filing_id):
     """Detail page for a single filing."""
+    return _render_filing_detail(filing_id)
+
+
+def _render_filing_detail(filing_id, departures=None):
+    """Render the filing detail page. Optional `departures` dict shows the
+    Executive Departures card (used by the /deep-analysis dispatch)."""
     filing = get_filing_by_id(filing_id)
     if not filing:
         flash("Filing not found", "error")
@@ -352,6 +358,7 @@ def filing_detail(filing_id):
         watchlist_notes=watchlist_notes,
         market_cap=market_cap,
         earnings_info=earnings_info,
+        departures=departures,
     )
 
 
@@ -383,6 +390,30 @@ def deep_analysis(filing_id):
         if not filing:
             flash("Filing not found", "error")
             return redirect(url_for("index"))
+
+        # If the user picked the "Executive Departures (24mo)" option, run that
+        # pipeline and re-render the filing page directly (no LLM signal-analysis call).
+        if request.form.get("prompt_version") == "departures_24mo":
+            from departures import get_departures_for_filing, render_prose_lines
+
+            cik = filing.get("cik", "") or ""
+            current_accession = filing.get("accession_no", "") or ""
+
+            if not cik:
+                flash("This filing has no CIK on record — cannot look up departures.", "error")
+                return redirect(url_for("filing_detail", filing_id=filing_id))
+
+            departures_data = get_departures_for_filing(cik=cik, current_accession=current_accession)
+            departures_lines = render_prose_lines(departures_data)
+
+            departures_context = {
+                "lines": departures_lines,
+                "count_filings": len({d["_accession"] for d in departures_data}),
+                "company": filing.get("company", "Unknown"),
+                "cik": cik,
+            }
+
+            return _render_filing_detail(filing_id, departures=departures_context)
 
         raw_text = filing["raw_text"] or ""
         if not raw_text:
