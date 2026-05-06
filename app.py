@@ -390,6 +390,7 @@ def deep_analysis(filing_id):
         if not filing:
             flash("Filing not found", "error")
             return redirect(url_for("index"))
+        filing = dict(filing)  # Convert sqlite3.Row to real dict so .get() works (CLAUDE.md compatibility)
 
         # If the user picked the "Executive Departures (24mo)" option, run that
         # pipeline and re-render the filing page directly (no LLM signal-analysis call).
