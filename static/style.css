@@ -36,6 +36,13 @@ tr.clickable-row:has(.badge.bg-danger) {
     color: #888;
 }
 
+/* Stock price subtitle shown under tickers */
+.stock-price {
+    font-size: 0.8em;
+    color: #198754;
+    font-weight: 500;
+}
+
 /* Earnings date subtitle shown under tickers */
 .earnings-date {
     font-size: 0.75rem;

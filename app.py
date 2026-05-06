@@ -247,6 +247,14 @@ def index():
     except Exception as e:
         print(f"[EARNINGS] Failed to load earnings: {e}")
 
+    # Fetch current stock prices for tickers on this page
+    stock_prices = {}
+    try:
+        from stock_price import get_stock_price_map
+        stock_prices = get_stock_price_map(unique_tickers)
+    except Exception as e:
+        print(f"[STOCK PRICE] Failed to load stock prices: {e}")
+
     # Count filings matching current filters so we know total pages
     filtered_count = get_filtered_filing_count(
         category=category if category else None,
@@ -274,6 +282,7 @@ def index():
         watchlist_ids=watchlist_ids,
         market_caps=market_caps,
         earnings=earnings,
+        stock_prices=stock_prices,
     )
 
 
