@@ -113,3 +113,44 @@ def test_get_departures_handles_empty_history(tmp_sqlite_db):
     with patch("departures.get_edgar_departure_history", return_value=[]):
         result = get_departures_for_filing(cik="0001234567", current_accession="x")
     assert result == []
+
+
+def test_render_prose_escapes_html():
+    """Values interpolated into HTML must be escaped to prevent XSS."""
+    from departures import render_prose_lines
+
+    deps = [{
+        "date": "2025-01-01",
+        "person": "<script>alert(1)</script>",
+        "position": "CFO & Director",
+        "reason": "\"Quoted\" reason",
+        "_accession": "x", "_filing_url": "https://sec.gov/y?a=1&b=2",
+        "_is_current_filing": False, "_error": False,
+    }]
+    line = render_prose_lines(deps)[0]
+
+    # The raw script tag must NOT appear unescaped
+    assert "<script>" not in line
+    assert "&lt;script&gt;" in line
+    # Ampersands and quotes also escaped
+    assert "&amp;" in line  # both "& Director" and "?a=1&b=2"
+    assert "&quot;" in line
+
+
+def test_pipeline_handles_thread_exception(tmp_sqlite_db):
+    """A raise from extract_departures inside a thread must not crash the pipeline."""
+    from departures import get_departures_for_filing
+
+    fake_history = [{
+        "filing_date": "2025-01-01", "items": "5.02",
+        "accession_no": "0001234-25-BOOM", "snippet": "Item 5.02 ...",
+    }]
+
+    with patch("departures.get_edgar_departure_history", return_value=fake_history), \
+         patch("departures.extract_departures", side_effect=RuntimeError("boom")):
+        result = get_departures_for_filing(cik="0001234567", current_accession="x")
+
+    # Should produce an error placeholder row, not raise
+    assert len(result) == 1
+    assert result[0]["_error"] is True
+    assert result[0]["_accession"] == "0001234-25-BOOM"

@@ -17,6 +17,7 @@ free after the first run, and across companies a 5.02 is processed exactly once.
 """
 
 from concurrent.futures import ThreadPoolExecutor
+from html import escape
 
 from database import get_cached_departure_extraction, upsert_departure_extraction
 from fetcher import get_edgar_departure_history
@@ -79,22 +80,26 @@ def get_departures_for_filing(cik, current_accession):
     fresh_results = {}
     if needs_extraction:
         def _do_extract(item):
-            snippet = item.get("snippet") or ""
-            filed_date = item.get("filing_date") or ""
-            if not snippet:
-                # No text to extract from — cache the failure so we don't retry forever
+            try:
+                snippet = item.get("snippet") or ""
+                filed_date = item.get("filing_date") or ""
+                if not snippet:
+                    # No text to extract from — cache the failure so we don't retry forever
+                    upsert_departure_extraction(
+                        item["accession_no"], cik, filed_date,
+                        extractions=[], has_error=True,
+                    )
+                    return item["accession_no"], {"departures": [], "error": True}
+
+                result = extract_departures(snippet, filed_date)
                 upsert_departure_extraction(
                     item["accession_no"], cik, filed_date,
-                    extractions=[], has_error=True,
+                    extractions=result["departures"], has_error=result["error"],
                 )
-                return item["accession_no"], {"departures": [], "error": True}
-
-            result = extract_departures(snippet, filed_date)
-            upsert_departure_extraction(
-                item["accession_no"], cik, filed_date,
-                extractions=result["departures"], has_error=result["error"],
-            )
-            return item["accession_no"], result
+                return item["accession_no"], result
+            except Exception as e:
+                print(f"[DEPARTURES] Failed to process {item.get('accession_no')}: {type(e).__name__}: {e!r}", flush=True)
+                return item.get("accession_no", ""), {"departures": [], "error": True}
 
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL_EXTRACTIONS) as pool:
             for accession_no, result in pool.map(_do_extract, needs_extraction):
@@ -162,8 +167,8 @@ def render_prose_lines(departures):
     """
     lines = []
     for d in departures:
-        date = d.get("date") or d.get("_filing_date") or "Unknown date"
-        url = d.get("_filing_url") or ""
+        date = escape(d.get("date") or d.get("_filing_date") or "Unknown date")
+        url = escape(d.get("_filing_url") or "", quote=True)
         marker = " (this filing)" if d.get("_is_current_filing") else ""
 
         if d.get("_error"):
@@ -172,12 +177,13 @@ def render_prose_lines(departures):
                 f"<a href=\"{url}\" target=\"_blank\" rel=\"noopener\">open filing</a>){marker}</li>"
             )
         else:
-            person = d.get("person") or "Unknown"
-            position = d.get("position") or "Unknown role"
-            reason = d.get("reason") or "no reason stated"
-            # Ensure reason ends with sentence-ending punctuation
-            if not reason.rstrip().endswith((".", "!", "?")):
-                reason = reason.rstrip() + "."
+            person = escape(d.get("person") or "Unknown")
+            position = escape(d.get("position") or "Unknown role")
+            reason_raw = d.get("reason") or "no reason stated"
+            # Ensure reason ends with sentence-ending punctuation before escaping
+            if not reason_raw.rstrip().endswith((".", "!", "?")):
+                reason_raw = reason_raw.rstrip() + "."
+            reason = escape(reason_raw)
             line = (
                 f"<li><strong>{date}</strong> — {person}, {position}. "
                 f"{reason} (<a href=\"{url}\" target=\"_blank\" rel=\"noopener\">filing</a>){marker}</li>"
