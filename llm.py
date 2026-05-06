@@ -225,3 +225,73 @@ def signal_analyze(filing_text, context_block, model=None, prompt_version="v1"):
     except Exception as e:
         print(f"    Signal analysis LLM call failed: {e}")
         return None
+
+
+def extract_departures(filing_snippet, filed_date, model=None):
+    """Extract executive departures from an Item 5.02 filing snippet.
+
+    Args:
+        filing_snippet: text of (or starting with) the Item 5.02 section
+        filed_date: the filing's filed_date as fallback when the snippet
+                    doesn't state an effective departure date
+        model: override LLM model (default: LLM_MODEL from config)
+
+    Returns:
+        Dict: {"departures": [...], "error": bool, "_tokens_in": int, "_tokens_out": int}
+        Each departure: {"date", "person", "position", "reason"}.
+    """
+    use_model = model or LLM_MODEL
+
+    template = _load_prompt("prompt_departures.txt")
+    prompt = template.replace("{filing_text}", filing_snippet or "").replace("{filed_date}", filed_date or "")
+
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model=use_model,
+            temperature=0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.choices[0].message.content or ""
+        usage = response.usage
+
+        # Strip markdown code fences if the model added them despite instructions
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            print(f"    extract_departures: JSON parse failed. Raw: {raw[:200]!r}", flush=True)
+            return {
+                "departures": [],
+                "error": True,
+                "_tokens_in": usage.prompt_tokens,
+                "_tokens_out": usage.completion_tokens,
+            }
+
+        # Be lenient: accept either a bare list or {"departures": [...]}
+        if isinstance(parsed, dict) and "departures" in parsed:
+            departures = parsed["departures"]
+        elif isinstance(parsed, list):
+            departures = parsed
+        else:
+            departures = []
+
+        # Drop any entries that aren't well-formed dicts
+        departures = [d for d in departures if isinstance(d, dict) and d.get("person")]
+
+        return {
+            "departures": departures,
+            "error": False,
+            "_tokens_in": usage.prompt_tokens,
+            "_tokens_out": usage.completion_tokens,
+        }
+
+    except Exception as e:
+        print(f"    extract_departures failed [model={use_model}]: {type(e).__name__}: {e!r}", flush=True)
+        return {"departures": [], "error": True, "_tokens_in": 0, "_tokens_out": 0}
