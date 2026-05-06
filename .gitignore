@@ -17,6 +17,7 @@ cik_tickers_cache.json
 # Local Claude Code / Superpowers working files
 .claude/
 .superpowers/
+.worktrees/
 
 # Misc local artifacts
 architecture.html
