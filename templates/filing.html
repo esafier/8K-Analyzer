@@ -189,6 +189,7 @@
                     <select name="prompt_version" class="form-select form-select-sm d-inline-block" style="width: auto;">
                         <option value="v1">Prompt V1</option>
                         <option value="v2" selected>Prompt V2</option>
+                        <option value="departures_24mo">Executive Departures (24mo)</option>
                     </select>
                     <div class="form-check form-check-inline mb-0">
                         <input type="checkbox" name="web_search" value="1" class="form-check-input" id="webSearchCheck">
@@ -215,6 +216,7 @@
                     <select name="prompt_version" class="form-select form-select-sm d-inline-block" style="width: auto;">
                         <option value="v1">Prompt V1</option>
                         <option value="v2" selected>Prompt V2</option>
+                        <option value="departures_24mo">Executive Departures (24mo)</option>
                     </select>
                     <div class="form-check form-check-inline mb-0">
                         <input type="checkbox" name="web_search" value="1" class="form-check-input" id="webSearchRerun">
@@ -227,6 +229,28 @@
             </div>
             <div class="card-body deep-analysis-content">
                 {{ filing['deep_analysis'] | render_deep_analysis | safe }}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Executive Departures (last 24 months) — populated when user picks the dropdown option -->
+        {% if departures is not none %}
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5 class="mb-0">Executive Departures — Last 24 Months</h5>
+                <small class="text-muted">{{ departures.company }} (CIK {{ departures.cik }})</small>
+            </div>
+            <div class="card-body">
+                {% if departures.lines %}
+                <ul class="mb-2">
+                    {% for line in departures.lines %}
+                        {{ line | safe }}
+                    {% endfor %}
+                </ul>
+                <small class="text-muted">Source: {{ departures.count_filings }} SEC filing{{ '' if departures.count_filings == 1 else 's' }}.</small>
+                {% else %}
+                <p class="mb-0 text-muted">No executive-departure filings found for this company in the last 24 months.</p>
+                {% endif %}
             </div>
         </div>
         {% endif %}
