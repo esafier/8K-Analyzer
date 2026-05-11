@@ -247,6 +247,11 @@ def initialize_database():
     # Create backfill_runs table for tracking stats from each backfill
     _create_backfill_runs_table(conn)
 
+    # Any 'running' row at boot time belongs to a worker that's already dead
+    # (Render restart killed the daemon thread before it could update status).
+    # Mark those as failed so the UI stops lying about them.
+    _cleanup_stuck_backfill_runs(conn)
+
     # Create market_caps table for caching stock market cap data
     _create_market_caps_table(conn)
 
@@ -1092,6 +1097,25 @@ def _create_backfill_runs_table(conn):
 
     conn.commit()
     print("[STARTUP] Backfill runs table ready")
+
+
+def _cleanup_stuck_backfill_runs(conn):
+    """Mark any 'running' backfill_runs as 'failed' on app boot.
+
+    Backfills run as daemon threads inside the gunicorn worker. When the worker
+    is killed (Render restart, idle spin-down, deploy, OOM), the thread dies
+    without ever updating its status row — so it appears stuck at 'running'
+    forever. If we're booting up and a row says 'running', that worker is gone."""
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE backfill_runs "
+        "SET status = 'failed', completed_at = CURRENT_TIMESTAMP "
+        "WHERE status = 'running'"
+    )
+    affected = cursor.rowcount
+    conn.commit()
+    if affected and affected > 0:
+        print(f"[STARTUP] Marked {affected} orphaned backfill run(s) as failed", flush=True)
 
 
 def create_backfill_run(backfill_type, date_start, date_end, model):
