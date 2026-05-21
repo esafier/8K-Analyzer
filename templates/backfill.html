@@ -148,6 +148,27 @@
 
 <hr class="my-5">
 
+<h2 class="mb-4">Retrofit Market-Based Targets</h2>
+<p class="text-muted">
+    Scans every existing filing's structured summary and flags those that disclose
+    stock-price, market-cap, or TSR comp targets. Zero LLM cost — pure data transform
+    on what's already stored. Run this once after the schema update to populate the
+    new "Market Targets" filter on the dashboard.
+</p>
+
+<div class="card" style="max-width: 500px;">
+    <div class="card-body">
+        <form method="POST" action="/retrofit-market-targets">
+            <p class="text-muted small">
+                Safe to re-run any time — only updates rows where the flag would change.
+            </p>
+            <button type="submit" class="btn btn-outline-success">Run Retrofit</button>
+        </form>
+    </div>
+</div>
+
+<hr class="my-5">
+
 <h2 class="mb-4">Refresh Market Caps</h2>
 <p class="text-muted">If market caps aren't showing, this clears failed lookups from the cache so they get retried on the next page load.</p>
 

@@ -46,8 +46,8 @@
                 <input type="date" name="date_to" class="form-control" value="{{ current_date_to }}">
             </div>
 
-            <!-- Urgent only toggle -->
-            <div class="col-md-2 d-flex align-items-end gap-2">
+            <!-- Urgent / Market-targets toggles -->
+            <div class="col-md-3 d-flex align-items-end gap-2 flex-wrap">
                 <div class="form-check mb-2">
                     <input type="checkbox" name="urgent" value="1" class="form-check-input"
                            id="urgentCheck" {{ 'checked' if current_urgent }}>
@@ -55,9 +55,16 @@
                         <span class="badge bg-danger">URGENT</span> only
                     </label>
                 </div>
+                <div class="form-check mb-2">
+                    <input type="checkbox" name="market_targets" value="1" class="form-check-input"
+                           id="marketTargetsCheck" {{ 'checked' if current_market_targets }}>
+                    <label class="form-check-label" for="marketTargetsCheck">
+                        <span class="badge" style="background:#f5b800;color:#000;">🎯 Market Targets</span> only
+                    </label>
+                </div>
             </div>
 
-            <div class="col-md-2 d-flex align-items-end gap-2">
+            <div class="col-md-1 d-flex align-items-end gap-2">
                 <button type="submit" class="btn btn-primary">Filter</button>
                 <a href="/" class="btn btn-outline-secondary">Clear</a>
             </div>
@@ -83,7 +90,7 @@
         </thead>
         <tbody>
             {% for filing in filings %}
-            <tr class="clickable-row" onclick="window.location='/filing/{{ filing['id'] }}?back={{ ('/?page=' ~ current_page ~ '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else ''))|urlencode }}'">
+            <tr class="clickable-row" onclick="window.location='/filing/{{ filing['id'] }}?back={{ ('/?page=' ~ current_page ~ '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') ~ '&market_targets=' ~ ('1' if current_market_targets else ''))|urlencode }}'">
                 <!-- Watchlist star toggle -->
                 <td onclick="event.stopPropagation()">
                     <button class="btn btn-link p-0 watchlist-star" data-filing-id="{{ filing['id'] }}"
@@ -99,6 +106,9 @@
                 <td>
                     {% if filing['urgent'] %}
                         <span class="badge bg-danger">URGENT</span>
+                    {% endif %}
+                    {% if filing['has_market_targets'] %}
+                        <span class="badge" style="background:#f5b800;color:#000;" title="Discloses stock-price, market-cap, or TSR target">🎯</span>
                     {% endif %}
                 </td>
                 <td class="text-nowrap">{{ filing['filed_date'] }}</td>
@@ -151,7 +161,7 @@
 </div>
 
 <!-- Numbered pagination -->
-{% set q = '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') %}
+{% set q = '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') ~ '&market_targets=' ~ ('1' if current_market_targets else '') %}
 <nav aria-label="Page navigation">
     <ul class="pagination justify-content-center flex-wrap">
         <!-- Previous button -->

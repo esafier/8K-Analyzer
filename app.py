@@ -188,6 +188,7 @@ def index():
     date_from = request.args.get("date_from", "")
     date_to = request.args.get("date_to", "")
     urgent_only = request.args.get("urgent", "") == "1"
+    market_targets_only = request.args.get("market_targets", "") == "1"
     page = int(request.args.get("page", 1))
 
     per_page = 50
@@ -200,6 +201,7 @@ def index():
         date_from=date_from if date_from else None,
         date_to=date_to if date_to else None,
         urgent_only=urgent_only,
+        market_targets_only=market_targets_only,
         limit=per_page,
         offset=offset,
     )
@@ -262,6 +264,7 @@ def index():
         date_from=date_from if date_from else None,
         date_to=date_to if date_to else None,
         urgent_only=urgent_only,
+        market_targets_only=market_targets_only,
     )
     total_pages = max(1, math.ceil(filtered_count / per_page))
 
@@ -276,6 +279,7 @@ def index():
         current_date_from=date_from,
         current_date_to=date_to,
         current_urgent=urgent_only,
+        current_market_targets=market_targets_only,
         current_page=page,
         per_page=per_page,
         total_pages=total_pages,
@@ -847,6 +851,12 @@ def run_resummarize(date_from=None, date_to=None, model=None):
                 "comp_events": llm_result.get("comp_events") or [],
                 "other": llm_result.get("other") or [],
             }
+
+            # Detect market-based comp targets — store aggregate in JSON + 0/1 flag for column
+            from market_targets import detect_market_targets
+            mt = detect_market_targets(structured)
+            structured["has_market_targets"] = mt["has_any"]
+            structured["market_targets"] = mt["targets"]
             structured_json = json.dumps(structured)
 
             # Legacy summary string for backward compatibility (emails, old templates)
@@ -869,6 +879,7 @@ def run_resummarize(date_from=None, date_to=None, model=None):
                 is_complex=is_complex,
                 narrative_summary=narrative,
                 relevant_reason=None,
+                has_market_targets=mt["has_any"],
             )
             updated += 1
 
@@ -886,6 +897,37 @@ def run_resummarize(date_from=None, date_to=None, model=None):
             print(f"    LLM FAILED — summary unchanged", flush=True)
 
     print(f"--- Re-summarize complete: {updated} updated, {failed} failed ---", flush=True)
+
+
+@app.route("/retrofit-market-targets", methods=["POST"])
+def retrofit_market_targets_route():
+    """Walk every existing filing's structured_summary JSON and flag the ones
+    that disclose market-based comp targets (stock-price, market-cap, or TSR).
+    No LLM calls — pure data transform on what's already stored."""
+    from retrofit_market_targets import run_retrofit
+    from database import create_backfill_run
+
+    # Track this as a backfill_run so it shows up in the recent-runs list
+    try:
+        run_id = create_backfill_run(
+            backfill_type="market_targets_retrofit",
+            date_start=None,
+            date_end=None,
+            model=None,
+        )
+    except Exception as e:
+        print(f"[RETROFIT] WARN: could not create backfill_run row: {e}", flush=True)
+        run_id = None
+
+    def _worker():
+        run_retrofit(verbose=True, run_id=run_id)
+
+    thread = threading.Thread(target=_worker)
+    thread.daemon = True
+    thread.start()
+
+    flash("Market-targets retrofit started. Refresh the dashboard in a minute to see flagged filings.", "success")
+    return redirect(url_for("backfill"))
 
 
 @app.route("/retry-missing-summaries", methods=["POST"])

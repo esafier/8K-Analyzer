@@ -58,6 +58,8 @@ def structured_summary_for_display(raw):
     empty = {
         "departures": [], "appointments": [], "comp_events": [], "other": [],
         "reasoning": None, "has_any_event": False,
+        "has_market_targets": False,
+        "market_targets": {"stock_price": [], "market_cap": [], "tsr": []},
     }
     if not raw:
         return empty
@@ -74,6 +76,11 @@ def structured_summary_for_display(raw):
         "comp_events": parsed.get("comp_events") or [],
         "other": parsed.get("other") or [],
         "reasoning": parsed.get("reasoning"),
+        "has_market_targets": bool(parsed.get("has_market_targets")),
+        # market_targets is a dict of three lists; default to empty lists if absent.
+        "market_targets": parsed.get("market_targets") or {
+            "stock_price": [], "market_cap": [], "tsr": [],
+        },
     }
     out["has_any_event"] = any([
         out["departures"], out["appointments"], out["comp_events"], out["other"],

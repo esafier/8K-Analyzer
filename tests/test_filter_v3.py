@@ -153,6 +153,46 @@ def test_502_with_no_text_uses_placeholder_summary():
         f"summary should indicate rate-limit / pending retry, got: {f['summary']!r}"
 
 
+def test_filter_sets_has_market_targets_when_stock_price_extracted():
+    """When the LLM returns a comp_event with stock_price_targets populated,
+    filter.py must set filing['has_market_targets'] = 1 and embed the targets
+    inside the structured_summary JSON."""
+    from filter import filter_filings
+
+    def fake_fetch(url, cik, accession):
+        return "PSU grant text with $150 stock price hurdle.", "https://sec.gov/filing.htm"
+
+    filings_meta = [{
+        "accession_no": "0001-26-000050",
+        "company": "Target Corp", "ticker": "TGT2", "cik": "555",
+        "filed_date": "2026-04-20", "item_codes": "5.02",
+        "filing_url": "https://sec.gov/index.htm",
+        "items_list": ["5.02"],
+    }]
+
+    response = _v3_llm_response()
+    response["comp_events"] = [{
+        "executive": "CEO Jane Doe",
+        "grant_type": "PSUs",
+        "grant_value": "$10M target",
+        "performance_hurdles": "Relative TSR vs. peer group",
+        "stock_price_targets": "$150, $200",
+    }]
+
+    with patch("filter.classify_and_summarize", return_value=response):
+        result = filter_filings(filings_meta, fetch_text_func=fake_fetch)
+
+    assert len(result) == 1
+    f = result[0]
+    # Row-level flag must be set for the dashboard filter
+    assert f.get("has_market_targets") == 1
+    # JSON blob must include the aggregate so the template can render the callout
+    structured = json.loads(f["structured_summary"])
+    assert structured.get("has_market_targets") is True
+    assert len(structured["market_targets"]["stock_price"]) == 1
+    assert len(structured["market_targets"]["tsr"]) == 1
+
+
 def test_filter_handles_other_only_filing_with_null_arrays():
     """Filing where everything lives in other[] (e.g., CEO forward sale) AND
     the LLM emitted explicit null for empty event arrays. Both cases at once.

@@ -332,6 +332,12 @@ def _migrate_add_columns(conn):
         cursor.execute("ALTER TABLE filings ADD COLUMN structured_summary TEXT DEFAULT NULL")
         print("[MIGRATE] Added 'structured_summary' column")
 
+    # Add has_market_targets — 1 when filing discloses market-based comp targets
+    # (stock-price, market-cap, or TSR). Powers the dashboard "Market Targets" filter.
+    if "has_market_targets" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN has_market_targets INTEGER DEFAULT 0")
+        print("[MIGRATE] Added 'has_market_targets' column")
+
     conn.commit()
 
 
@@ -421,6 +427,7 @@ def insert_filing(filing_data):
     narrative_summary_val = _to_str(filing_data.get("narrative_summary"))
     relevant_reason_val = _to_str(filing_data.get("relevant_reason"))
     structured_summary_val = _to_str(filing_data.get("structured_summary"))
+    has_market_targets_val = 1 if filing_data.get("has_market_targets") else 0
 
     if _using_postgres():
         # PostgreSQL: use ON CONFLICT instead of INSERT OR IGNORE
@@ -430,8 +437,8 @@ def insert_filing(filing_data):
              summary, auto_category, auto_subcategory, filing_url, raw_text,
              matched_keywords, urgent, comp_details,
              filing_document_url, is_complex, narrative_summary,
-             relevant_reason, structured_summary)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+             relevant_reason, structured_summary, has_market_targets)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
             ON CONFLICT (accession_no) DO NOTHING
         """, (
             _to_str(filing_data.get("accession_no")),
@@ -453,6 +460,7 @@ def insert_filing(filing_data):
             narrative_summary_val,
             relevant_reason_val,
             structured_summary_val,
+            has_market_targets_val,
         ))
     else:
         # SQLite: original INSERT OR IGNORE
@@ -462,8 +470,8 @@ def insert_filing(filing_data):
              summary, auto_category, auto_subcategory, filing_url, raw_text,
              matched_keywords, urgent, comp_details,
              filing_document_url, is_complex, narrative_summary,
-             relevant_reason, structured_summary)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+             relevant_reason, structured_summary, has_market_targets)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
         """, (
             _to_str(filing_data.get("accession_no")),
             _to_str(filing_data.get("company")),
@@ -484,6 +492,7 @@ def insert_filing(filing_data):
             narrative_summary_val,
             relevant_reason_val,
             structured_summary_val,
+            has_market_targets_val,
         ))
 
     # Check if the row was actually inserted (not a duplicate)
@@ -493,7 +502,7 @@ def insert_filing(filing_data):
     return was_new
 
 
-def get_filings(category=None, search=None, date_from=None, date_to=None, urgent_only=False, limit=100, offset=0):
+def get_filings(category=None, search=None, date_from=None, date_to=None, urgent_only=False, market_targets_only=False, limit=100, offset=0):
     """Fetch filings from the database with optional filters.
     Used by the dashboard to display results."""
     conn = get_connection()
@@ -526,6 +535,9 @@ def get_filings(category=None, search=None, date_from=None, date_to=None, urgent
     if urgent_only:
         query += " AND urgent = 1"
 
+    if market_targets_only:
+        query += " AND has_market_targets = 1"
+
     query += f" ORDER BY filed_date DESC, created_at DESC LIMIT {p} OFFSET {p}"
     params.extend([limit, offset])
 
@@ -535,7 +547,7 @@ def get_filings(category=None, search=None, date_from=None, date_to=None, urgent
     return results
 
 
-def get_filtered_filing_count(category=None, search=None, date_from=None, date_to=None, urgent_only=False):
+def get_filtered_filing_count(category=None, search=None, date_from=None, date_to=None, urgent_only=False, market_targets_only=False):
     """Count filings matching the current filters (for pagination)."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -563,6 +575,9 @@ def get_filtered_filing_count(category=None, search=None, date_from=None, date_t
 
     if urgent_only:
         query += " AND urgent = 1"
+
+    if market_targets_only:
+        query += " AND has_market_targets = 1"
 
     cursor.execute(query, params)
     count = cursor.fetchone()[0]
@@ -631,6 +646,7 @@ def update_filing_analysis(
     is_complex=False,
     narrative_summary=None,
     relevant_reason=None,
+    has_market_targets=False,
 ):
     """Update a filing's LLM-generated fields after re-analysis.
     Only touches analysis fields — leaves user_tag, raw_text, etc. untouched."""
@@ -640,16 +656,18 @@ def update_filing_analysis(
     urgent_val = 1 if urgent else 0
     complex_val = 1 if is_complex else 0
     comp_val = _to_str(comp_details)
+    has_mt_val = 1 if has_market_targets else 0
     cursor.execute(f"""
         UPDATE filings
         SET summary = {p}, auto_category = {p}, auto_subcategory = {p},
             urgent = {p}, comp_details = {p},
             structured_summary = {p}, is_complex = {p},
-            narrative_summary = {p}, relevant_reason = {p}
+            narrative_summary = {p}, relevant_reason = {p},
+            has_market_targets = {p}
         WHERE id = {p}
     """, (summary, auto_category, auto_subcategory, urgent_val, comp_val,
           structured_summary, complex_val, narrative_summary, relevant_reason,
-          filing_id))
+          has_mt_val, filing_id))
     conn.commit()
     conn.close()
 

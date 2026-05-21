@@ -365,6 +365,16 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
                     "comp_events": llm_result.get("comp_events") or [],
                     "other": llm_result.get("other") or [],
                 }
+
+                # Detect market-based comp targets (stock price / market cap / TSR)
+                # and store BOTH the aggregate inside the JSON (for display) and
+                # a 0/1 flag at the row level (for fast filtering).
+                from market_targets import detect_market_targets
+                mt = detect_market_targets(structured)
+                structured["has_market_targets"] = mt["has_any"]
+                structured["market_targets"] = mt["targets"]
+                filing["has_market_targets"] = 1 if mt["has_any"] else 0
+
                 filing["structured_summary"] = json.dumps(structured)
 
                 # Legacy "summary" field stays populated for older templates/emails.

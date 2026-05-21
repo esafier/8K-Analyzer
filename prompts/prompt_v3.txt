@@ -95,8 +95,13 @@ Return ONLY valid JSON in this exact shape:
       "grant_date": "YYYY-MM-DD or null",
       "filing_date": "YYYY-MM-DD (copy from filing metadata)",
       "vesting_schedule": "Plain-English description of vesting or null",
-      "performance_hurdles": "Non-stock-price metrics (revenue, EBITDA, TSR, etc.) or null",
-      "stock_price_targets": "Option exercise prices or PSU stock-price hurdles (comma-separated) or null"
+      "operating_hurdles": "Operating-performance metrics ONLY (revenue, EBITDA, EPS, free cash flow, milestones). Do NOT put stock price, market cap, or TSR here. null if none.",
+      "market_based_targets": {
+        "stock_price": "Per-share stock-price target(s) the stock must reach, or option exercise prices, or PSU price hurdles. Quote the value(s). null if none.",
+        "market_cap": "Total market-capitalization target the company must reach (e.g., '$50B market cap'). null if none.",
+        "tsr": "Total Shareholder Return target — absolute (e.g., '20% annualized') or relative (e.g., 'top quartile vs. S&P 500 peer group'). null if none."
+      },
+      "stock_price_targets": "DEPRECATED — kept for backward compat. Mirror the market_based_targets.stock_price value here, or null."
     }
   ],
 
@@ -116,8 +121,16 @@ Use labels from this list when they apply. Multiple labels per filing are expect
 "Insider Transaction", "Forward Sale", "Equity Swap", "Share Pledge", "10b5-1 Plan", "Insider Sale",
 "Employment Agreement Amendment", "Clawback Adoption"
 
-## PRICE-TARGET EXTRACTION (high priority)
-When options have exercise prices or PSUs have stock-price hurdles, ALWAYS extract them into stock_price_targets and mention them in any relevant narrative. These reveal board expectations.
+## MARKET-BASED TARGETS (high priority)
+When the filing discloses ANY of these three types of market-based hurdles, you MUST extract them into the `market_based_targets` object (and also mirror stock-price values into `stock_price_targets` for backward compatibility):
+
+1. **Stock price targets** — option exercise prices, PSU price hurdles ("vests when stock reaches $X"), sustained-price conditions ("$X over 60 consecutive trading days")
+2. **Market cap targets** — explicit market-capitalization thresholds ("vests upon reaching $50B market cap")
+3. **TSR targets** — Total Shareholder Return, either absolute ("20% annualized TSR") or relative ("top quartile of peer group", "exceeds S&P 500 by 5%")
+
+These reveal board expectations about value creation — they are the single most signal-rich element of a comp disclosure.
+
+**Do NOT put TSR or market cap into `operating_hurdles`.** `operating_hurdles` is for revenue, EBITDA, EPS, free cash flow, and milestone-based hurdles only. The split matters because investors filter on it.
 
 ## SUMMARY QUALITY RULES
 - Never copy boilerplate or form headers from the filing.
