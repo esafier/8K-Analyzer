@@ -572,6 +572,38 @@ def deep_analysis(filing_id):
         return redirect(url_for("filing_detail", filing_id=filing_id))
 
 
+@app.route("/api/filings/mark-read", methods=["POST"])
+def api_mark_filings_read():
+    """Batch-mark filings as read.
+
+    Called from dashboard scroll-tracking JS. Idempotent — already-read filings
+    are silently skipped (see database.mark_filings_read).
+
+    Request body (JSON): {"filing_ids": [1, 2, 3]}
+    Response (JSON):     {"marked": <int>}
+    """
+    payload = request.get_json(silent=True) or {}
+    filing_ids = payload.get("filing_ids")
+
+    # Validate it's a list
+    if not isinstance(filing_ids, list):
+        return jsonify({"error": "filing_ids must be a list"}), 400
+
+    # Validate every entry is an int (and reject bool, which is a subclass of int)
+    cleaned = []
+    for fid in filing_ids:
+        if isinstance(fid, bool):
+            return jsonify({"error": "filing_ids must be integers"}), 400
+        if isinstance(fid, int):
+            cleaned.append(fid)
+        else:
+            return jsonify({"error": "filing_ids must be integers"}), 400
+
+    from database import mark_filings_read
+    marked = mark_filings_read(cleaned)
+    return jsonify({"marked": marked})
+
+
 # ============================================================
 # WATCHLIST ROUTES
 # ============================================================

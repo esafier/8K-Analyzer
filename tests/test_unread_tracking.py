@@ -166,3 +166,86 @@ def test_get_filtered_filing_count_unread_only(tmp_sqlite_db):
 
     assert database.get_filtered_filing_count(unread_only=True) == 2
     assert database.get_filtered_filing_count(unread_only=False) == 3
+
+
+@pytest.fixture
+def flask_client(tmp_sqlite_db, monkeypatch):
+    """Flask test client with auth disabled (no TRIAL_CODE set).
+
+    Relies on `tmp_sqlite_db` having monkeypatched `database.DATABASE_PATH` first.
+    App's `from database import ...` resolves function names at call time, so
+    requests hitting the routes will use the patched DB path automatically.
+    """
+    monkeypatch.delenv("TRIAL_CODE", raising=False)
+    import app as app_module
+    app_module.app.config["TESTING"] = True
+    with app_module.app.test_client() as client:
+        yield client
+
+
+def test_mark_read_endpoint_marks_filings(flask_client, tmp_sqlite_db):
+    """POST /api/filings/mark-read with filing_ids updates the DB."""
+    import database
+    import json
+
+    base = {
+        "ticker": "X", "cik": "1", "filed_date": "2026-05-01",
+        "item_codes": "5.02", "summary": "", "auto_category": "Compensation",
+        "filing_url": "https://example.com", "raw_text": "", "matched_keywords": "",
+        "urgent": False, "comp_details": None, "is_complex": False,
+        "narrative_summary": None, "relevant_reason": None, "structured_summary": None,
+    }
+    database.insert_filing({**base, "accession_no": "E-1", "company": "E1"})
+    database.insert_filing({**base, "accession_no": "E-2", "company": "E2"})
+
+    # Force unread
+    conn = sqlite3.connect(tmp_sqlite_db)
+    conn.execute("UPDATE filings SET read_at = NULL WHERE accession_no IN ('E-1','E-2')")
+    conn.commit()
+    conn.close()
+
+    ids = [
+        database.get_filing_by_accession("E-1")["id"],
+        database.get_filing_by_accession("E-2")["id"],
+    ]
+    resp = flask_client.post(
+        "/api/filings/mark-read",
+        data=json.dumps({"filing_ids": ids}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    assert resp.get_json() == {"marked": 2}
+
+
+def test_mark_read_endpoint_rejects_non_list(flask_client):
+    """Bad payload (filing_ids not a list) returns 400."""
+    import json
+    resp = flask_client.post(
+        "/api/filings/mark-read",
+        data=json.dumps({"filing_ids": "not a list"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+
+
+def test_mark_read_endpoint_rejects_non_int_ids(flask_client):
+    """Bad payload (non-int IDs) returns 400."""
+    import json
+    resp = flask_client.post(
+        "/api/filings/mark-read",
+        data=json.dumps({"filing_ids": ["not", "ints"]}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+
+
+def test_mark_read_endpoint_empty_list_returns_zero(flask_client):
+    """Empty list is valid, returns marked=0."""
+    import json
+    resp = flask_client.post(
+        "/api/filings/mark-read",
+        data=json.dumps({"filing_ids": []}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    assert resp.get_json() == {"marked": 0}
