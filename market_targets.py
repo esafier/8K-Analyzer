@@ -42,6 +42,13 @@ def _detect_in_hurdle_text(text):
     found = {"tsr": False, "market_cap": False}
     if not _is_meaningful(text):
         return found
+    # LLM occasionally returns a dict/list here instead of a string — coerce so
+    # regex.search doesn't crash. Stringified JSON still contains the keywords.
+    if not isinstance(text, str):
+        try:
+            text = json.dumps(text)
+        except (TypeError, ValueError):
+            text = str(text)
     if any(p.search(text) for p in _TSR_PATTERNS):
         found["tsr"] = True
     if any(p.search(text) for p in _MARKET_CAP_PATTERNS):
