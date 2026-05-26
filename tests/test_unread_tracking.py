@@ -280,3 +280,31 @@ def test_filing_detail_marks_unread_filing_as_read(flask_client, tmp_sqlite_db):
 
     # Now should be marked read
     assert database.get_filing_by_id(filing_id)["read_at"] is not None
+
+
+def test_index_unread_param_filters_results(flask_client, tmp_sqlite_db):
+    """GET /?unread=1 only shows filings with NULL read_at."""
+    import database
+
+    base = {
+        "ticker": "X", "cik": "1", "filed_date": "2026-05-01",
+        "item_codes": "5.02", "summary": "",
+        "auto_category": "Compensation", "filing_url": "https://example.com",
+        "raw_text": "", "matched_keywords": "", "urgent": False,
+        "comp_details": None, "is_complex": False, "narrative_summary": None,
+        "relevant_reason": None, "structured_summary": None,
+    }
+    database.insert_filing({**base, "accession_no": "Idx-Read", "company": "WasRead"})
+    database.insert_filing({**base, "accession_no": "Idx-Unread", "company": "StillUnread"})
+
+    conn = sqlite3.connect(tmp_sqlite_db)
+    conn.execute("UPDATE filings SET read_at = CURRENT_TIMESTAMP WHERE accession_no = 'Idx-Read'")
+    conn.execute("UPDATE filings SET read_at = NULL WHERE accession_no = 'Idx-Unread'")
+    conn.commit()
+    conn.close()
+
+    resp = flask_client.get("/?unread=1")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "StillUnread" in body
+    assert "WasRead" not in body

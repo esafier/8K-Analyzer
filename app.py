@@ -189,6 +189,7 @@ def index():
     date_to = request.args.get("date_to", "")
     urgent_only = request.args.get("urgent", "") == "1"
     market_targets_only = request.args.get("market_targets", "") == "1"
+    unread_only = request.args.get("unread", "") == "1"
     page = int(request.args.get("page", 1))
 
     per_page = 50
@@ -202,6 +203,7 @@ def index():
         date_to=date_to if date_to else None,
         urgent_only=urgent_only,
         market_targets_only=market_targets_only,
+        unread_only=unread_only,
         limit=per_page,
         offset=offset,
     )
@@ -265,6 +267,7 @@ def index():
         date_to=date_to if date_to else None,
         urgent_only=urgent_only,
         market_targets_only=market_targets_only,
+        unread_only=unread_only,
     )
     total_pages = max(1, math.ceil(filtered_count / per_page))
 
@@ -280,6 +283,7 @@ def index():
         current_date_to=date_to,
         current_urgent=urgent_only,
         current_market_targets=market_targets_only,
+        current_unread=unread_only,
         current_page=page,
         per_page=per_page,
         total_pages=total_pages,
