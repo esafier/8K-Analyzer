@@ -249,4 +249,79 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 
+<!-- Scroll-tracked unread marking -->
+<script>
+// When a filing row sits at >=50% visible in the viewport for >=1.5s,
+// queue its id. Every 2s, batch-POST the queue to /api/filings/mark-read.
+// Visual unread markers are NOT removed mid-session — too jumpy.
+// Next page refresh reflects the new state.
+(function() {
+    const DWELL_MS = 1500;
+    const BATCH_INTERVAL_MS = 2000;
+    const queue = new Set();
+    const dwellTimers = new Map();
+
+    const rows = document.querySelectorAll('tr.clickable-row[data-filing-id]');
+    if (rows.length === 0) return;  // nothing to track
+
+    const observer = new IntersectionObserver(function(entries) {
+        for (const entry of entries) {
+            const rawId = entry.target.dataset.filingId;
+            const id = parseInt(rawId, 10);
+            if (!Number.isFinite(id)) continue;
+
+            // Only track rows that are currently unread on this page-load.
+            // (Already-read rows have no .unread class; tracking them is wasted work.)
+            if (!entry.target.classList.contains('unread')) continue;
+
+            if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+                // Begin dwell — fires after DWELL_MS if it stays visible
+                if (!dwellTimers.has(rawId)) {
+                    dwellTimers.set(rawId, setTimeout(function() {
+                        queue.add(id);
+                        dwellTimers.delete(rawId);
+                    }, DWELL_MS));
+                }
+            } else {
+                // Left the viewport (or dipped below 50%) before timer fired
+                if (dwellTimers.has(rawId)) {
+                    clearTimeout(dwellTimers.get(rawId));
+                    dwellTimers.delete(rawId);
+                }
+            }
+        }
+    }, { threshold: [0.5] });
+
+    rows.forEach(function(row) { observer.observe(row); });
+
+    function flushQueue() {
+        if (queue.size === 0) return;
+        const ids = [...queue];
+        queue.clear();
+        fetch('/api/filings/mark-read', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filing_ids: ids }),
+        }).catch(function() {
+            // Network failed — requeue so the next batch retries
+            ids.forEach(function(id) { queue.add(id); });
+        });
+    }
+
+    setInterval(flushQueue, BATCH_INTERVAL_MS);
+
+    // Best-effort flush when the user closes the tab or navigates away.
+    // sendBeacon is fire-and-forget; can't be cancelled and won't block unload.
+    window.addEventListener('beforeunload', function() {
+        if (queue.size === 0) return;
+        const ids = [...queue];
+        const blob = new Blob(
+            [JSON.stringify({ filing_ids: ids })],
+            { type: 'application/json' }
+        );
+        navigator.sendBeacon('/api/filings/mark-read', blob);
+    });
+})();
+</script>
+
 {% endblock %}
