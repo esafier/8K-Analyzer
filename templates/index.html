@@ -62,6 +62,13 @@
                         <span class="badge" style="background:#f5b800;color:#000;">🎯 Market Targets</span> only
                     </label>
                 </div>
+                <div class="form-check mb-2">
+                    <input type="checkbox" name="unread" value="1" class="form-check-input"
+                           id="unreadCheck" {{ 'checked' if current_unread }}>
+                    <label class="form-check-label" for="unreadCheck">
+                        <span class="badge bg-primary">Unread</span> only
+                    </label>
+                </div>
             </div>
 
             <div class="col-md-1 d-flex align-items-end gap-2">
@@ -90,7 +97,9 @@
         </thead>
         <tbody>
             {% for filing in filings %}
-            <tr class="clickable-row" onclick="window.location='/filing/{{ filing['id'] }}?back={{ ('/?page=' ~ current_page ~ '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') ~ '&market_targets=' ~ ('1' if current_market_targets else ''))|urlencode }}'">
+            <tr class="clickable-row{% if not filing['read_at'] %} unread{% endif %}"
+                data-filing-id="{{ filing['id'] }}"
+                onclick="window.location='/filing/{{ filing['id'] }}?back={{ ('/?page=' ~ current_page ~ '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') ~ '&market_targets=' ~ ('1' if current_market_targets else '') ~ '&unread=' ~ ('1' if current_unread else ''))|urlencode }}'">
                 <!-- Watchlist star toggle -->
                 <td onclick="event.stopPropagation()">
                     <button class="btn btn-link p-0 watchlist-star" data-filing-id="{{ filing['id'] }}"
@@ -161,7 +170,7 @@
 </div>
 
 <!-- Numbered pagination -->
-{% set q = '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') ~ '&market_targets=' ~ ('1' if current_market_targets else '') %}
+{% set q = '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') ~ '&market_targets=' ~ ('1' if current_market_targets else '') ~ '&unread=' ~ ('1' if current_unread else '') %}
 <nav aria-label="Page navigation">
     <ul class="pagination justify-content-center flex-wrap">
         <!-- Previous button -->
