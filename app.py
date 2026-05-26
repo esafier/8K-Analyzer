@@ -293,6 +293,9 @@ def index():
 @app.route("/filing/<int:filing_id>")
 def filing_detail(filing_id):
     """Detail page for a single filing."""
+    # Opening a filing counts as reading it. Idempotent — no-op if already read.
+    from database import mark_filings_read
+    mark_filings_read([filing_id])
     return _render_filing_detail(filing_id)
 
 

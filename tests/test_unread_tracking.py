@@ -249,3 +249,34 @@ def test_mark_read_endpoint_empty_list_returns_zero(flask_client):
     )
     assert resp.status_code == 200
     assert resp.get_json() == {"marked": 0}
+
+
+def test_filing_detail_marks_unread_filing_as_read(flask_client, tmp_sqlite_db):
+    """GET /filing/<id> marks an unread filing as read."""
+    import database
+
+    database.insert_filing({
+        "accession_no": "D-1", "company": "DetailCo", "ticker": "X", "cik": "1",
+        "filed_date": "2026-05-01", "item_codes": "5.02", "summary": "",
+        "auto_category": "Compensation", "filing_url": "https://example.com",
+        "raw_text": "", "matched_keywords": "", "urgent": False,
+        "comp_details": None, "is_complex": False, "narrative_summary": None,
+        "relevant_reason": None, "structured_summary": None,
+    })
+
+    conn = sqlite3.connect(tmp_sqlite_db)
+    conn.execute("UPDATE filings SET read_at = NULL WHERE accession_no = 'D-1'")
+    conn.commit()
+    conn.close()
+
+    filing_id = database.get_filing_by_accession("D-1")["id"]
+
+    # Confirm precondition
+    assert database.get_filing_by_id(filing_id)["read_at"] is None
+
+    # Hit the detail page
+    resp = flask_client.get(f"/filing/{filing_id}")
+    assert resp.status_code == 200
+
+    # Now should be marked read
+    assert database.get_filing_by_id(filing_id)["read_at"] is not None
