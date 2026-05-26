@@ -439,19 +439,20 @@ def deep_analysis(filing_id):
         price_str = ""
 
         if ticker:
-            # Market cap (reuse existing cache)
+            # Market cap — use sync refresh so the LLM gets current data,
+            # not whatever stale value the dashboard happens to be showing
             try:
-                from market_cap import get_market_cap_map
-                caps = get_market_cap_map([ticker])
+                from market_cap import refresh_market_caps_sync
+                caps = refresh_market_caps_sync([ticker])
                 mcap_val = caps.get(ticker.strip().upper())
                 mcap_str = format_market_cap(mcap_val) if mcap_val else "Not available"
             except Exception:
                 mcap_str = "Not available"
 
-            # Next earnings date (reuse existing cache)
+            # Next earnings date — same reasoning: sync fetch for the LLM
             try:
-                from earnings import get_earnings_map
-                e_map = get_earnings_map([ticker])
+                from earnings import refresh_earnings_sync
+                e_map = refresh_earnings_sync([ticker])
                 e_info = e_map.get(ticker.strip().upper())
                 earnings_str = format_earnings_date(e_info) if e_info else "Not available"
             except Exception:
@@ -1160,26 +1161,34 @@ def run_backfill(start_date, end_date, model=None):
                              new=new_count,
                              skipped=skipped_count)
 
-        # Step 4: Pre-fetch market caps so the dashboard loads instantly
-        # One batch call to yfinance for all new tickers, results get cached in DB
+        # Step 4: Pre-fetch market caps / earnings / stock prices so the
+        # dashboard has data ready. Use the *_sync variants — this is a
+        # background job, nobody is waiting on a page load.
         tickers_to_fetch = list({f['ticker'] for f in matched_filings if f.get('ticker')})
         if tickers_to_fetch:
             try:
-                from market_cap import get_market_cap_map
+                from market_cap import refresh_market_caps_sync
                 print(f"[MARKET CAP] Pre-fetching market caps for {len(tickers_to_fetch)} tickers...", flush=True)
-                get_market_cap_map(tickers_to_fetch)
-                print(f"[MARKET CAP] Done — cached for next 24 hours", flush=True)
+                refresh_market_caps_sync(tickers_to_fetch)
+                print(f"[MARKET CAP] Done", flush=True)
             except Exception as e:
                 print(f"[MARKET CAP] Pre-fetch failed (not critical): {e}", flush=True)
 
-            # Also pre-fetch earnings dates
             try:
-                from earnings import get_earnings_map
+                from earnings import refresh_earnings_sync
                 print(f"[EARNINGS] Pre-fetching earnings for {len(tickers_to_fetch)} tickers...", flush=True)
-                get_earnings_map(tickers_to_fetch)
-                print(f"[EARNINGS] Done — cached for next 12 hours", flush=True)
+                refresh_earnings_sync(tickers_to_fetch)
+                print(f"[EARNINGS] Done", flush=True)
             except Exception as e:
                 print(f"[EARNINGS] Pre-fetch failed (not critical): {e}", flush=True)
+
+            try:
+                from stock_price import refresh_stock_prices_sync
+                print(f"[STOCK PRICE] Pre-fetching prices for {len(tickers_to_fetch)} tickers...", flush=True)
+                refresh_stock_prices_sync(tickers_to_fetch)
+                print(f"[STOCK PRICE] Done", flush=True)
+            except Exception as e:
+                print(f"[STOCK PRICE] Pre-fetch failed (not critical): {e}", flush=True)
 
         # Record that a backfill completed (for front page display)
         update_last_backfill("web")

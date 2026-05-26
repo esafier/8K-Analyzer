@@ -1297,10 +1297,18 @@ def _create_market_caps_table(conn):
     print("[STARTUP] Market caps table ready")
 
 
-def get_cached_market_caps(tickers):
+def get_cached_market_caps(tickers, max_age_hours=None):
     """Look up cached market caps for a list of tickers.
-    Only returns entries that were fetched within the last 7 days.
-    Returns a dict like {'AAPL': 3500000000000, 'MSFT': 2800000000000}."""
+
+    Args:
+        tickers: List of ticker strings.
+        max_age_hours: If set, only return rows fetched within this many hours.
+                       If None (default), return all cached rows regardless of age —
+                       useful for fast read paths that show stale data and refresh
+                       in the background.
+
+    Returns a dict like {'AAPL': 3500000000000, 'MSFT': 2800000000000}.
+    """
     if not tickers:
         return {}
     conn = get_connection()
@@ -1308,18 +1316,26 @@ def get_cached_market_caps(tickers):
     p = _placeholder()
     placeholders = ", ".join([p] * len(tickers))
 
-    # Only return rows fetched within the last 7 days
-    if _using_postgres():
+    if max_age_hours is None:
+        # No age filter — return whatever's cached. Fast read path.
+        cursor.execute(
+            f"SELECT ticker, market_cap FROM market_caps WHERE ticker IN ({placeholders})",
+            tuple(tickers),
+        )
+    elif _using_postgres():
+        # int() guards against SQL injection (we're inlining the value)
+        hours = int(max_age_hours)
         cursor.execute(f"""
             SELECT ticker, market_cap FROM market_caps
             WHERE ticker IN ({placeholders})
-            AND fetched_at > NOW() - INTERVAL '7 days'
+            AND fetched_at > NOW() - INTERVAL '{hours} hours'
         """, tuple(tickers))
     else:
+        hours = int(max_age_hours)
         cursor.execute(f"""
             SELECT ticker, market_cap FROM market_caps
             WHERE ticker IN ({placeholders})
-            AND fetched_at > datetime('now', '-7 days')
+            AND fetched_at > datetime('now', '-{hours} hours')
         """, tuple(tickers))
 
     rows = cursor.fetchall()
@@ -1413,10 +1429,16 @@ def _create_earnings_cache_table(conn):
     print("[STARTUP] Earnings cache table ready")
 
 
-def get_cached_earnings(tickers):
+def get_cached_earnings(tickers, max_age_hours=None):
     """Look up cached earnings dates for a list of tickers.
-    Only returns entries fetched within the last 48 hours.
-    Returns a dict like {'AAPL': {'date': '2026-04-25', 'timing': 'after_market'}}."""
+
+    Args:
+        tickers: List of ticker strings.
+        max_age_hours: If set, only return rows fetched within this many hours.
+                       If None (default), return all cached rows regardless of age.
+
+    Returns a dict like {'AAPL': {'date': '2026-04-25', 'timing': 'after_market'}}.
+    """
     if not tickers:
         return {}
     conn = get_connection()
@@ -1424,18 +1446,26 @@ def get_cached_earnings(tickers):
     p = _placeholder()
     placeholders = ", ".join([p] * len(tickers))
 
-    # 48-hour TTL — earnings dates don't change often, refresh every couple days
-    if _using_postgres():
+    if max_age_hours is None:
+        # No age filter — return whatever's cached. Fast read path.
+        cursor.execute(
+            f"SELECT ticker, earnings_date, earnings_timing FROM earnings_cache "
+            f"WHERE ticker IN ({placeholders})",
+            tuple(tickers),
+        )
+    elif _using_postgres():
+        hours = int(max_age_hours)
         cursor.execute(f"""
             SELECT ticker, earnings_date, earnings_timing FROM earnings_cache
             WHERE ticker IN ({placeholders})
-            AND fetched_at > NOW() - INTERVAL '48 hours'
+            AND fetched_at > NOW() - INTERVAL '{hours} hours'
         """, tuple(tickers))
     else:
+        hours = int(max_age_hours)
         cursor.execute(f"""
             SELECT ticker, earnings_date, earnings_timing FROM earnings_cache
             WHERE ticker IN ({placeholders})
-            AND fetched_at > datetime('now', '-2 days')
+            AND fetched_at > datetime('now', '-{hours} hours')
         """, tuple(tickers))
 
     rows = cursor.fetchall()
@@ -1550,28 +1580,40 @@ def _create_departure_extractions_table(conn):
     print("[STARTUP] Departure extractions table ready")
 
 
-def get_cached_stock_price(ticker):
+def get_cached_stock_price(ticker, max_age_hours=1):
     """Look up cached stock price for a single ticker.
-    Only returns if fetched within the last 1 hour (prices move fast).
-    Returns the price as a float, or None if not cached/stale."""
+
+    Args:
+        ticker: Single ticker string.
+        max_age_hours: Only return if fetched within this many hours. Default 1.
+                       Pass None to return regardless of age.
+
+    Returns the price as a float, or None if not cached/stale.
+    """
     if not ticker:
         return None
     conn = get_connection()
     cursor = conn.cursor()
     p = _placeholder()
 
-    # 1-hour TTL — stock prices change throughout the day
-    if _using_postgres():
+    if max_age_hours is None:
+        cursor.execute(
+            f"SELECT price FROM stock_prices WHERE ticker = {p}",
+            (ticker.upper(),),
+        )
+    elif _using_postgres():
+        hours = int(max_age_hours)
         cursor.execute(f"""
             SELECT price FROM stock_prices
             WHERE ticker = {p}
-            AND fetched_at > NOW() - INTERVAL '1 hour'
+            AND fetched_at > NOW() - INTERVAL '{hours} hours'
         """, (ticker.upper(),))
     else:
+        hours = int(max_age_hours)
         cursor.execute(f"""
             SELECT price FROM stock_prices
             WHERE ticker = {p}
-            AND fetched_at > datetime('now', '-1 hour')
+            AND fetched_at > datetime('now', '-{hours} hours')
         """, (ticker.upper(),))
 
     row = cursor.fetchone()
@@ -1583,6 +1625,53 @@ def get_cached_stock_price(ticker):
         return row[0]
     else:
         return row["price"]
+
+
+def get_cached_stock_prices(tickers, max_age_hours=None):
+    """Batch version of get_cached_stock_price — looks up many tickers in one query.
+
+    Args:
+        tickers: List of ticker strings.
+        max_age_hours: If set, only return rows fetched within this many hours.
+                       If None (default), return all cached rows regardless of age.
+
+    Returns a dict like {'AAPL': 175.23, 'MSFT': 412.50}.
+    """
+    if not tickers:
+        return {}
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    upper_tickers = [t.upper() for t in tickers]
+    placeholders = ", ".join([p] * len(upper_tickers))
+
+    if max_age_hours is None:
+        cursor.execute(
+            f"SELECT ticker, price FROM stock_prices WHERE ticker IN ({placeholders})",
+            tuple(upper_tickers),
+        )
+    elif _using_postgres():
+        hours = int(max_age_hours)
+        cursor.execute(f"""
+            SELECT ticker, price FROM stock_prices
+            WHERE ticker IN ({placeholders})
+            AND fetched_at > NOW() - INTERVAL '{hours} hours'
+        """, tuple(upper_tickers))
+    else:
+        hours = int(max_age_hours)
+        cursor.execute(f"""
+            SELECT ticker, price FROM stock_prices
+            WHERE ticker IN ({placeholders})
+            AND fetched_at > datetime('now', '-{hours} hours')
+        """, tuple(upper_tickers))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    if _using_postgres():
+        return {row[0]: row[1] for row in rows}
+    else:
+        return {row["ticker"]: row["price"] for row in rows}
 
 
 def upsert_stock_price(ticker, price):

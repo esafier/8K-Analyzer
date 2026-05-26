@@ -60,23 +60,30 @@ def daily_fetch_job():
                          new=new_count,
                          skipped=skipped_count)
 
-    # Pre-fetch market caps so the dashboard has them ready
+    # Pre-fetch market caps / earnings / stock prices so the dashboard has
+    # data ready when users open it. Use *_sync — this is a background job.
     tickers_to_fetch = list({f['ticker'] for f in matched if f.get('ticker')})
     if tickers_to_fetch:
         try:
-            from market_cap import get_market_cap_map
+            from market_cap import refresh_market_caps_sync
             print(f"  [MARKET CAP] Pre-fetching for {len(tickers_to_fetch)} tickers...")
-            get_market_cap_map(tickers_to_fetch)
+            refresh_market_caps_sync(tickers_to_fetch)
         except Exception as e:
             print(f"  [MARKET CAP] Pre-fetch failed (not critical): {e}")
 
-        # Pre-fetch earnings dates so the dashboard has them ready
         try:
-            from earnings import get_earnings_map
+            from earnings import refresh_earnings_sync
             print(f"  [EARNINGS] Pre-fetching for {len(tickers_to_fetch)} tickers...")
-            get_earnings_map(tickers_to_fetch)
+            refresh_earnings_sync(tickers_to_fetch)
         except Exception as e:
             print(f"  [EARNINGS] Pre-fetch failed (not critical): {e}")
+
+        try:
+            from stock_price import refresh_stock_prices_sync
+            print(f"  [STOCK PRICE] Pre-fetching for {len(tickers_to_fetch)} tickers...")
+            refresh_stock_prices_sync(tickers_to_fetch)
+        except Exception as e:
+            print(f"  [STOCK PRICE] Pre-fetch failed (not critical): {e}")
 
     # Record that a scheduled fetch completed (for front page display)
     update_last_backfill("scheduled")

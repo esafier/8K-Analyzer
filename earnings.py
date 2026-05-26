@@ -1,7 +1,15 @@
 # earnings.py — Fetch and cache next earnings date for stock tickers
 # Uses API Ninjas Earnings Calendar API as data source, with database caching
 # so we don't hit the API on every page load.
+#
+# Two public entry points (mirror market_cap.py):
+#   get_earnings_map(tickers)   — fast read-only cache lookup. Spawns a
+#                                 background thread for stale tickers so they
+#                                 are ready next time. Never blocks the caller.
+#   refresh_earnings_sync(...)  — blocking fetch + cache write. Use only when
+#                                 the caller genuinely needs fresh data now.
 
+import threading
 import time
 import requests
 from datetime import datetime
@@ -12,8 +20,15 @@ from database import get_cached_earnings, upsert_earnings
 CHUNK_SIZE = 5
 CHUNK_DELAY = 1.0  # seconds between chunks
 
+# How long a cached earnings date is considered fresh
+FRESH_TTL_HOURS = 48
+
 # API Ninjas endpoint for earnings calendar
 API_URL = "https://api.api-ninjas.com/v1/earningscalendar"
+
+# Tracks in-flight refreshes so multiple page loads don't spawn duplicate threads
+_in_flight_lock = threading.Lock()
+_in_flight = set()
 
 
 def fetch_from_api_ninjas(tickers):
@@ -86,31 +101,65 @@ def _find_next_earnings(entries, today):
     }
 
 
-def get_earnings_map(tickers):
-    """Main entry point — returns {ticker: {'date': '...', 'timing': '...'} or None}.
+def _refresh_worker(tickers):
+    """Background-thread worker. Fetches from API and updates the DB cache.
+    Always clears the in-flight set so failures don't permanently block retries."""
+    try:
+        fresh = fetch_from_api_ninjas(tickers)
+        upsert_earnings(fresh)
+    except Exception as e:
+        print(f"[EARNINGS] Background refresh failed: {e}")
+    finally:
+        with _in_flight_lock:
+            _in_flight.difference_update(tickers)
 
-    1. Checks the database cache for fresh values (< 12 hours old)
-    2. Fetches any missing/stale tickers from API Ninjas
-    3. Saves fresh values back to the database
-    4. Returns the complete map for template rendering
+
+def _refresh_in_background(tickers):
+    """Spawn a daemon thread to refresh stale tickers without blocking the caller."""
+    with _in_flight_lock:
+        new_tickers = [t for t in tickers if t not in _in_flight]
+        if not new_tickers:
+            return
+        _in_flight.update(new_tickers)
+
+    thread = threading.Thread(target=_refresh_worker, args=(new_tickers,), daemon=True)
+    thread.start()
+
+
+def refresh_earnings_sync(tickers):
+    """Blocking fetch — populates cache for missing/stale tickers.
+    Use when the caller needs fresh data immediately.
+    Returns the full {ticker: {date, timing} | None} map."""
+    if not tickers:
+        return {}
+    tickers = [t.strip().upper() for t in tickers if t]
+    cached = get_cached_earnings(tickers, max_age_hours=FRESH_TTL_HOURS)
+    stale = [t for t in tickers if t not in cached]
+    if stale:
+        fresh = fetch_from_api_ninjas(stale)
+        upsert_earnings(fresh)
+        cached.update(fresh)
+    return cached
+
+
+def get_earnings_map(tickers):
+    """Fast read-only lookup — returns whatever's cached for the given tickers,
+    regardless of age, no network calls. Spawns a background refresh thread
+    for any missing/stale entries so they'll be current on the next page load.
+
+    Returns dict {ticker: {'date': ..., 'timing': ...} or None}.
     """
     if not tickers:
         return {}
 
-    # Normalize tickers to uppercase
     tickers = [t.strip().upper() for t in tickers if t]
 
-    # Step 1: Check what we already have cached
-    cached = get_cached_earnings(tickers)
+    cached_any_age = get_cached_earnings(tickers, max_age_hours=None)
 
-    # Step 2: Figure out which tickers need fetching
-    stale_tickers = [t for t in tickers if t not in cached]
+    # Decide what's stale by checking against the freshness TTL
+    cached_fresh = get_cached_earnings(tickers, max_age_hours=FRESH_TTL_HOURS)
+    needs_refresh = [t for t in tickers if t not in cached_fresh]
+    if needs_refresh:
+        _refresh_in_background(needs_refresh)
 
-    # Step 3: Fetch missing ones from API Ninjas
-    if stale_tickers:
-        fresh = fetch_from_api_ninjas(stale_tickers)
-        # Step 4: Save to database so next page load is instant
-        upsert_earnings(fresh)
-        cached.update(fresh)
-
-    return cached
+    return cached_any_age
