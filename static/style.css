@@ -30,6 +30,20 @@ tr.clickable-row:has(.badge.bg-danger) {
     border-left: 3px solid #dc3545;
 }
 
+/* Unread filing row: subtle left-edge accent + bolder company name.
+   Marker reflects state at page load time; the scroll-tracking JS deliberately
+   does NOT repaint rows as they're marked read mid-session — that would feel
+   jumpy. Next page refresh picks up the new state.
+   Border only applies to non-urgent rows so the red urgent border still wins
+   visually; the bold company name still signals "unread" on urgent rows. */
+tr.unread:not(:has(.badge.bg-danger)) {
+    border-left: 4px solid #0d6efd;
+}
+tr.unread td:nth-child(4) {
+    /* "Company" is the 4th visible column (star, badges, date, company, ...) */
+    font-weight: 600;
+}
+
 /* Market cap subtitle shown under tickers */
 .market-cap {
     font-size: 0.75rem;
