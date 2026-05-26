@@ -338,6 +338,21 @@ def _migrate_add_columns(conn):
         cursor.execute("ALTER TABLE filings ADD COLUMN has_market_targets INTEGER DEFAULT 0")
         print("[MIGRATE] Added 'has_market_targets' column")
 
+    # Add read_at timestamp for tracking which filings the user has reviewed.
+    # NULL = unread; non-null timestamp = read at that time.
+    if "read_at" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN read_at TIMESTAMP DEFAULT NULL")
+        print("[MIGRATE] Added 'read_at' column")
+
+        # Clean-slate: mark every pre-existing row as read so the user isn't
+        # buried under thousands of "unread" items the moment the feature ships.
+        # Runs only once — this branch only fires when the column is freshly added.
+        cursor.execute("UPDATE filings SET read_at = CURRENT_TIMESTAMP WHERE read_at IS NULL")
+        print(f"[MIGRATE] Marked {cursor.rowcount} pre-existing filings as read (clean slate)")
+
+    # Index on read_at — the "Show unread only" dashboard query uses WHERE read_at IS NULL
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_filings_read_at ON filings(read_at)")
+
     conn.commit()
 
 
