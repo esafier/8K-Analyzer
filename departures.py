@@ -39,6 +39,82 @@ def _normalize_accession(s):
     return (s or "").replace("-", "")
 
 
+def _normalize_person(name):
+    """Lowercased, whitespace-collapsed name for dedupe grouping."""
+    return " ".join((name or "").lower().split())
+
+
+# Reasons that carry no real information — we'd rather merge in a more specific one.
+_GENERIC_REASONS = {"no reason stated", "not stated", "unknown", "none", ""}
+
+
+def _pick_best_reason(reasons):
+    """Choose the most informative reason from a group of duplicates.
+
+    Prefers any specific reason over generic 'no reason stated' filler.
+    Among specific reasons, picks the longest (proxy for most detailed).
+    """
+    specific = [r for r in reasons if r and r.strip().lower() not in _GENERIC_REASONS]
+    if specific:
+        return max(specific, key=len)
+    # Fall back to the first non-empty reason, otherwise None
+    non_empty = [r for r in reasons if r]
+    return non_empty[0] if non_empty else None
+
+
+def _pick_best_position(positions):
+    """Choose the most specific position (longest non-empty string)."""
+    non_empty = [p for p in positions if p]
+    return max(non_empty, key=len) if non_empty else None
+
+
+def _dedupe_departures(rows):
+    """Collapse duplicates by normalized person name.
+
+    Rules:
+      - Same person across multiple filings → keep the EARLIEST filing's row
+        (the canonical announcement) but merge in the best reason/position
+        seen across all duplicates.
+      - Same person, same filing (LLM extracted them twice for different roles)
+        → still collapses into one row via the same merge.
+      - If ANY of the merged rows was the current filing, propagate that flag.
+      - Error rows (person=None) are never deduped — they pass through as-is so
+        the user can still see that a filing's extraction failed.
+    """
+    if not rows:
+        return rows
+
+    groups = {}
+    passthrough = []  # error rows / rows without a person name
+    order = []  # preserve first-seen order so the result is deterministic
+    for r in rows:
+        key = _normalize_person(r.get("person"))
+        if not key:
+            passthrough.append(r)
+            continue
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+
+    merged = []
+    for key in order:
+        group = groups[key]
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        # Sort earliest first by filing date — that row becomes our canonical entry
+        group.sort(key=lambda r: r.get("_filing_date") or "")
+        canonical = dict(group[0])
+        canonical["reason"] = _pick_best_reason([r.get("reason") for r in group])
+        canonical["position"] = _pick_best_position([r.get("position") for r in group])
+        # If any merged row was the current filing, keep that marker visible
+        canonical["_is_current_filing"] = any(r.get("_is_current_filing") for r in group)
+        merged.append(canonical)
+
+    return merged + passthrough
+
+
 def get_departures_for_filing(cik, current_accession):
     """Return a flat, newest-first list of departure entries for this CIK
     over the last 24 months.
@@ -151,6 +227,10 @@ def get_departures_for_filing(cik, current_accession):
                 "_is_current_filing": is_current,
                 "_error": False,
             })
+
+    # Collapse duplicates (same person across filings, or LLM extracting one
+    # person multiple times within a single 5.02) into one row per person.
+    flat = _dedupe_departures(flat)
 
     # Sort newest first by departure date, falling back to filing date
     flat.sort(key=lambda d: (d.get("date") or d.get("_filing_date") or ""), reverse=True)

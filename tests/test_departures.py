@@ -137,6 +137,153 @@ def test_render_prose_escapes_html():
     assert "&quot;" in line
 
 
+def test_dedupe_collapses_same_person_across_filings(tmp_sqlite_db):
+    """Same person mentioned in two filings (e.g., later filing re-references
+    a previously announced departure) should collapse to one row, keeping the
+    earliest filing as the source."""
+    from departures import get_departures_for_filing
+
+    # Two filings: the actual announcement (older) and a later filing that
+    # mentions the same person as "previously announced departure".
+    fake_history = [
+        {"filing_date": "2026-05-21", "items": "5.02",
+         "accession_no": "0001234-26-LATER", "snippet": "...Michelle Hook..."},
+        {"filing_date": "2026-05-05", "items": "5.02",
+         "accession_no": "0001234-26-ORIG", "snippet": "...Michelle Hook..."},
+    ]
+
+    def fake_extract(snippet, filed_date):
+        if filed_date == "2026-05-21":
+            return {"departures": [{"date": "2026-05-21", "person": "Michelle Hook",
+                                     "position": "Chief Financial Officer",
+                                     "reason": "previously announced departure"}],
+                    "error": False, "_tokens_in": 0, "_tokens_out": 0}
+        return {"departures": [{"date": "2026-05-05", "person": "Michelle Hook",
+                                 "position": "Chief Financial Officer",
+                                 "reason": "no reason stated"}],
+                "error": False, "_tokens_in": 0, "_tokens_out": 0}
+
+    with patch("departures.get_edgar_departure_history", return_value=fake_history), \
+         patch("departures.extract_departures", side_effect=fake_extract):
+        result = get_departures_for_filing(cik="0001234567", current_accession="x")
+
+    # One row, sourced from the earlier (real announcement) filing
+    assert len(result) == 1
+    assert result[0]["person"] == "Michelle Hook"
+    assert result[0]["_accession"] == "0001234-26-ORIG"
+    assert result[0]["_filing_date"] == "2026-05-05"
+    # Should prefer the more specific reason over "no reason stated"
+    assert result[0]["reason"] == "previously announced departure"
+
+
+def test_dedupe_collapses_same_person_same_filing(tmp_sqlite_db):
+    """LLM sometimes returns one person twice in the same filing (e.g., a CEO
+    who also resigned from the Board). Should collapse to one row."""
+    from departures import get_departures_for_filing
+
+    fake_history = [{
+        "filing_date": "2025-09-21", "items": "5.02",
+        "accession_no": "0001234-25-OSANLOO", "snippet": "...Osanloo...",
+    }]
+    fake_extract = {
+        "departures": [
+            {"date": "2025-09-21", "person": "Michael Osanloo",
+             "position": "President and Chief Executive Officer",
+             "reason": "no reason stated"},
+            {"date": "2025-09-21", "person": "Michael Osanloo",
+             "position": "President and Chief Executive Officer",
+             "reason": "resigned from the Board as required by his employment agreement"},
+        ],
+        "error": False, "_tokens_in": 0, "_tokens_out": 0,
+    }
+
+    with patch("departures.get_edgar_departure_history", return_value=fake_history), \
+         patch("departures.extract_departures", return_value=fake_extract):
+        result = get_departures_for_filing(cik="0001234567", current_accession="x")
+
+    assert len(result) == 1
+    assert result[0]["person"] == "Michael Osanloo"
+    # Should pick the specific reason, not the generic one
+    assert "resigned from the Board" in result[0]["reason"]
+
+
+def test_dedupe_propagates_current_filing_flag(tmp_sqlite_db):
+    """If the user is viewing a filing whose row gets merged away, the merged
+    canonical row should still show '(this filing)' so the user sees that
+    their current filing is represented."""
+    from departures import get_departures_for_filing
+
+    fake_history = [
+        {"filing_date": "2026-05-21", "items": "5.02",
+         "accession_no": "0001234-26-CURRENT", "snippet": "..."},
+        {"filing_date": "2026-05-05", "items": "5.02",
+         "accession_no": "0001234-26-EARLIER", "snippet": "..."},
+    ]
+
+    def fake_extract(snippet, filed_date):
+        return {"departures": [{"date": filed_date, "person": "Same Person",
+                                 "position": "CFO", "reason": "departed"}],
+                "error": False, "_tokens_in": 0, "_tokens_out": 0}
+
+    # User is viewing the LATER filing; earlier filing is canonical after dedupe
+    with patch("departures.get_edgar_departure_history", return_value=fake_history), \
+         patch("departures.extract_departures", side_effect=fake_extract):
+        result = get_departures_for_filing(cik="0001234567",
+                                            current_accession="0001234-26-CURRENT")
+
+    assert len(result) == 1
+    assert result[0]["_is_current_filing"] is True
+    assert result[0]["_accession"] == "0001234-26-EARLIER"
+
+
+def test_dedupe_preserves_distinct_people(tmp_sqlite_db):
+    """Two different people in the same filing should remain as two rows."""
+    from departures import get_departures_for_filing
+
+    fake_history = [{
+        "filing_date": "2025-09-21", "items": "5.02",
+        "accession_no": "0001234-25-AAA", "snippet": "...",
+    }]
+    fake_extract = {
+        "departures": [
+            {"date": "2025-09-21", "person": "Alice Smith", "position": "CFO", "reason": "retired"},
+            {"date": "2025-09-21", "person": "Bob Jones", "position": "COO", "reason": "resigned"},
+        ],
+        "error": False, "_tokens_in": 0, "_tokens_out": 0,
+    }
+
+    with patch("departures.get_edgar_departure_history", return_value=fake_history), \
+         patch("departures.extract_departures", return_value=fake_extract):
+        result = get_departures_for_filing(cik="0001234567", current_accession="x")
+
+    assert len(result) == 2
+    names = {r["person"] for r in result}
+    assert names == {"Alice Smith", "Bob Jones"}
+
+
+def test_dedupe_keeps_error_rows(tmp_sqlite_db):
+    """Error placeholder rows (person=None) must not be collapsed together —
+    each represents a different filing that failed extraction."""
+    from departures import get_departures_for_filing
+
+    fake_history = [
+        {"filing_date": "2025-08-01", "items": "5.02",
+         "accession_no": "0001234-25-FAIL1", "snippet": "Item 5.02 ..."},
+        {"filing_date": "2025-07-01", "items": "5.02",
+         "accession_no": "0001234-25-FAIL2", "snippet": "Item 5.02 ..."},
+    ]
+
+    with patch("departures.get_edgar_departure_history", return_value=fake_history), \
+         patch("departures.extract_departures", side_effect=RuntimeError("boom")):
+        result = get_departures_for_filing(cik="0001234567", current_accession="x")
+
+    # Both error rows should survive — distinct filings, distinct evidence
+    assert len(result) == 2
+    assert all(r["_error"] for r in result)
+    accessions = {r["_accession"] for r in result}
+    assert accessions == {"0001234-25-FAIL1", "0001234-25-FAIL2"}
+
+
 def test_pipeline_handles_thread_exception(tmp_sqlite_db):
     """A raise from extract_departures inside a thread must not crash the pipeline."""
     from departures import get_departures_for_filing
