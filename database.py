@@ -612,6 +612,39 @@ def get_filing_by_id(filing_id):
     return result
 
 
+def mark_filings_read(filing_ids):
+    """Mark the given filings as read by setting their read_at timestamp.
+
+    Only updates rows where read_at IS NULL (idempotent — already-read rows are
+    untouched). Returns the number of rows actually updated. Empty list → 0.
+
+    Called by:
+    - POST /api/filings/mark-read (batched from dashboard scroll-tracking)
+    - GET /filing/<id> (single-filing case when user opens detail page)
+    """
+    if not filing_ids:
+        return 0
+
+    # Defensive cap — client batches should be much smaller than this
+    filing_ids = list(filing_ids)[:100]
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    # Build the parameterised IN (...) clause manually since SQLite/pg8000 differ
+    placeholders = ",".join([p] * len(filing_ids))
+    query = (
+        f"UPDATE filings SET read_at = CURRENT_TIMESTAMP "
+        f"WHERE id IN ({placeholders}) AND read_at IS NULL"
+    )
+    cursor.execute(query, filing_ids)
+    rowcount = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return rowcount
+
+
 def get_filing_by_accession(accession_no):
     """Fetch a single filing by its accession_no. Returns a dict or None.
     Explicitly builds a dict from cursor columns to ensure cross-db consistency
