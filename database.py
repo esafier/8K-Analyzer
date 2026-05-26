@@ -517,7 +517,7 @@ def insert_filing(filing_data):
     return was_new
 
 
-def get_filings(category=None, search=None, date_from=None, date_to=None, urgent_only=False, market_targets_only=False, limit=100, offset=0):
+def get_filings(category=None, search=None, date_from=None, date_to=None, urgent_only=False, market_targets_only=False, unread_only=False, limit=100, offset=0):
     """Fetch filings from the database with optional filters.
     Used by the dashboard to display results."""
     conn = get_connection()
@@ -553,6 +553,9 @@ def get_filings(category=None, search=None, date_from=None, date_to=None, urgent
     if market_targets_only:
         query += " AND has_market_targets = 1"
 
+    if unread_only:
+        query += " AND read_at IS NULL"
+
     query += f" ORDER BY filed_date DESC, created_at DESC LIMIT {p} OFFSET {p}"
     params.extend([limit, offset])
 
@@ -562,7 +565,7 @@ def get_filings(category=None, search=None, date_from=None, date_to=None, urgent
     return results
 
 
-def get_filtered_filing_count(category=None, search=None, date_from=None, date_to=None, urgent_only=False, market_targets_only=False):
+def get_filtered_filing_count(category=None, search=None, date_from=None, date_to=None, urgent_only=False, market_targets_only=False, unread_only=False):
     """Count filings matching the current filters (for pagination)."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -593,6 +596,9 @@ def get_filtered_filing_count(category=None, search=None, date_from=None, date_t
 
     if market_targets_only:
         query += " AND has_market_targets = 1"
+
+    if unread_only:
+        query += " AND read_at IS NULL"
 
     cursor.execute(query, params)
     count = cursor.fetchone()[0]

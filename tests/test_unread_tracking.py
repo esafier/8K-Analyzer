@@ -114,3 +114,55 @@ def test_mark_filings_read_empty_list(tmp_sqlite_db):
     """Empty list is a no-op, returns 0."""
     import database
     assert database.mark_filings_read([]) == 0
+
+
+def test_get_filings_unread_only(tmp_sqlite_db):
+    """get_filings(unread_only=True) returns only filings with read_at IS NULL."""
+    import database
+
+    base = {
+        "ticker": "X", "cik": "1", "filed_date": "2026-05-01",
+        "item_codes": "5.02", "summary": "", "auto_category": "Compensation",
+        "filing_url": "https://example.com", "raw_text": "", "matched_keywords": "",
+        "urgent": False, "comp_details": None, "is_complex": False,
+        "narrative_summary": None, "relevant_reason": None, "structured_summary": None,
+    }
+    database.insert_filing({**base, "accession_no": "U-1", "company": "Unread1"})
+    database.insert_filing({**base, "accession_no": "U-2", "company": "Unread2"})
+    database.insert_filing({**base, "accession_no": "R-1", "company": "Read1"})
+
+    # Mark one as read; force the other two unread
+    conn = sqlite3.connect(tmp_sqlite_db)
+    conn.execute("UPDATE filings SET read_at = CURRENT_TIMESTAMP WHERE accession_no = 'R-1'")
+    conn.execute("UPDATE filings SET read_at = NULL WHERE accession_no IN ('U-1','U-2')")
+    conn.commit()
+    conn.close()
+
+    unread = database.get_filings(unread_only=True)
+    accessions = {f["accession_no"] for f in unread}
+    assert accessions == {"U-1", "U-2"}
+
+
+def test_get_filtered_filing_count_unread_only(tmp_sqlite_db):
+    """get_filtered_filing_count(unread_only=True) only counts NULL read_at."""
+    import database
+
+    base = {
+        "ticker": "X", "cik": "1", "filed_date": "2026-05-01",
+        "item_codes": "5.02", "summary": "", "auto_category": "Compensation",
+        "filing_url": "https://example.com", "raw_text": "", "matched_keywords": "",
+        "urgent": False, "comp_details": None, "is_complex": False,
+        "narrative_summary": None, "relevant_reason": None, "structured_summary": None,
+    }
+    database.insert_filing({**base, "accession_no": "C-1", "company": "C1"})
+    database.insert_filing({**base, "accession_no": "C-2", "company": "C2"})
+    database.insert_filing({**base, "accession_no": "C-3", "company": "C3"})
+
+    conn = sqlite3.connect(tmp_sqlite_db)
+    conn.execute("UPDATE filings SET read_at = CURRENT_TIMESTAMP WHERE accession_no = 'C-3'")
+    conn.execute("UPDATE filings SET read_at = NULL WHERE accession_no IN ('C-1','C-2')")
+    conn.commit()
+    conn.close()
+
+    assert database.get_filtered_filing_count(unread_only=True) == 2
+    assert database.get_filtered_filing_count(unread_only=False) == 3
