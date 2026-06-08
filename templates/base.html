@@ -13,13 +13,20 @@
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container">
             <a class="navbar-brand" href="/">8-K Filing Analyzer</a>
-            <div class="navbar-nav ms-auto">
-                <a class="nav-link" href="/">Dashboard</a>
-                <a class="nav-link" href="/watchlist">Watchlist</a>
-                <a class="nav-link" href="/backfill">Backfill</a>
-                {% if session.get("authenticated") %}
-                <a class="nav-link text-secondary" href="/logout">Logout</a>
-                {% endif %}
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse"
+                    data-bs-target="#mainNav" aria-controls="mainNav"
+                    aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="mainNav">
+                <div class="navbar-nav ms-auto">
+                    <a class="nav-link" href="/">Dashboard</a>
+                    <a class="nav-link" href="/watchlist">Watchlist</a>
+                    <a class="nav-link" href="/backfill">Backfill</a>
+                    {% if session.get("authenticated") %}
+                    <a class="nav-link text-secondary" href="/logout">Logout</a>
+                    {% endif %}
+                </div>
             </div>
         </div>
     </nav>
