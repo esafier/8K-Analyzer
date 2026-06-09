@@ -33,9 +33,15 @@
       <ul class="ss-body" style="padding-left:14px;margin:2px 0 6px 0;">
         {% for d in structured.departures %}
           <li><b>{{ d.name }}</b>{% if d.title %}, {{ d.title }}{% endif %}
+            {% if d.forfeiture_flag == 'forfeited' %}
+              <span class="badge bg-danger" style="font-size:9px;vertical-align:middle;" title="Walking away from unvested comp — strongest bearish departure signal">FORFEITS COMP</span>
+            {% elif d.forfeiture_flag == 'mixed' %}
+              <span class="badge" style="font-size:9px;vertical-align:middle;background:#fd7e14;color:#fff;" title="Forfeits some comp, paid out on the rest">PARTIAL FORFEIT</span>
+            {% endif %}
             {% if d.effective_date %}<br><span class="text-muted small">Effective: {{ d.effective_date }}</span>{% endif %}
             {% if d.stated_reason %}<br><span class="text-muted small">Reason: {{ d.stated_reason }}</span>{% endif %}
             {% if d.successor_info %}<br><span class="text-muted small">Successor: {{ d.successor_info }}</span>{% endif %}
+            {% if d.comp_impact %}<br><span class="small {% if d.forfeiture_flag == 'forfeited' %}text-danger{% else %}text-muted{% endif %}">Comp impact: {{ d.comp_impact }}</span>{% endif %}
             {% if d.signal %}<br><em class="small" style="color:#b45309;">Signal: {{ d.signal }}</em>{% endif %}
           </li>
         {% endfor %}

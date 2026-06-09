@@ -81,7 +81,8 @@
 <hr class="my-5">
 
 <h2 class="mb-4">Re-Summarize Filings</h2>
-<p class="text-muted">Re-run the LLM on filings already in the database to fix bad or missing summaries. No need to re-fetch from SEC — uses the stored filing text.</p>
+<p class="text-muted">Re-run the LLM on filings already in the database to fix bad or missing summaries. No need to re-fetch from SEC — uses the stored filing text.
+Also the only way to populate <b>triage verdicts</b> (Deep Look / Monitor / Pass), signal scores, and forfeiture flags on filings analyzed before those features existed — pick a date range to rate older rows.</p>
 
 <div class="card" style="max-width: 500px;">
     <div class="card-body">
@@ -148,12 +149,36 @@
 
 <hr class="my-5">
 
-<h2 class="mb-4">Retrofit Market-Based Targets</h2>
+<h2 class="mb-4">Backfill Departure History (EDGAR)</h2>
 <p class="text-muted">
-    Scans every existing filing's structured summary and flags those that disclose
-    stock-price, market-cap, or TSR comp targets. Zero LLM cost — pure data transform
-    on what's already stored. Run this once after the schema update to populate the
-    new "Market Targets" filter on the dashboard.
+    For every filing that contains an executive departure, fetches the company's
+    5.02 filings from SEC EDGAR over the last 24 months and stamps the filing with
+    a departure count and history list. Powers the "N dep/24mo" cluster badge on the
+    dashboard and makes the detail-page departures card appear automatically.
+    New filings get this at ingest — run this once to cover older ones.
+</p>
+
+<div class="card" style="max-width: 500px;">
+    <div class="card-body">
+        <form method="POST" action="/backfill-departure-history">
+            <p class="text-muted small">
+                Cost: one EDGAR lookup per company plus a small LLM extraction per
+                historical filing (cached — re-runs are nearly free). Safe to re-run;
+                already-stamped filings are skipped.
+            </p>
+            <button type="submit" class="btn btn-outline-success">Backfill Departure History</button>
+        </form>
+    </div>
+</div>
+
+<hr class="my-5">
+
+<h2 class="mb-4">Retrofit Flags (Market Targets + Departure Counts)</h2>
+<p class="text-muted">
+    Scans every existing filing's structured summary and (1) flags those that disclose
+    stock-price, market-cap, or TSR comp targets, and (2) counts each filing's executive
+    departures — which powers the "N departures / 24mo" cluster badge on the dashboard.
+    Zero LLM cost — pure data transform on what's already stored.
 </p>
 
 <div class="card" style="max-width: 500px;">

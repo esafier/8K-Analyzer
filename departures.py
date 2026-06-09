@@ -1,6 +1,7 @@
 """Executive Departures (24mo) — orchestration.
 
-Pipeline (per click on the dropdown option):
+Pipeline (runs automatically at ingest for departure filings, and on demand
+from the filing-detail dropdown):
 
   1. Fetch the company's 5.02 filings from EDGAR over the last 24 months
      using the existing fetcher.get_edgar_departure_history helper.
@@ -12,10 +13,16 @@ Pipeline (per click on the dropdown option):
   5. render_prose_lines turns the structured list into bullet strings
      for display in the filing detail template.
 
-Caches per-filing extractions, so re-clicks for the same company are essentially
-free after the first run, and across companies a 5.02 is processed exactly once.
+At ingest, enrich_new_filings() stamps each departure filing with the
+deduped 24-month count (dashboard cluster badge) and the full history list
+(detail-page card renders instantly, no click needed).
+
+Caches per-filing extractions, so repeat lookups for the same company are
+essentially free after the first run, and across companies a 5.02 is
+processed exactly once.
 """
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from html import escape
 
@@ -235,6 +242,143 @@ def get_departures_for_filing(cik, current_accession):
     # Sort newest first by departure date, falling back to filing date
     flat.sort(key=lambda d: (d.get("date") or d.get("_filing_date") or ""), reverse=True)
     return flat
+
+
+def count_real_departures(departures):
+    """Count deduped departure entries, excluding extraction-error placeholders."""
+    return len([d for d in departures if d.get("person") and not d.get("_error")])
+
+
+def enrich_filing_departure_history(filing_id, cik, accession_no):
+    """Fetch the 24-month EDGAR departure history for one filing and persist
+    it on the row: departure_count_24mo (deduped person count, powers the
+    dashboard cluster badge) and departure_history (JSON list, powers the
+    detail-page card without a click).
+
+    Returns the count, or None if the lookup failed (row left untouched so a
+    later retry can fill it in).
+    """
+    from database import update_departure_history
+
+    try:
+        deps = get_departures_for_filing(cik=cik, current_accession=accession_no)
+    except Exception as e:
+        print(f"[DEPARTURES] History lookup failed for {accession_no}: {type(e).__name__}: {e!r}", flush=True)
+        return None
+
+    count = count_real_departures(deps)
+    update_departure_history(filing_id, count, json.dumps(deps))
+    return count
+
+
+def enrich_new_filings(filings):
+    """Post-ingest step: stamp newly stored departure filings with their
+    company's 24-month EDGAR departure history.
+
+    Only touches filings that (a) contain at least one departure, (b) have a
+    CIK, and (c) aren't already stamped — so re-running a backfill over the
+    same date range doesn't re-hit EDGAR. LLM extraction is cached per
+    accession, so the marginal cost is mostly the EDGAR fetches.
+    """
+    from database import get_filing_by_accession
+
+    targets = [
+        f for f in filings
+        if f.get("cik") and (f.get("departure_count") or 0) > 0
+    ]
+    if not targets:
+        return
+
+    print(f"[DEPARTURES] Gathering 24mo history for {len(targets)} departure filing(s)...", flush=True)
+
+    done = 0
+    for f in targets:
+        row = get_filing_by_accession(f.get("accession_no", ""))
+        if not row:
+            continue
+        if row.get("departure_count_24mo") is not None:
+            continue  # already stamped on a previous run
+
+        count = enrich_filing_departure_history(row["id"], f["cik"], f["accession_no"])
+        if count is not None:
+            done += 1
+            print(f"  [DEPARTURES] {f.get('company', 'Unknown')}: {count} departure(s) in 24mo", flush=True)
+
+    print(f"[DEPARTURES] History stamped on {done} filing(s)", flush=True)
+
+
+def run_history_backfill(run_id=None, verbose=True):
+    """One-time backfill: stamp EDGAR departure history onto existing filings
+    that contain departures but were ingested before this feature.
+
+    Computes the per-filing departure count from structured_summary on the
+    fly when the departure_count column is NULL (pre-retrofit rows), so this
+    works regardless of whether the flags retrofit ran first.
+
+    Returns a stats dict. If run_id is given, closes out that backfill_runs row.
+    """
+    from database import get_connection, _placeholder, complete_backfill_run
+    from summary_utils import count_departures
+
+    stats = {"scanned": 0, "enriched": 0, "skipped_no_departures": 0, "failed": 0}
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, accession_no, cik, company, structured_summary, departure_count
+        FROM filings
+        WHERE cik IS NOT NULL AND cik != ''
+          AND departure_count_24mo IS NULL
+          AND structured_summary IS NOT NULL
+        ORDER BY filed_date DESC
+        """
+    )
+    columns = [desc[0] for desc in cursor.description]
+    rows = [dict(zip(columns, r)) for r in cursor.fetchall()]
+    conn.close()
+
+    if verbose:
+        print(f"[DEPARTURES BACKFILL] Scanning {len(rows)} candidate filings...", flush=True)
+
+    for row in rows:
+        stats["scanned"] += 1
+
+        dep_count = row.get("departure_count")
+        if dep_count is None:
+            dep_count = count_departures(row.get("structured_summary"))
+        if not dep_count:
+            stats["skipped_no_departures"] += 1
+            continue
+
+        count = enrich_filing_departure_history(row["id"], row["cik"], row["accession_no"])
+        if count is None:
+            stats["failed"] += 1
+        else:
+            stats["enriched"] += 1
+            if verbose:
+                print(f"  [DEPARTURES BACKFILL] {row.get('company', 'Unknown')}: {count} in 24mo "
+                      f"({stats['enriched']} done)", flush=True)
+
+    if verbose:
+        print(f"[DEPARTURES BACKFILL] Done. Scanned {stats['scanned']}, enriched {stats['enriched']}, "
+              f"no-departures {stats['skipped_no_departures']}, failed {stats['failed']}", flush=True)
+
+    if run_id is not None:
+        try:
+            complete_backfill_run(
+                run_id,
+                fetched=stats["scanned"],
+                filtered=stats["enriched"] + stats["failed"],
+                new=stats["enriched"],
+                skipped=stats["skipped_no_departures"],
+                status="completed",
+            )
+        except Exception as e:
+            if verbose:
+                print(f"[DEPARTURES BACKFILL] WARN: could not mark run complete: {e}", flush=True)
+
+    return stats
 
 
 def render_prose_lines(departures):

@@ -1,72 +1,113 @@
-# Market-Based Comp Targets — Plan
+# Scored Triage Inbox — Plan
 
-**Goal:** Detect when a filing's compensation disclosure includes a **stock-price target, market-cap target, or TSR (total shareholder return) target**, surface it as a badge + dedicated section on the filing card, and expose a filtered dashboard view. Backfill historical filings so the new view is useful immediately.
+**Goal:** stop reviewing filings one-by-one. Every filing arrives pre-scored
+(DEEP_LOOK / MONITOR / PASS + 0-10 score + direction + one-line top signal),
+departure clusters get flagged automatically on the dashboard, and departures
+now capture whether the exec forfeited comp (the core bearish tell).
 
-**Why these matter:** These are market-based hurdles — they tell us what price/value the board thinks the stock should hit. They're a different signal from operating hurdles (revenue, EBITDA, EPS), which is why they belong in their own bucket.
-
----
-
-## Schema decisions
-
-Two storage layers, on purpose:
-
-1. **`has_market_targets` (INTEGER 0/1) column on `filings`** — fast filter for the dashboard. Indexed by virtue of being a single column.
-2. **`market_targets` nested object inside `structured_summary` JSON** — holds the actual extracted values (executive, target value, vesting condition). Used by the UI callout.
-
-Splitting the prompt's `performance_hurdles` field:
-- **`market_based_targets`** (new structured object) → `{stock_price, market_cap, tsr}` per comp_event
-- **`operating_hurdles`** (free text, replaces today's `performance_hurdles`) → revenue / EBITDA / EPS / milestones
-
-Old rows keep working: template falls back to legacy `performance_hurdles` when the new fields are absent.
+**Why:** the dashboard previously sorted by date only with binary flags
+(urgent, market targets), so the user did all triage manually. The signal
+analysis prompt already produced verdicts — but only on-demand, per filing,
+behind a dropdown. This moves a lightweight verdict into the ingest pipeline
+so the list ranks itself.
 
 ---
 
 ## Steps
 
-- [ ] **1. Migration** — add `has_market_targets INTEGER DEFAULT 0` column to `filings` in `database.py` `_migrate_filings_columns()`
-- [ ] **2. Prompt** — update `prompts/prompt_v3.txt`:
-  - Split `performance_hurdles` → `operating_hurdles` (free text) + `market_based_targets` (structured object with stock_price / market_cap / tsr keys)
-  - Add an explicit instruction block clarifying the split
-- [ ] **3. filter.py** — when persisting v3 output:
-  - Detect `market_based_targets` presence across all comp_events
-  - Set `filing["has_market_targets"]` (0/1) for the column
-  - Embed `market_targets` aggregate object inside the `structured_summary` JSON
-- [ ] **4. database.py** — `insert_filing` and update paths need to write the new column; `get_filings` and `get_filtered_filing_count` need a `market_targets_only` filter param
-- [ ] **5. summary_utils.py** — `structured_summary_for_display` passes through `has_market_targets` and `market_targets` fields
-- [ ] **6. Retrofit module** — new file `retrofit_market_targets.py`:
-  - Scan every row in `filings` with non-null `structured_summary`
-  - For each comp_event: check `stock_price_targets` (dedicated field), and regex/keyword-scan `performance_hurdles` for TSR + market-cap mentions
-  - Update the row's `has_market_targets` column + write a derived `market_targets` block into the JSON
-  - Zero LLM calls — pure data transform on what's already in the DB
-- [ ] **7. app.py route** — `POST /retrofit-market-targets` runs the retrofit in a background thread; track via `backfill_runs` table
-- [ ] **8. Template `_structured_summary.html`**:
-  - Add yellow "🎯 Market Targets" badge next to existing Urgent/Complex badges
-  - Add a dedicated callout section showing extracted targets (stock price, market cap, TSR) grouped by executive
-  - Render new fields when present; fall back to legacy `performance_hurdles` for old rows
-- [ ] **9. Dashboard `index.html`**:
-  - Add "Show only Market Targets" toggle filter (mirror the existing Urgent toggle)
-  - Wire `?market_targets=1` query param through `index()` in app.py
-- [ ] **10. Backfill UI** — add "Retrofit market targets" button on the backfill page that POSTs to `/retrofit-market-targets`
-- [ ] **11. Tests**:
-  - Unit test for retrofit detection logic (stock price field, TSR phrase, market cap phrase, none of the above)
-  - Test that filter.py sets `has_market_targets` correctly when LLM returns new schema
-  - Test that `get_filings(market_targets_only=True)` filters correctly
-- [ ] **12. Verify** — run pytest, manually start the Flask app, render a flagged filing
-- [ ] **13. Commit + push** to `main` → Render auto-deploys
-- [ ] **14. After deploy** — kick off retrofit from the deployed dashboard to populate the filtered view
+### 1. Prompt (prompts/prompt_v3.txt)
+- [x] Add `triage` object to response schema: verdict, score 0-10, direction, top_signal
+- [x] Add triage guidance section written around the investment thesis
+- [x] Add `comp_impact` + `forfeiture_flag` fields to departures schema
 
----
+### 2. Parsing helper (summary_utils.py)
+- [x] `parse_triage(llm_result)` + `count_departures(structured)`
 
-## Backfill strategy (after deploy)
+### 3. Database (database.py)
+- [x] Migrate columns: triage_verdict, signal_score, signal_direction,
+      top_signal, departure_count, departure_count_24mo, departure_history
+      + index on (cik, filed_date)
+- [x] insert_filing writes new columns (branches deduplicated into one
+      shared column/values list while touching this)
+- [x] update_filing_analysis accepts + writes new fields
+- [x] get_filings / get_filtered_filing_count: `verdict` filter + `sort`
+      (filters refactored into shared _build_filing_filters so list and
+      pagination count can't disagree)
+- [x] update_departure_history(filing_id, count, json)
 
-1. **Retrofit (free, instant)** — POST `/retrofit-market-targets` from the dashboard. Walks every existing filing's `structured_summary` JSON and flags rows where the LLM already extracted price/TSR/market-cap info. Expected coverage: ~70–80% of historical filings that should be flagged.
+### 3b. EDGAR-based departure history (revised per user feedback)
+The local DB doesn't have enough history for cluster counts — replaced the
+local-count approach with the EDGAR pipeline behind the "Executive
+Departures (24mo)" button, now run automatically:
+- [x] departures.enrich_filing_departure_history — fetch + persist per filing
+- [x] departures.enrich_new_filings — post-ingest hook (backfill + scheduler)
+- [x] departures.run_history_backfill — one-time stamp for existing filings
+      (works even on rows where departure_count was never retrofitted)
+- [x] /backfill-departure-history route + button on backfill page
+- [x] Detail page auto-renders the 24mo departures card from stored history
+      (no clicking); dropdown still does a live refresh and re-persists
+- [x] Dashboard badge reads departure_count_24mo (EDGAR-based)
+- [x] Removed the local-DB get_departure_cluster_counts approach
 
-2. **Re-LLM (optional, costs API calls)** — use existing `/resummarize` route on a date window. Re-runs the updated prompt against `raw_text` already stored. Pick up the ~20–30% the retrofit missed because the LLM had buried market-based language inside the old `performance_hurdles` field instead of the dedicated targets field.
+### 4. Ingest paths
+- [x] filter.py sets triage fields + departure_count
+- [x] app.py run_resummarize passes them through
+- [x] app.py run_retry_missing_summaries: same — and fixed a pre-existing bug
+      where this path never ran market-target detection, so rescued filings
+      never got the 🎯 flag
 
-Decision rule: run the retrofit first, look at the resulting filter page, then decide whether the missed cases warrant the LLM spend.
+### 5. Retrofit (retrofit_market_targets.py)
+- [x] Also backfills departure_count from existing structured_summary JSON
+
+### 6. Dashboard (app.py index + templates/index.html)
+- [x] Verdict dropdown (All / Deep Look + Monitor / Deep Look / Monitor / Pass)
+- [x] Sort dropdown (Newest first / Signal strength)
+- [x] Row badges: verdict, direction arrow + score, cluster badge
+- [x] top_signal line at top of summary cell
+- [x] verdict + sort threaded through pagination and back-links
+
+### 7. Detail page + summary partial
+- [x] filing.html: verdict/score badges in header + top_signal line
+- [x] _structured_summary.html: FORFEITS COMP badge + comp_impact line
+
+### 8. Backfill page copy
+- [x] Re-Summarize note (populates triage on old rows)
+- [x] Retrofit section renamed to cover departure counts
+
+### 9. Tests + verification
+- [x] tests/test_triage.py — 18 tests (parse_triage, count_departures,
+      verdict filter, signal sort, departure-history enrichment + backfill
+      candidate selection with mocked EDGAR calls)
+- [x] Full suite: 105 passed
+- [x] Live verification on a scratch DB: signal sort order, verdict filters,
+      EDGAR-based cluster badge ("3 dep/24mo"), auto-rendered detail-page
+      departures card (all names render, no click), FORFEITS COMP badge,
+      comp-impact lines, triage banner, backfill button; legacy rows render
+      fine.
 
 ---
 
 ## Review
 
-(to be filled in after implementation)
+Shipped the scored triage inbox end-to-end. Key decisions:
+
+- **One LLM call, no new cost for triage.** Verdict/score/direction ride
+  along in the existing v3 classification call.
+- **Chronological default preserved.** Signal sort and verdict filter are
+  opt-in dropdowns; the verdict concept is additive and easy to ignore or
+  remove if the user decides against it.
+- **Departure history comes from EDGAR, not the local DB** (revised after
+  user feedback — local DB too shallow). Reuses the cached
+  departures.get_departures_for_filing pipeline, run automatically at ingest
+  (backfill + daily scheduler) and exposed as a one-time backfill button.
+  Counts are "last 24 months as of when scanned".
+- **Legacy rows degrade gracefully.** NULL verdict = no badge; in signal sort
+  they rank between MONITOR and PASS. Re-Summarize rates them (LLM cost);
+  "Backfill Departure History" stamps cluster badges (EDGAR + cached LLM).
+- **Bug fixed along the way:** retry-missing-summaries path never set
+  has_market_targets — now consistent with the other two ingest paths.
+
+Rollout after deploy: (1) press "Backfill Departure History" once for
+cluster badges + instant detail cards on existing filings, (2) optionally
+Re-Summarize a date range to get verdicts on recent historical filings,
+(3) new backfills and the daily 7am job get everything automatically.

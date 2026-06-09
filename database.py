@@ -353,6 +353,45 @@ def _migrate_add_columns(conn):
     # Index on read_at — the "Show unread only" dashboard query uses WHERE read_at IS NULL
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_filings_read_at ON filings(read_at)")
 
+    # --- Triage columns: verdict / score / direction / top signal ---
+    # Populated by the v3 prompt at ingest. NULL on legacy rows = "unrated".
+    if "triage_verdict" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN triage_verdict TEXT DEFAULT NULL")
+        print("[MIGRATE] Added 'triage_verdict' column")
+
+    if "signal_score" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN signal_score INTEGER DEFAULT NULL")
+        print("[MIGRATE] Added 'signal_score' column")
+
+    if "signal_direction" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN signal_direction TEXT DEFAULT NULL")
+        print("[MIGRATE] Added 'signal_direction' column")
+
+    if "top_signal" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN top_signal TEXT DEFAULT NULL")
+        print("[MIGRATE] Added 'top_signal' column")
+
+    # Number of departures extracted from THIS filing (len of structured
+    # departures[]). Used to decide which filings need EDGAR history enrichment.
+    if "departure_count" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN departure_count INTEGER DEFAULT NULL")
+        print("[MIGRATE] Added 'departure_count' column")
+
+    # EDGAR-based 24-month departure history, stamped at ingest by
+    # departures.enrich_new_filings(). departure_count_24mo is the deduped
+    # person count (dashboard cluster badge); departure_history is the full
+    # JSON list (detail-page card renders without a click).
+    if "departure_count_24mo" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN departure_count_24mo INTEGER DEFAULT NULL")
+        print("[MIGRATE] Added 'departure_count_24mo' column")
+
+    if "departure_history" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN departure_history TEXT DEFAULT NULL")
+        print("[MIGRATE] Added 'departure_history' column")
+
+    # Same-CIK lookups by date (departure history, related-filing queries)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_filings_cik_date ON filings(cik, filed_date)")
+
     conn.commit()
 
 
@@ -444,71 +483,66 @@ def insert_filing(filing_data):
     structured_summary_val = _to_str(filing_data.get("structured_summary"))
     has_market_targets_val = 1 if filing_data.get("has_market_targets") else 0
 
+    # Triage fields — NULL when the LLM didn't produce them (legacy prompt,
+    # LLM failure, or rate-limited rows with no text)
+    triage_verdict_val = _to_str(filing_data.get("triage_verdict"))
+    signal_score_val = filing_data.get("signal_score")
+    signal_direction_val = _to_str(filing_data.get("signal_direction"))
+    top_signal_val = _to_str(filing_data.get("top_signal"))
+    departure_count_val = filing_data.get("departure_count")
+
+    insert_values = (
+        _to_str(filing_data.get("accession_no")),
+        _to_str(filing_data.get("company")),
+        _to_str(filing_data.get("ticker")),
+        _to_str(filing_data.get("cik")),
+        _to_str(filing_data.get("filed_date")),
+        _to_str(filing_data.get("item_codes")),
+        _to_str(filing_data.get("summary")),
+        _to_str(filing_data.get("auto_category")),
+        _to_str(filing_data.get("auto_subcategory")),
+        _to_str(filing_data.get("filing_url")),
+        _to_str(filing_data.get("raw_text")),
+        _to_str(filing_data.get("matched_keywords")),
+        urgent_val,
+        comp_details_val,
+        filing_document_url_val,
+        is_complex_val,
+        narrative_summary_val,
+        relevant_reason_val,
+        structured_summary_val,
+        has_market_targets_val,
+        triage_verdict_val,
+        signal_score_val,
+        signal_direction_val,
+        top_signal_val,
+        departure_count_val,
+    )
+
+    insert_columns = """
+            (accession_no, company, ticker, cik, filed_date, item_codes,
+             summary, auto_category, auto_subcategory, filing_url, raw_text,
+             matched_keywords, urgent, comp_details,
+             filing_document_url, is_complex, narrative_summary,
+             relevant_reason, structured_summary, has_market_targets,
+             triage_verdict, signal_score, signal_direction, top_signal,
+             departure_count)
+    """
+    placeholders_sql = ", ".join([p] * len(insert_values))
+
     if _using_postgres():
         # PostgreSQL: use ON CONFLICT instead of INSERT OR IGNORE
         cursor.execute(f"""
-            INSERT INTO filings
-            (accession_no, company, ticker, cik, filed_date, item_codes,
-             summary, auto_category, auto_subcategory, filing_url, raw_text,
-             matched_keywords, urgent, comp_details,
-             filing_document_url, is_complex, narrative_summary,
-             relevant_reason, structured_summary, has_market_targets)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+            INSERT INTO filings {insert_columns}
+            VALUES ({placeholders_sql})
             ON CONFLICT (accession_no) DO NOTHING
-        """, (
-            _to_str(filing_data.get("accession_no")),
-            _to_str(filing_data.get("company")),
-            _to_str(filing_data.get("ticker")),
-            _to_str(filing_data.get("cik")),
-            _to_str(filing_data.get("filed_date")),
-            _to_str(filing_data.get("item_codes")),
-            _to_str(filing_data.get("summary")),
-            _to_str(filing_data.get("auto_category")),
-            _to_str(filing_data.get("auto_subcategory")),
-            _to_str(filing_data.get("filing_url")),
-            _to_str(filing_data.get("raw_text")),
-            _to_str(filing_data.get("matched_keywords")),
-            urgent_val,
-            comp_details_val,
-            filing_document_url_val,
-            is_complex_val,
-            narrative_summary_val,
-            relevant_reason_val,
-            structured_summary_val,
-            has_market_targets_val,
-        ))
+        """, insert_values)
     else:
         # SQLite: original INSERT OR IGNORE
         cursor.execute(f"""
-            INSERT OR IGNORE INTO filings
-            (accession_no, company, ticker, cik, filed_date, item_codes,
-             summary, auto_category, auto_subcategory, filing_url, raw_text,
-             matched_keywords, urgent, comp_details,
-             filing_document_url, is_complex, narrative_summary,
-             relevant_reason, structured_summary, has_market_targets)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
-        """, (
-            _to_str(filing_data.get("accession_no")),
-            _to_str(filing_data.get("company")),
-            _to_str(filing_data.get("ticker")),
-            _to_str(filing_data.get("cik")),
-            _to_str(filing_data.get("filed_date")),
-            _to_str(filing_data.get("item_codes")),
-            _to_str(filing_data.get("summary")),
-            _to_str(filing_data.get("auto_category")),
-            _to_str(filing_data.get("auto_subcategory")),
-            _to_str(filing_data.get("filing_url")),
-            _to_str(filing_data.get("raw_text")),
-            _to_str(filing_data.get("matched_keywords")),
-            urgent_val,
-            comp_details_val,
-            filing_document_url_val,
-            is_complex_val,
-            narrative_summary_val,
-            relevant_reason_val,
-            structured_summary_val,
-            has_market_targets_val,
-        ))
+            INSERT OR IGNORE INTO filings {insert_columns}
+            VALUES ({placeholders_sql})
+        """, insert_values)
 
     # Check if the row was actually inserted (not a duplicate)
     was_new = cursor.rowcount > 0
@@ -517,46 +551,94 @@ def insert_filing(filing_data):
     return was_new
 
 
-def get_filings(category=None, search=None, date_from=None, date_to=None, urgent_only=False, market_targets_only=False, unread_only=False, limit=100, offset=0):
-    """Fetch filings from the database with optional filters.
-    Used by the dashboard to display results."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    p = _placeholder()
+# Sorting filings by triage tier: DEEP_LOOK first, then MONITOR, then legacy
+# unrated rows (NULL verdict), then PASS at the bottom. Within a tier, higher
+# score first, then newest. Works identically on SQLite and PostgreSQL.
+_SIGNAL_SORT_SQL = (
+    " ORDER BY CASE COALESCE(triage_verdict, '')"
+    "   WHEN 'DEEP_LOOK' THEN 0"
+    "   WHEN 'MONITOR' THEN 1"
+    "   WHEN 'PASS' THEN 3"
+    "   ELSE 2 END,"
+    " COALESCE(signal_score, -1) DESC,"
+    " filed_date DESC, created_at DESC"
+)
 
-    # Build the query dynamically based on which filters are active
-    query = "SELECT * FROM filings WHERE 1=1"
+
+def _build_filing_filters(p, category=None, search=None, date_from=None,
+                          date_to=None, urgent_only=False, market_targets_only=False,
+                          unread_only=False, verdict=None):
+    """Build the shared WHERE-clause suffix + params for filing list queries.
+
+    Shared by get_filings() and get_filtered_filing_count() so the list and
+    its pagination count can never disagree about what matches.
+    """
+    where = ""
     params = []
 
     if category:
         # Check both auto_category and user_tag (user override takes priority)
-        query += f" AND (COALESCE(user_tag, auto_category) = {p})"
+        where += f" AND (COALESCE(user_tag, auto_category) = {p})"
         params.append(category)
 
     if search:
         # Search company name, ticker, or summary text
-        query += f" AND (company LIKE {p} OR ticker LIKE {p} OR summary LIKE {p})"
+        where += f" AND (company LIKE {p} OR ticker LIKE {p} OR summary LIKE {p})"
         search_term = f"%{search}%"
         params.extend([search_term, search_term, search_term])
 
     if date_from:
-        query += f" AND filed_date >= {p}"
+        where += f" AND filed_date >= {p}"
         params.append(date_from)
 
     if date_to:
-        query += f" AND filed_date <= {p}"
+        where += f" AND filed_date <= {p}"
         params.append(date_to)
 
     if urgent_only:
-        query += " AND urgent = 1"
+        where += " AND urgent = 1"
 
     if market_targets_only:
-        query += " AND has_market_targets = 1"
+        where += " AND has_market_targets = 1"
 
     if unread_only:
-        query += " AND read_at IS NULL"
+        where += " AND read_at IS NULL"
 
-    query += f" ORDER BY filed_date DESC, created_at DESC LIMIT {p} OFFSET {p}"
+    if verdict == "actionable":
+        # Deep Look + Monitor — everything worth at least a glance
+        where += " AND triage_verdict IN ('DEEP_LOOK', 'MONITOR')"
+    elif verdict in ("DEEP_LOOK", "MONITOR", "PASS"):
+        where += f" AND triage_verdict = {p}"
+        params.append(verdict)
+
+    return where, params
+
+
+def get_filings(category=None, search=None, date_from=None, date_to=None,
+                urgent_only=False, market_targets_only=False, unread_only=False,
+                verdict=None, sort="date", limit=100, offset=0):
+    """Fetch filings from the database with optional filters.
+    Used by the dashboard to display results.
+
+    sort: "date" (newest first, default) or "signal" (triage tier, then score).
+    verdict: "DEEP_LOOK" | "MONITOR" | "PASS" | "actionable" (Deep Look + Monitor).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    where, params = _build_filing_filters(
+        p, category=category, search=search, date_from=date_from, date_to=date_to,
+        urgent_only=urgent_only, market_targets_only=market_targets_only,
+        unread_only=unread_only, verdict=verdict,
+    )
+    query = "SELECT * FROM filings WHERE 1=1" + where
+
+    if sort == "signal":
+        query += _SIGNAL_SORT_SQL
+    else:
+        query += " ORDER BY filed_date DESC, created_at DESC"
+    query += f" LIMIT {p} OFFSET {p}"
     params.extend([limit, offset])
 
     cursor.execute(query, params)
@@ -565,45 +647,41 @@ def get_filings(category=None, search=None, date_from=None, date_to=None, urgent
     return results
 
 
-def get_filtered_filing_count(category=None, search=None, date_from=None, date_to=None, urgent_only=False, market_targets_only=False, unread_only=False):
+def get_filtered_filing_count(category=None, search=None, date_from=None,
+                              date_to=None, urgent_only=False, market_targets_only=False,
+                              unread_only=False, verdict=None):
     """Count filings matching the current filters (for pagination)."""
     conn = get_connection()
     cursor = conn.cursor()
     p = _placeholder()
 
-    query = "SELECT COUNT(*) FROM filings WHERE 1=1"
-    params = []
-
-    if category:
-        query += f" AND (COALESCE(user_tag, auto_category) = {p})"
-        params.append(category)
-
-    if search:
-        query += f" AND (company LIKE {p} OR ticker LIKE {p} OR summary LIKE {p})"
-        search_term = f"%{search}%"
-        params.extend([search_term, search_term, search_term])
-
-    if date_from:
-        query += f" AND filed_date >= {p}"
-        params.append(date_from)
-
-    if date_to:
-        query += f" AND filed_date <= {p}"
-        params.append(date_to)
-
-    if urgent_only:
-        query += " AND urgent = 1"
-
-    if market_targets_only:
-        query += " AND has_market_targets = 1"
-
-    if unread_only:
-        query += " AND read_at IS NULL"
-
-    cursor.execute(query, params)
+    where, params = _build_filing_filters(
+        p, category=category, search=search, date_from=date_from, date_to=date_to,
+        urgent_only=urgent_only, market_targets_only=market_targets_only,
+        unread_only=unread_only, verdict=verdict,
+    )
+    cursor.execute("SELECT COUNT(*) FROM filings WHERE 1=1" + where, params)
     count = cursor.fetchone()[0]
     conn.close()
     return count
+
+
+def update_departure_history(filing_id, count_24mo, history_json):
+    """Stamp a filing with its company's EDGAR-based 24-month departure history.
+
+    Separate from update_filing_analysis() — this data comes from EDGAR
+    enrichment, not from re-running the classification LLM, so re-summarizing
+    a filing never wipes it.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(
+        f"UPDATE filings SET departure_count_24mo = {p}, departure_history = {p} WHERE id = {p}",
+        (count_24mo, history_json, filing_id),
+    )
+    conn.commit()
+    conn.close()
 
 
 def get_filing_by_id(filing_id):
@@ -701,6 +779,11 @@ def update_filing_analysis(
     narrative_summary=None,
     relevant_reason=None,
     has_market_targets=False,
+    triage_verdict=None,
+    signal_score=None,
+    signal_direction=None,
+    top_signal=None,
+    departure_count=None,
 ):
     """Update a filing's LLM-generated fields after re-analysis.
     Only touches analysis fields — leaves user_tag, raw_text, etc. untouched."""
@@ -717,11 +800,15 @@ def update_filing_analysis(
             urgent = {p}, comp_details = {p},
             structured_summary = {p}, is_complex = {p},
             narrative_summary = {p}, relevant_reason = {p},
-            has_market_targets = {p}
+            has_market_targets = {p},
+            triage_verdict = {p}, signal_score = {p},
+            signal_direction = {p}, top_signal = {p},
+            departure_count = {p}
         WHERE id = {p}
     """, (summary, auto_category, auto_subcategory, urgent_val, comp_val,
           structured_summary, complex_val, narrative_summary, relevant_reason,
-          has_mt_val, filing_id))
+          has_mt_val, triage_verdict, signal_score, signal_direction,
+          top_signal, departure_count, filing_id))
     conn.commit()
     conn.close()
 

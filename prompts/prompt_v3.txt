@@ -52,6 +52,23 @@ Do NOT set urgent true when:
 - The departure is due to a merger or change of control (planned transition)
 - The departure is a planned retirement announced with lead time
 
+## TRIAGE VERDICT (investor lens)
+The reader is a buy-side investor hunting two specific things:
+1. **BEARISH** — executive departures that suggest insiders losing confidence. The loudest version: an executive who walks away from unvested equity or bonus (they are leaving money on the table, often because they doubt it will ever pay out). Also: sudden/unexplained exits, terminations for cause, no successor named, or multiple executives leaving the same company.
+2. **BULLISH** — compensation structures that signal board/management conviction: market-based targets requiring meaningful appreciation from today's price, grants whose timing looks spring-loaded (just before a likely catalyst), or a restructuring of comp toward at-risk equity with long vesting.
+
+Output a "triage" object with these fields:
+
+- "verdict":
+  - "DEEP_LOOK" — clear signal worth the investor's time today: sudden or unexplained C-suite departure, departure with forfeited compensation, termination for cause, market-based targets requiring substantial stock appreciation, unusual grant timing or structure, major comp restructuring.
+  - "MONITOR" — some signal but routine-adjacent: orderly departure with a named successor, standard grants with modest performance elements, events that need more context before acting.
+  - "PASS" — administrative, no investor signal: planned retirement announced with long lead time, routine annual grants under existing plans, director elections at annual meetings, technical plan amendments.
+- "score": integer 0-10, the magnitude of investor signal regardless of direction. Calibration: 0-2 administrative noise; 3-4 routine with a minor wrinkle; 5-6 genuinely notable; 7-8 strong signal (sudden CFO exit with no successor, PSUs requiring the stock to double); 9-10 exceptional (CEO terminated for cause, founder forfeits a large unvested grant to leave).
+- "direction": "BEARISH" | "BULLISH" | "MIXED" | "NEUTRAL"
+- "top_signal": ONE sentence naming the single most important signal in this filing, specific enough that the investor can decide whether to open it from this line alone. Include names, numbers, and the why.
+
+Consistency rules: "urgent": true implies verdict "DEEP_LOOK". Verdict "PASS" implies score <= 3. A departure with forfeiture_flag "forfeited" should never be "PASS".
+
 ## RESPONSE FORMAT
 Return ONLY valid JSON in this exact shape:
 
@@ -67,6 +84,13 @@ Return ONLY valid JSON in this exact shape:
   "is_complex": false,
   "narrative_summary": null,
 
+  "triage": {
+    "verdict": "DEEP_LOOK" | "MONITOR" | "PASS",
+    "score": 0,
+    "direction": "BEARISH" | "BULLISH" | "MIXED" | "NEUTRAL",
+    "top_signal": "One specific sentence naming the most important signal in this filing."
+  },
+
   "departures": [
     {
       "name": "Full Name",
@@ -74,6 +98,8 @@ Return ONLY valid JSON in this exact shape:
       "effective_date": "YYYY-MM-DD or descriptive date string",
       "stated_reason": "resigned | retired | terminated for cause | terminated without cause | death | mutually agreed | not standing for re-election — quote filing language when specific",
       "successor_info": "Who is filling the role, interim or permanent, or 'search underway' / null",
+      "comp_impact": "What happens to their compensation, with amounts when disclosed: e.g. 'forfeits all unvested RSUs (~$4.2M)' | 'receives 18 months severance plus accelerated vesting' | null if the filing doesn't say",
+      "forfeiture_flag": "forfeited | paid_out | mixed | not_disclosed",
       "signal": "One sentence calling out unusual timing, missing successor, force vs voluntary signal, etc. or null"
     }
   ],
@@ -120,6 +146,14 @@ Use labels from this list when they apply. Multiple labels per filing are expect
 "Role Change", "Inducement Award", "Accelerated Vesting", "Comp Plan Change", "Severance / Separation", "Retention Bonus", "Performance Grant",
 "Insider Transaction", "Forward Sale", "Equity Swap", "Share Pledge", "10b5-1 Plan", "Insider Sale",
 "Employment Agreement Amendment", "Clawback Adoption"
+
+## DEPARTURE COMP IMPACT (high priority)
+For every departure, determine what happens to the departing person's compensation and set "forfeiture_flag":
+- "forfeited" — they walk away from unvested equity, bonus eligibility, or other comp with no offsetting payout. Quote amounts in "comp_impact" when disclosed. This is the strongest bearish departure signal — an insider leaving money on the table.
+- "paid_out" — they receive severance, accelerated vesting, consulting fees, or pro-rated bonus. Routine for negotiated exits.
+- "mixed" — some forfeited, some paid (e.g., forfeits unvested PSUs but gets cash severance).
+- "not_disclosed" — the filing says nothing about comp treatment. Do not guess.
+Separation/severance economics also belong in comp_events[] when they include dollar amounts or equity terms — the departures[] field is the quick-read flag, comp_events[] is the detail.
 
 ## MARKET-BASED TARGETS (high priority)
 When the filing discloses ANY of these three types of market-based hurdles, you MUST extract them into the `market_based_targets` object (and also mirror stock-price values into `stock_price_targets` for backward compatibility):

@@ -1,13 +1,14 @@
 """Retrofit script — scan every filing's stored structured_summary JSON and
 flag those that disclose market-based comp targets (stock-price, market-cap,
-or TSR hurdles). Zero LLM calls — pure data transform on what's already in
-the database.
+or TSR hurdles). Also backfills the departure_count column (number of
+departures in each filing) which powers the dashboard's cluster badges.
+Zero LLM calls — pure data transform on what's already in the database.
 
-Used to populate the new "Market Targets" filter retroactively after the
-schema split. Can be run any number of times — it's idempotent.
+Can be run any number of times — it's idempotent.
 """
 import json
 from market_targets import detect_from_json_string
+from summary_utils import count_departures
 
 
 def run_retrofit(verbose=True, run_id=None):
@@ -28,6 +29,7 @@ def run_retrofit(verbose=True, run_id=None):
         "updated_json": 0,
         "errors": 0,
         "by_type": {"stock_price": 0, "market_cap": 0, "tsr": 0},
+        "departure_rows": 0,
     }
 
     conn = get_connection()
@@ -36,7 +38,7 @@ def run_retrofit(verbose=True, run_id=None):
 
     # Stream rows so we don't load the whole table into memory
     cursor.execute(
-        "SELECT id, accession_no, company, structured_summary, has_market_targets "
+        "SELECT id, accession_no, company, structured_summary, has_market_targets, departure_count "
         "FROM filings WHERE structured_summary IS NOT NULL"
     )
     rows = cursor.fetchall()
@@ -56,6 +58,7 @@ def run_retrofit(verbose=True, run_id=None):
         company = row[2]
         existing_json = row[3]
         existing_flag = row[4]
+        existing_dep_count = row[5]
 
         try:
             detection = detect_from_json_string(existing_json)
@@ -88,15 +91,21 @@ def run_retrofit(verbose=True, run_id=None):
         parsed["market_targets"] = detection["targets"]
         new_json = json.dumps(parsed)
 
+        # Departure count for the cluster badges (0 when no departures)
+        new_dep_count = count_departures(parsed)
+        if new_dep_count > 0:
+            stats["departure_rows"] += 1
+
         # Only write back if something actually changed (saves Postgres I/O)
         new_flag = 1 if detection["has_any"] else 0
-        if new_json == existing_json and new_flag == (existing_flag or 0):
+        if (new_json == existing_json and new_flag == (existing_flag or 0)
+                and new_dep_count == (existing_dep_count or 0)):
             continue
 
         try:
             update_cursor.execute(
-                f"UPDATE filings SET structured_summary = {p}, has_market_targets = {p} WHERE id = {p}",
-                (new_json, new_flag, filing_id),
+                f"UPDATE filings SET structured_summary = {p}, has_market_targets = {p}, departure_count = {p} WHERE id = {p}",
+                (new_json, new_flag, new_dep_count, filing_id),
             )
             stats["updated_json"] += 1
         except Exception as e:
@@ -117,7 +126,8 @@ def run_retrofit(verbose=True, run_id=None):
         print(
             f"[RETROFIT] Breakdown — stock_price: {stats['by_type']['stock_price']}, "
             f"market_cap: {stats['by_type']['market_cap']}, "
-            f"tsr: {stats['by_type']['tsr']}",
+            f"tsr: {stats['by_type']['tsr']}, "
+            f"rows with departures: {stats['departure_rows']}",
             flush=True,
         )
 

@@ -377,6 +377,18 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
 
                 filing["structured_summary"] = json.dumps(structured)
 
+                # Triage verdict (DEEP_LOOK / MONITOR / PASS) + score + direction
+                # — powers the dashboard's signal sorting and verdict filter.
+                from summary_utils import parse_triage, count_departures
+                triage = parse_triage(llm_result)
+                filing["triage_verdict"] = triage["verdict"]
+                filing["signal_score"] = triage["score"]
+                filing["signal_direction"] = triage["direction"]
+                filing["top_signal"] = triage["top_signal"]
+
+                # Departures in THIS filing — summed per company for cluster badges
+                filing["departure_count"] = count_departures(structured)
+
                 # Legacy "summary" field stays populated for older templates/emails.
                 # Use narrative if present, else a brief assembly from the first event.
                 filing["summary"] = _build_legacy_summary(llm_result)

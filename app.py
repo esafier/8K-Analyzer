@@ -10,6 +10,7 @@ import math
 from database import (
     initialize_database, get_filings, get_filing_by_id, update_user_tag,
     get_categories, get_filing_count, get_filtered_filing_count,
+    update_departure_history,
     add_to_watchlist, remove_from_watchlist, update_watchlist_notes,
     get_watchlist_item, get_all_watchlist_ids, get_watchlist_filings,
     get_watchlist_filings_by_ids, mark_filings_email_sent,
@@ -190,6 +191,12 @@ def index():
     urgent_only = request.args.get("urgent", "") == "1"
     market_targets_only = request.args.get("market_targets", "") == "1"
     unread_only = request.args.get("unread", "") == "1"
+    # Triage verdict filter: DEEP_LOOK / MONITOR / PASS / actionable (= first two)
+    verdict = request.args.get("verdict", "")
+    # Sort: "date" (newest first) or "signal" (Deep Look first, then by score)
+    sort = request.args.get("sort", "date")
+    if sort not in ("date", "signal"):
+        sort = "date"
     page = int(request.args.get("page", 1))
 
     per_page = 50
@@ -204,6 +211,8 @@ def index():
         urgent_only=urgent_only,
         market_targets_only=market_targets_only,
         unread_only=unread_only,
+        verdict=verdict if verdict else None,
+        sort=sort,
         limit=per_page,
         offset=offset,
     )
@@ -268,6 +277,7 @@ def index():
         urgent_only=urgent_only,
         market_targets_only=market_targets_only,
         unread_only=unread_only,
+        verdict=verdict if verdict else None,
     )
     total_pages = max(1, math.ceil(filtered_count / per_page))
 
@@ -284,6 +294,8 @@ def index():
         current_urgent=urgent_only,
         current_market_targets=market_targets_only,
         current_unread=unread_only,
+        current_verdict=verdict,
+        current_sort=sort,
         current_page=page,
         per_page=per_page,
         total_pages=total_pages,
@@ -324,6 +336,24 @@ def _render_filing_detail(filing_id, departures=None):
         if not hasattr(filing, '__setitem__'):
             filing = dict(filing)
         filing["_comp"] = None
+
+    # No fresh departures passed in? Render the card from the history stamped
+    # at ingest (EDGAR-based) so the 24mo view shows up without any clicking.
+    # The dropdown's "Executive Departures (24mo)" option still does a live
+    # refresh and overwrites the stored copy.
+    if departures is None and filing.get("departure_history"):
+        try:
+            stored = json.loads(filing["departure_history"])
+        except (json.JSONDecodeError, TypeError):
+            stored = None
+        if stored:
+            from departures import render_prose_lines
+            departures = {
+                "lines": render_prose_lines(stored),
+                "count_filings": len({d.get("_accession") for d in stored if d.get("_accession")}),
+                "company": filing.get("company", "Unknown"),
+                "cik": filing.get("cik", ""),
+            }
 
     # All possible category/tag options for the dropdown
     tag_options = [
@@ -406,7 +436,7 @@ def deep_analysis(filing_id):
         # If the user picked the "Executive Departures (24mo)" option, run that
         # pipeline and re-render the filing page directly (no LLM signal-analysis call).
         if request.form.get("prompt_version") == "departures_24mo":
-            from departures import get_departures_for_filing, render_prose_lines
+            from departures import get_departures_for_filing, render_prose_lines, count_real_departures
 
             cik = filing.get("cik", "") or ""
             current_accession = filing.get("accession_no", "") or ""
@@ -417,6 +447,13 @@ def deep_analysis(filing_id):
 
             departures_data = get_departures_for_filing(cik=cik, current_accession=current_accession)
             departures_lines = render_prose_lines(departures_data)
+
+            # Persist so the badge + auto-rendered card stay current (and so a
+            # single click stamps legacy filings ingested before enrichment).
+            import json as _json
+            update_departure_history(
+                filing_id, count_real_departures(departures_data), _json.dumps(departures_data)
+            )
 
             departures_context = {
                 "lines": departures_lines,
@@ -862,7 +899,7 @@ def run_resummarize(date_from=None, date_to=None, model=None):
 
         if llm_result and llm_result.get("relevant"):
             # LLM succeeded — update the database with v3 structured fields
-            from summary_utils import serialize_subcategories
+            from summary_utils import serialize_subcategories, parse_triage, count_departures
             from filter import _build_legacy_summary
 
             # v3 prefers top_level_category and subcategories array; fall back to v2 legacy fields
@@ -908,6 +945,9 @@ def run_resummarize(date_from=None, date_to=None, model=None):
             if comp_details and any(v for v in comp_details.values()):
                 comp_json = json.dumps(comp_details)
 
+            # Triage verdict + departure count (same validation as backfill path)
+            triage = parse_triage(llm_result)
+
             update_filing_analysis(
                 filing_id,
                 summary,
@@ -920,6 +960,11 @@ def run_resummarize(date_from=None, date_to=None, model=None):
                 narrative_summary=narrative,
                 relevant_reason=None,
                 has_market_targets=mt["has_any"],
+                triage_verdict=triage["verdict"],
+                signal_score=triage["score"],
+                signal_direction=triage["direction"],
+                top_signal=triage["top_signal"],
+                departure_count=count_departures(structured),
             )
             updated += 1
 
@@ -970,6 +1015,40 @@ def retrofit_market_targets_route():
     return redirect(url_for("backfill"))
 
 
+@app.route("/backfill-departure-history", methods=["POST"])
+def backfill_departure_history_route():
+    """Stamp EDGAR-based 24-month departure history onto existing filings that
+    contain departures. New filings get this automatically at ingest; this
+    button covers everything ingested before the feature existed.
+
+    Cost: one EDGAR lookup per company + a small LLM extraction per historical
+    5.02 filing (cached per accession, so re-runs and overlapping companies
+    are nearly free)."""
+    from departures import run_history_backfill
+    from database import create_backfill_run
+
+    try:
+        run_id = create_backfill_run(
+            backfill_type="departure_history",
+            date_start=None,
+            date_end=None,
+            model=None,
+        )
+    except Exception as e:
+        print(f"[DEPARTURES BACKFILL] WARN: could not create backfill_run row: {e}", flush=True)
+        run_id = None
+
+    def _worker():
+        run_history_backfill(run_id=run_id, verbose=True)
+
+    thread = threading.Thread(target=_worker)
+    thread.daemon = True
+    thread.start()
+
+    flash("Departure-history backfill started. Cluster badges will appear on the dashboard as filings are processed — watch the logs.", "success")
+    return redirect(url_for("backfill"))
+
+
 @app.route("/retry-missing-summaries", methods=["POST"])
 def retry_missing_summaries():
     """Re-fetch SEC text + run LLM for filings that got saved with empty raw_text.
@@ -999,8 +1078,9 @@ def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
     import json
     from llm import classify_and_summarize
     from fetcher import strip_cover_page
-    from summary_utils import serialize_subcategories
+    from summary_utils import serialize_subcategories, parse_triage, count_departures
     from filter import _build_legacy_summary
+    from market_targets import detect_market_targets
 
     model_label = model or "GPT-4o-mini"
     print(f"\n--- Retry missing summaries started (model: {model_label}) ---", flush=True)
@@ -1067,6 +1147,14 @@ def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
             "comp_events": llm_result.get("comp_events") or [],
             "other": llm_result.get("other") or [],
         }
+
+        # Same enrichment as the backfill/resummarize paths — previously this
+        # path skipped market-target detection, so rescued filings never got
+        # the 🎯 flag. Now all three ingest paths stay consistent.
+        mt = detect_market_targets(structured)
+        structured["has_market_targets"] = mt["has_any"]
+        structured["market_targets"] = mt["targets"]
+
         structured_json = json.dumps(structured)
         summary = _build_legacy_summary(llm_result)
 
@@ -1074,6 +1162,8 @@ def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
         comp_json = None
         if comp_details and any(v for v in comp_details.values()):
             comp_json = json.dumps(comp_details)
+
+        triage = parse_triage(llm_result)
 
         update_filing_analysis(
             filing_id,
@@ -1086,6 +1176,12 @@ def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
             is_complex=bool(llm_result.get("is_complex", False)),
             narrative_summary=llm_result.get("narrative_summary"),
             relevant_reason=None,
+            has_market_targets=mt["has_any"],
+            triage_verdict=triage["verdict"],
+            signal_score=triage["score"],
+            signal_direction=triage["direction"],
+            top_signal=triage["top_signal"],
+            departure_count=count_departures(structured),
         )
         updated += 1
         tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
@@ -1160,6 +1256,14 @@ def run_backfill(start_date, end_date, model=None):
                              filtered=len(matched_filings),
                              new=new_count,
                              skipped=skipped_count)
+
+        # Step 3b: Stamp departure filings with their company's 24-month
+        # EDGAR departure history (cluster badge + instant detail card).
+        try:
+            from departures import enrich_new_filings
+            enrich_new_filings(matched_filings)
+        except Exception as e:
+            print(f"[DEPARTURES] History enrichment failed (not critical): {e}", flush=True)
 
         # Step 4: Pre-fetch market caps / earnings / stock prices so the
         # dashboard has data ready. Use the *_sync variants — this is a

@@ -17,8 +17,29 @@
 <div class="card mb-4">
     <div class="card-body">
         <form method="GET" action="/" class="row g-3">
+            <!-- Triage verdict filter — the main "skip the noise" control -->
+            <div class="col-md-2">
+                <label class="form-label">Verdict</label>
+                <select name="verdict" class="form-select">
+                    <option value="">All verdicts</option>
+                    <option value="actionable" {{ 'selected' if current_verdict == 'actionable' }}>Deep Look + Monitor</option>
+                    <option value="DEEP_LOOK" {{ 'selected' if current_verdict == 'DEEP_LOOK' }}>Deep Look</option>
+                    <option value="MONITOR" {{ 'selected' if current_verdict == 'MONITOR' }}>Monitor</option>
+                    <option value="PASS" {{ 'selected' if current_verdict == 'PASS' }}>Pass</option>
+                </select>
+            </div>
+
+            <!-- Sort order -->
+            <div class="col-md-2">
+                <label class="form-label">Sort</label>
+                <select name="sort" class="form-select">
+                    <option value="date" {{ 'selected' if current_sort == 'date' }}>Newest first</option>
+                    <option value="signal" {{ 'selected' if current_sort == 'signal' }}>Signal strength</option>
+                </select>
+            </div>
+
             <!-- Category dropdown -->
-            <div class="col-md-3">
+            <div class="col-md-2">
                 <label class="form-label">Category</label>
                 <select name="category" class="form-select">
                     <option value="">All Categories</option>
@@ -29,7 +50,7 @@
             </div>
 
             <!-- Search box -->
-            <div class="col-md-3">
+            <div class="col-md-2">
                 <label class="form-label">Search</label>
                 <input type="text" name="search" class="form-control"
                        placeholder="Company, ticker, or keyword..."
@@ -99,7 +120,7 @@
             {% for filing in filings %}
             <tr class="clickable-row{% if not filing['read_at'] %} unread{% endif %}"
                 data-filing-id="{{ filing['id'] }}"
-                onclick="window.location='/filing/{{ filing['id'] }}?back={{ ('/?page=' ~ current_page ~ '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') ~ '&market_targets=' ~ ('1' if current_market_targets else '') ~ '&unread=' ~ ('1' if current_unread else ''))|urlencode }}'">
+                onclick="window.location='/filing/{{ filing['id'] }}?back={{ ('/?page=' ~ current_page ~ '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') ~ '&market_targets=' ~ ('1' if current_market_targets else '') ~ '&unread=' ~ ('1' if current_unread else '') ~ '&verdict=' ~ current_verdict ~ '&sort=' ~ current_sort)|urlencode }}'">
                 <!-- Watchlist star toggle -->
                 <td onclick="event.stopPropagation()">
                     <button class="btn btn-link p-0 watchlist-star" data-filing-id="{{ filing['id'] }}"
@@ -112,12 +133,36 @@
                         {% endif %}
                     </button>
                 </td>
-                <td>
+                <td style="min-width: 90px;">
+                    {# Triage verdict — set by the LLM at ingest. No badge = legacy row (re-summarize to rate it). #}
+                    {% if filing['triage_verdict'] == 'DEEP_LOOK' %}
+                        <span class="badge bg-dark" title="Worth your time today">DEEP LOOK</span>
+                    {% elif filing['triage_verdict'] == 'MONITOR' %}
+                        <span class="badge" style="background:#fd7e14;color:#fff;" title="Some signal — routine-adjacent">MONITOR</span>
+                    {% elif filing['triage_verdict'] == 'PASS' %}
+                        <span class="badge bg-secondary" title="Administrative — no investor signal">PASS</span>
+                    {% endif %}
+                    {% if filing['signal_score'] is not none %}
+                        <br><span class="small fw-bold
+                            {% if filing['signal_direction'] == 'BEARISH' %}text-danger
+                            {% elif filing['signal_direction'] == 'BULLISH' %}text-success
+                            {% else %}text-muted{% endif %}"
+                            title="Signal strength {{ filing['signal_score'] }}/10{% if filing['signal_direction'] %}, {{ filing['signal_direction'].lower() }}{% endif %}">
+                            {%- if filing['signal_direction'] == 'BEARISH' %}&#9660;
+                            {%- elif filing['signal_direction'] == 'BULLISH' %}&#9650;
+                            {%- elif filing['signal_direction'] == 'MIXED' %}&#9670;
+                            {%- endif %} {{ filing['signal_score'] }}/10</span>
+                    {% endif %}
                     {% if filing['urgent'] %}
-                        <span class="badge bg-danger">URGENT</span>
+                        <br><span class="badge bg-danger">URGENT</span>
                     {% endif %}
                     {% if filing['has_market_targets'] %}
-                        <span class="badge" style="background:#f5b800;color:#000;" title="Discloses stock-price, market-cap, or TSR target">🎯</span>
+                        <br><span class="badge" style="background:#f5b800;color:#000;" title="Discloses stock-price, market-cap, or TSR target">🎯</span>
+                    {% endif %}
+                    {% if (filing['departure_count_24mo'] or 0) >= 2 %}
+                        <br><span class="badge" style="background:#b02a37;color:#fff;margin-top:2px;"
+                              title="{{ filing['departure_count_24mo'] }} executive departures at this company in the last 24 months (per SEC EDGAR)">
+                            &#9888; {{ filing['departure_count_24mo'] }} dep/24mo</span>
                     {% endif %}
                 </td>
                 <td class="text-nowrap">{{ filing['filed_date'] }}</td>
@@ -153,6 +198,11 @@
                     {% endif %}
                 </td>
                 <td class="summary-cell" style="min-width: 320px; white-space: normal;">
+                    {% if filing['top_signal'] %}
+                    <div class="small fst-italic mb-1" style="color:#444;border-left:3px solid #adb5bd;padding-left:6px;">
+                        {{ filing['top_signal'] }}
+                    </div>
+                    {% endif %}
                     {% set structured = filing['structured_summary'] | structured_summary %}
                     {% include '_structured_summary.html' %}
                 </td>
@@ -170,7 +220,7 @@
 </div>
 
 <!-- Numbered pagination -->
-{% set q = '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') ~ '&market_targets=' ~ ('1' if current_market_targets else '') ~ '&unread=' ~ ('1' if current_unread else '') %}
+{% set q = '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') ~ '&market_targets=' ~ ('1' if current_market_targets else '') ~ '&unread=' ~ ('1' if current_unread else '') ~ '&verdict=' ~ current_verdict ~ '&sort=' ~ current_sort %}
 <nav aria-label="Page navigation">
     <ul class="pagination justify-content-center flex-wrap">
         <!-- Previous button -->

@@ -7,6 +7,24 @@
     <div class="card-header d-flex justify-content-between align-items-center">
         <h3 class="mb-0">{{ filing['company'] }}</h3>
         <div class="d-flex gap-2">
+            {% if filing['triage_verdict'] == 'DEEP_LOOK' %}
+                <span class="badge bg-dark fs-6">DEEP LOOK</span>
+            {% elif filing['triage_verdict'] == 'MONITOR' %}
+                <span class="badge fs-6" style="background:#fd7e14;color:#fff;">MONITOR</span>
+            {% elif filing['triage_verdict'] == 'PASS' %}
+                <span class="badge bg-secondary fs-6">PASS</span>
+            {% endif %}
+            {% if filing['signal_score'] is not none %}
+                <span class="badge fs-6
+                    {% if filing['signal_direction'] == 'BEARISH' %}bg-danger
+                    {% elif filing['signal_direction'] == 'BULLISH' %}bg-success
+                    {% else %}bg-light text-dark border{% endif %}"
+                    title="Signal strength out of 10">
+                    {%- if filing['signal_direction'] == 'BEARISH' %}&#9660;
+                    {%- elif filing['signal_direction'] == 'BULLISH' %}&#9650;
+                    {%- elif filing['signal_direction'] == 'MIXED' %}&#9670;
+                    {%- endif %} {{ filing['signal_score'] }}/10</span>
+            {% endif %}
             {% if filing['urgent'] %}
                 <span class="badge bg-danger fs-6">URGENT</span>
             {% endif %}
@@ -84,6 +102,11 @@
         <div class="card mb-4">
             <div class="card-body">
                 <h5>Summary</h5>
+                {% if filing['top_signal'] %}
+                <div class="fst-italic mb-2" style="color:#444;border-left:3px solid #adb5bd;padding-left:8px;">
+                    {{ filing['top_signal'] }}
+                </div>
+                {% endif %}
                 {% set structured = filing['structured_summary'] | structured_summary %}
                 {% include '_structured_summary.html' %}
 

@@ -60,6 +60,14 @@ def daily_fetch_job():
                          new=new_count,
                          skipped=skipped_count)
 
+    # Stamp departure filings with 24-month EDGAR departure history
+    # (cluster badge + instant detail card)
+    try:
+        from departures import enrich_new_filings
+        enrich_new_filings(matched)
+    except Exception as e:
+        print(f"  [DEPARTURES] History enrichment failed (not critical): {e}")
+
     # Pre-fetch market caps / earnings / stock prices so the dashboard has
     # data ready when users open it. Use *_sync — this is a background job.
     tickers_to_fetch = list({f['ticker'] for f in matched if f.get('ticker')})

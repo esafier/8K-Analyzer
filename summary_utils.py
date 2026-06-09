@@ -49,6 +49,74 @@ def serialize_subcategories(subcats: Optional[list[str]]) -> Optional[str]:
     return json.dumps(cleaned)
 
 
+# Allowed values for the triage fields. Anything else from the LLM is dropped
+# (better an unrated row than a garbage badge the dashboard sorts on).
+TRIAGE_VERDICTS = {"DEEP_LOOK", "MONITOR", "PASS"}
+TRIAGE_DIRECTIONS = {"BEARISH", "BULLISH", "MIXED", "NEUTRAL"}
+
+
+def parse_triage(llm_result):
+    """Validate the `triage` object from a v3 LLM response.
+
+    Single source of truth for all three ingest paths (backfill, re-summarize,
+    retry-missing) so the validation rules can't drift apart.
+
+    Returns a dict with keys verdict, score, direction, top_signal — each None
+    when missing or invalid. Never raises on malformed input.
+    """
+    empty = {"verdict": None, "score": None, "direction": None, "top_signal": None}
+    if not isinstance(llm_result, dict):
+        return empty
+
+    triage = llm_result.get("triage")
+    if not isinstance(triage, dict):
+        return empty
+
+    out = dict(empty)
+
+    verdict = str(triage.get("verdict") or "").strip().upper().replace(" ", "_")
+    if verdict in TRIAGE_VERDICTS:
+        out["verdict"] = verdict
+
+    direction = str(triage.get("direction") or "").strip().upper()
+    if direction in TRIAGE_DIRECTIONS:
+        out["direction"] = direction
+
+    # Score: accept int, float, or numeric string; clamp to 0-10
+    raw_score = triage.get("score")
+    try:
+        score = int(round(float(raw_score)))
+        out["score"] = max(0, min(10, score))
+    except (TypeError, ValueError):
+        pass
+
+    top_signal = triage.get("top_signal")
+    if top_signal and str(top_signal).strip():
+        # Cap length so a runaway LLM response can't bloat the dashboard
+        out["top_signal"] = str(top_signal).strip()[:400]
+
+    return out
+
+
+def count_departures(structured):
+    """Count departure entries in a structured_summary dict (or JSON string).
+
+    Used at ingest and by the retrofit script to populate the departure_count
+    column, which powers dashboard cluster badges. Returns 0 on bad input.
+    """
+    if isinstance(structured, str):
+        try:
+            structured = json.loads(structured)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return 0
+    if not isinstance(structured, dict):
+        return 0
+    departures = structured.get("departures")
+    if not isinstance(departures, list):
+        return 0
+    return len([d for d in departures if isinstance(d, dict)])
+
+
 def structured_summary_for_display(raw):
     """Parse the structured_summary JSON column into a dict safe for templates.
 
