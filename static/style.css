@@ -44,6 +44,18 @@ tr.unread td:nth-child(4) {
     font-weight: 600;
 }
 
+/* Collapsed PASS rows — routine filings (merger departure waves, equity-plan
+   housekeeping) shrink to one quiet line. The "Details ▶" toggle in the
+   summary cell expands the full structured card inline. */
+tr.pass-row {
+    font-size: 0.85rem;
+    color: #6c757d;
+}
+tr.pass-row td {
+    padding-top: 4px;
+    padding-bottom: 4px;
+}
+
 /* Market cap subtitle shown under tickers */
 .market-cap {
     font-size: 0.75rem;

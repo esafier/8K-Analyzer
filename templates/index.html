@@ -118,7 +118,11 @@
         </thead>
         <tbody>
             {% for filing in filings %}
-            <tr class="clickable-row{% if not filing['read_at'] %} unread{% endif %}"
+            {# PASS filings collapse to one quiet line — routine merger departure
+               waves and plan housekeeping shouldn't cost a full card. The data
+               is all still there behind the "Details" toggle. #}
+            {% set is_pass = filing['triage_verdict'] == 'PASS' %}
+            <tr class="clickable-row{% if is_pass %} pass-row{% endif %}{% if not filing['read_at'] %} unread{% endif %}"
                 data-filing-id="{{ filing['id'] }}"
                 onclick="window.location='/filing/{{ filing['id'] }}?back={{ ('/?page=' ~ current_page ~ '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') ~ '&market_targets=' ~ ('1' if current_market_targets else '') ~ '&unread=' ~ ('1' if current_unread else '') ~ '&verdict=' ~ current_verdict ~ '&sort=' ~ current_sort)|urlencode }}'">
                 <!-- Watchlist star toggle -->
@@ -142,7 +146,7 @@
                     {% elif filing['triage_verdict'] == 'PASS' %}
                         <span class="badge bg-secondary" title="Administrative — no investor signal">PASS</span>
                     {% endif %}
-                    {% if filing['signal_score'] is not none %}
+                    {% if not is_pass and filing['signal_score'] is not none %}
                         <br><span class="small fw-bold
                             {% if filing['signal_direction'] == 'BEARISH' %}text-danger
                             {% elif filing['signal_direction'] == 'BULLISH' %}text-success
@@ -154,13 +158,13 @@
                             {%- endif %} {{ filing['signal_score'] }}/10</span>
                     {% endif %}
                     {% if filing['urgent'] %}
-                        <br><span class="badge bg-danger">URGENT</span>
+                        {% if not is_pass %}<br>{% endif %}<span class="badge bg-danger">URGENT</span>
                     {% endif %}
                     {% if filing['has_market_targets'] %}
-                        <br><span class="badge" style="background:#f5b800;color:#000;" title="Discloses stock-price, market-cap, or TSR target">🎯</span>
+                        {% if not is_pass %}<br>{% endif %}<span class="badge" style="background:#f5b800;color:#000;" title="Discloses stock-price, market-cap, or TSR target">🎯</span>
                     {% endif %}
                     {% if (filing['departure_count_24mo'] or 0) >= 2 %}
-                        <br><span class="badge" style="background:#b02a37;color:#fff;margin-top:2px;"
+                        {% if not is_pass %}<br>{% endif %}<span class="badge" style="background:#b02a37;color:#fff;margin-top:2px;"
                               title="{{ filing['departure_count_24mo'] }} executive departures at this company in the last 24 months (per SEC EDGAR)">
                             &#9888; {{ filing['departure_count_24mo'] }} dep/24mo</span>
                     {% endif %}
@@ -169,6 +173,7 @@
                 <td>{{ filing['company'] }}</td>
                 <td>
                     <strong>{{ filing['ticker'] or '—' }}</strong>
+                    {% if not is_pass %}
                     {% if filing['ticker'] and market_caps.get(filing['ticker']) %}
                     <br><span class="market-cap">{{ market_caps[filing['ticker']] | format_market_cap }}</span>
                     {% endif %}
@@ -177,6 +182,7 @@
                     {% endif %}
                     {% if filing['ticker'] and stock_prices.get(filing['ticker']) %}
                     <br><span class="stock-price">${{ "%.2f"|format(stock_prices[filing['ticker']]) }}</span>
+                    {% endif %}
                     {% endif %}
                 </td>
                 <td>
@@ -190,13 +196,27 @@
                         {{ display_category or 'Uncategorized' }}
                     </span>
                     {% set subcats = filing['auto_subcategory'] | parse_subcategories %}
-                    {% if subcats %}
+                    {% if subcats and not is_pass %}
                       <br>
                       {% for s in subcats %}
                         <span class="badge bg-light text-dark border" style="font-size:10px;margin-top:2px;">{{ s }}</span>
                       {% endfor %}
                     {% endif %}
                 </td>
+                {% if is_pass %}
+                {# Collapsed summary: one-line top signal + expandable details #}
+                <td class="summary-cell" style="min-width: 320px; white-space: normal;">
+                    <span class="small text-muted fst-italic">{{ filing['top_signal'] or (filing['summary'] or '') | truncate(160) }}</span>
+                    <button class="btn btn-sm btn-outline-secondary" style="font-size:10px;padding:0 6px;margin-left:6px;vertical-align:baseline;"
+                            onclick="event.stopPropagation();var el=document.getElementById('pass-details-{{ filing['id'] }}');var open=el.style.display!=='none';el.style.display=open?'none':'block';this.textContent=open?'Details ▶':'Details ▼';">
+                        Details ▶
+                    </button>
+                    <div id="pass-details-{{ filing['id'] }}" style="display:none;margin-top:6px;" onclick="event.stopPropagation()">
+                        {% set structured = filing['structured_summary'] | structured_summary %}
+                        {% include '_structured_summary.html' %}
+                    </div>
+                </td>
+                {% else %}
                 <td class="summary-cell" style="min-width: 320px; white-space: normal;">
                     {% if filing['top_signal'] %}
                     <div class="small fst-italic mb-1" style="color:#444;border-left:3px solid #adb5bd;padding-left:6px;">
@@ -206,6 +226,7 @@
                     {% set structured = filing['structured_summary'] | structured_summary %}
                     {% include '_structured_summary.html' %}
                 </td>
+                {% endif %}
                 <td>
                     {% set doc_url = filing['filing_document_url'] or filing['filing_url'] %}
                     <a href="{{ doc_url }}" target="_blank" class="btn btn-sm btn-outline-primary"
