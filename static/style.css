@@ -97,3 +97,78 @@ tr.pass-row td {
     margin-bottom: 2px;
     font-size: 0.9rem;
 }
+
+/* ------------------------------------------------------------------ */
+/* Mobile: turn the wide filings table into a stack of cards.          */
+/* Below Bootstrap's lg breakpoint (992px) the 8-column table doesn't  */
+/* fit a phone, so each row becomes a self-contained card with each    */
+/* cell labelled by its data-label attribute. Desktop is untouched.    */
+/* ------------------------------------------------------------------ */
+@media (max-width: 991.98px) {
+    /* Let the page (not a horizontal scrollbar) own the width */
+    .table-responsive {
+        overflow-x: visible;
+    }
+
+    /* Column headers are meaningless once cells stack vertically */
+    .filings-table thead {
+        display: none;
+    }
+
+    .filings-table,
+    .filings-table tbody {
+        display: block;
+        width: 100%;
+    }
+
+    /* Each row -> a card */
+    .filings-table tr {
+        display: block;
+        margin-bottom: 1rem;
+        padding: 0.75rem 1rem;
+        border: 1px solid #dee2e6;
+        border-radius: 0.5rem;
+        background: #fff;
+    }
+
+    /* Each cell -> a full-width labelled block */
+    .filings-table td {
+        display: block;
+        width: 100%;
+        padding: 0.3rem 0;
+        border: none !important;
+    }
+
+    /* Field label rendered from the cell's data-label attribute */
+    .filings-table td[data-label]::before {
+        content: attr(data-label);
+        display: block;
+        margin-bottom: 1px;
+        font-size: 0.7rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #888;
+    }
+
+    /* Star + verdict/signal/status badges sit together on the card's top line */
+    .filings-table td.cell-star,
+    .filings-table td.cell-flags {
+        display: inline-block;
+        width: auto;
+        vertical-align: top;
+        min-width: 0 !important;
+        padding-right: 0.5rem;
+    }
+
+    /* Summary should use the full card width, not the desktop cap */
+    .filings-table td.summary-cell {
+        max-width: none;
+        min-width: 0 !important;
+    }
+
+    /* Let the "Open filing" button stretch for an easy tap target */
+    .filings-table td.cell-link .btn {
+        width: 100%;
+    }
+}

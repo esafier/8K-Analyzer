@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
 
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h2>Filtered 8-K Filings</h2>
-    <div class="d-flex gap-2">
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2 class="mb-0">Filtered 8-K Filings</h2>
+    <div class="d-flex gap-2 flex-wrap">
         {% if last_backfill %}
         <span class="badge bg-info fs-6">
             Last updated: {{ last_backfill.time.strftime('%b %d, %Y at %I:%M %p') }} ({{ last_backfill.type }})
@@ -103,7 +103,7 @@
 <!-- Results table -->
 {% if filings %}
 <div class="table-responsive">
-    <table class="table table-hover">
+    <table class="table table-hover filings-table">
         <thead class="table-dark">
             <tr>
                 <th style="width: 40px;"></th>
@@ -126,7 +126,7 @@
                 data-filing-id="{{ filing['id'] }}"
                 onclick="window.location='/filing/{{ filing['id'] }}?back={{ ('/?page=' ~ current_page ~ '&category=' ~ current_category ~ '&search=' ~ current_search ~ '&date_from=' ~ current_date_from ~ '&date_to=' ~ current_date_to ~ '&urgent=' ~ ('1' if current_urgent else '') ~ '&market_targets=' ~ ('1' if current_market_targets else '') ~ '&unread=' ~ ('1' if current_unread else '') ~ '&verdict=' ~ current_verdict ~ '&sort=' ~ current_sort)|urlencode }}'">
                 <!-- Watchlist star toggle -->
-                <td onclick="event.stopPropagation()">
+                <td class="cell-star" onclick="event.stopPropagation()">
                     <button class="btn btn-link p-0 watchlist-star" data-filing-id="{{ filing['id'] }}"
                             data-watchlisted="{{ 'true' if filing['id'] in watchlist_ids else 'false' }}"
                             title="{{ 'Remove from watchlist' if filing['id'] in watchlist_ids else 'Add to watchlist' }}">
@@ -137,7 +137,7 @@
                         {% endif %}
                     </button>
                 </td>
-                <td style="min-width: 90px;">
+                <td class="cell-flags" style="min-width: 90px;">
                     {# Triage verdict — set by the LLM at ingest. No badge = legacy row (re-summarize to rate it). #}
                     {% if filing['triage_verdict'] == 'DEEP_LOOK' %}
                         <span class="badge bg-dark" title="Worth your time today">DEEP LOOK</span>
@@ -169,9 +169,9 @@
                             &#9888; {{ filing['departure_count_24mo'] }} dep/24mo</span>
                     {% endif %}
                 </td>
-                <td class="text-nowrap">{{ filing['filed_date'] }}</td>
-                <td>{{ filing['company'] }}</td>
-                <td>
+                <td class="text-nowrap" data-label="Date">{{ filing['filed_date'] }}</td>
+                <td data-label="Company">{{ filing['company'] }}</td>
+                <td data-label="Ticker">
                     <strong>{{ filing['ticker'] or '—' }}</strong>
                     {% if not is_pass %}
                     {% if filing['ticker'] and market_caps.get(filing['ticker']) %}
@@ -185,7 +185,7 @@
                     {% endif %}
                     {% endif %}
                 </td>
-                <td>
+                <td data-label="Category">
                     {% set display_category = filing['user_tag'] or filing['auto_category'] %}
                     <span class="badge
                         {% if display_category == 'Management Change' %}bg-primary
@@ -205,7 +205,7 @@
                 </td>
                 {% if is_pass %}
                 {# Collapsed summary: one-line top signal + expandable details #}
-                <td class="summary-cell" style="min-width: 320px; white-space: normal;">
+                <td class="summary-cell" data-label="Summary" style="min-width: 320px; white-space: normal;">
                     <span class="small text-muted fst-italic">{{ filing['top_signal'] or (filing['summary'] or '') | truncate(160) }}</span>
                     <button class="btn btn-sm btn-outline-secondary" style="font-size:10px;padding:0 6px;margin-left:6px;vertical-align:baseline;"
                             onclick="event.stopPropagation();var el=document.getElementById('pass-details-{{ filing['id'] }}');var open=el.style.display!=='none';el.style.display=open?'none':'block';this.textContent=open?'Details ▶':'Details ▼';">
@@ -217,7 +217,7 @@
                     </div>
                 </td>
                 {% else %}
-                <td class="summary-cell" style="min-width: 320px; white-space: normal;">
+                <td class="summary-cell" data-label="Summary" style="min-width: 320px; white-space: normal;">
                     {% if filing['top_signal'] %}
                     <div class="small fst-italic mb-1" style="color:#444;border-left:3px solid #adb5bd;padding-left:6px;">
                         {{ filing['top_signal'] }}
@@ -227,7 +227,7 @@
                     {% include '_structured_summary.html' %}
                 </td>
                 {% endif %}
-                <td>
+                <td class="cell-link">
                     {% set doc_url = filing['filing_document_url'] or filing['filing_url'] %}
                     <a href="{{ doc_url }}" target="_blank" class="btn btn-sm btn-outline-primary"
                        onclick="event.stopPropagation()" title="Open 8-K document">
