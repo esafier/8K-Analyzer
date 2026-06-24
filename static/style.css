@@ -1,101 +1,305 @@
-/* Custom styles for the 8-K Filing Analyzer dashboard */
+/* ============================================================
+   8-K Filing Analyzer — polished design layer.
 
-/* Make table rows clickable with a pointer cursor and hover highlight */
-.clickable-row {
-    cursor: pointer;
-}
-.clickable-row:hover {
-    background-color: #f0f4ff !important;
+   This file sits ON TOP of Bootstrap (loaded in base.html) and
+   overrides its defaults to give the whole app a refined, modern
+   feel. Because every page shares base.html + Bootstrap classes,
+   restyling here updates the dashboard, filing detail, watchlist,
+   and login screens all at once.
+
+   Design principles applied (commented inline where they appear):
+     • Concentric border radius (outer = inner + padding)
+     • Layered shadows instead of hard borders
+     • Tabular numbers so data columns never jitter
+     • Scale-on-press for tactile buttons
+     • Staggered row entrance on the dashboard table
+     • Font smoothing + balanced/pretty text wrapping
+   ============================================================ */
+
+/* ---------- Design tokens: tune the whole look in one place ---------- */
+:root {
+  --bg:          #f6f7f9;   /* page background — soft, not pure white */
+  --surface:     #ffffff;   /* cards, table, nav */
+  --surface-2:   #fbfcfd;   /* zebra / hover wash */
+  --ink:         #1a1d21;   /* primary text */
+  --ink-soft:    #5b626b;   /* secondary text */
+  --ink-faint:   #8a919b;   /* captions */
+  --line:        rgba(20, 24, 31, 0.08);   /* hairlines */
+  --accent:      #2f6df6;   /* brand blue */
+  --accent-soft: #eaf1ff;   /* tinted blue background */
+
+  /* Concentric radii: outer = inner + padding */
+  --r-card:  16px;
+  --r-inner: 10px;
+  --r-badge: 7px;
+  --r-pill:  999px;
+
+  /* Layered shadows (depth without hard borders) */
+  --shadow-sm: 0 1px 2px rgba(20,24,31,0.04),
+               0 1px 3px rgba(20,24,31,0.06);
+  --shadow-md: 0 2px 4px rgba(20,24,31,0.04),
+               0 4px 12px rgba(20,24,31,0.07),
+               0 12px 28px rgba(20,24,31,0.05);
+
+  /* Override a few Bootstrap CSS variables at the root so its own
+     components inherit our palette without us chasing every selector. */
+  --bs-body-bg: var(--bg);
+  --bs-body-color: var(--ink);
+  --bs-border-color: var(--line);
 }
 
-/* Limit summary text width so it doesn't stretch the table */
-.summary-cell {
-    max-width: 400px;
-    font-size: 0.85rem;
-    color: #555;
+/* ---------- Base ---------- */
+body {
+  background: var(--bg);
+  color: var(--ink);
+  /* Crisper text on macOS (harmless elsewhere) */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 14px;
 }
 
-/* Tighten up the card spacing */
+/* Balanced wrapping on headings, pretty wrapping on body copy
+   (avoids single-word orphans on the last line). */
+h1, h2, h3, h4, h5 { letter-spacing: -0.015em; text-wrap: balance; }
+p, .summary-body, .top-signal { text-wrap: pretty; }
+
+/* ---------- Navigation ---------- */
+.site-nav {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  box-shadow: var(--shadow-sm);
+  padding-top: 0.55rem;
+  padding-bottom: 0.55rem;
+}
+.site-nav .navbar-brand {
+  font-weight: 650;
+  font-size: 15px;
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+/* Gradient "8K" chip in the brand — added in base.html */
+.brand-mark {
+  width: 26px; height: 26px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #2f6df6, #1b4fd0);
+  color: #fff;
+  display: grid; place-items: center;
+  font-size: 12px; font-weight: 700;
+  box-shadow: var(--shadow-sm);
+}
+.site-nav .nav-link {
+  color: var(--ink-soft);
+  font-weight: 500;
+  font-size: 13.5px;
+  padding: 7px 12px !important;
+  border-radius: 9px;
+  /* Name exact properties — never transition: all */
+  transition: background-color .16s ease, color .16s ease;
+}
+.site-nav .nav-link:hover { background: var(--surface-2); color: var(--ink); }
+
+/* ---------- Cards: soft shadow, generous radius, hairline border ---------- */
 .card {
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-sm);
+}
+.card-header {
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  border-top-left-radius: var(--r-card) !important;
+  border-top-right-radius: var(--r-card) !important;
+  padding: 14px 18px;
+}
+.card-body { padding: 18px; }
+.card-footer {
+  background: var(--surface-2);
+  border-top: 1px solid var(--line);
 }
 
-/* Make badges a bit more readable */
+/* ---------- Badges: refined radius/padding, tabular figures ---------- */
 .badge {
-    font-weight: 500;
+  font-weight: 600;
+  border-radius: var(--r-badge);
+  padding: 0.34em 0.6em;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
 }
 
-/* Subtle left border on urgent filing rows so they stand out */
-tr.clickable-row:has(.badge.bg-danger) {
-    border-left: 3px solid #dc3545;
+/* ---------- Buttons: shadows + scale-on-press ---------- */
+.btn {
+  border-radius: var(--r-inner);
+  font-weight: 550;
+  font-size: 13.5px;
+  /* scale is animated; Bootstrap handles color transitions */
+  transition: background-color .15s ease, border-color .15s ease,
+              color .15s ease, box-shadow .15s ease, scale .12s ease;
+}
+/* Tactile press — exactly 0.96, never below 0.95 */
+.btn:active { scale: 0.96; }
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+.btn-primary:hover { background: #2560e6; border-color: #2560e6; }
+.btn-sm { border-radius: 8px; font-size: 12px; }
+.btn-link { text-decoration: none; }
+
+/* ---------- Forms: refined borders + soft focus ring ---------- */
+.form-control, .form-select {
+  border-radius: var(--r-inner);
+  border-color: var(--line);
+  box-shadow: var(--shadow-sm);
+  font-size: 13.5px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.form-control:focus, .form-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(47,109,246,0.15);
+}
+.form-label { font-size: 12.5px; font-weight: 600; color: var(--ink-soft); }
+
+/* ---------- Tables ---------- */
+.table { --bs-table-bg: transparent; margin-bottom: 0; }
+/* Light, uppercase column headers (replaces the heavy dark header) */
+.table thead th {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px;
+  white-space: nowrap;
+}
+.table tbody td {
+  padding: 13px 14px;
+  border-bottom-color: var(--line);
+  vertical-align: top;
+  font-variant-numeric: tabular-nums;   /* data columns never jitter */
+}
+.table tbody tr:last-child td { border-bottom: none; }
+
+/* Wrap the dashboard table in a card-like surface (it lives in
+   .table-responsive). Rounded, clipped, shadowed. */
+.table-responsive {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
 }
 
-/* Unread filing row: subtle left-edge accent + bolder company name.
-   Marker reflects state at page load time; the scroll-tracking JS deliberately
-   does NOT repaint rows as they're marked read mid-session — that would feel
-   jumpy. Next page refresh picks up the new state.
-   Border only applies to non-urgent rows so the red urgent border still wins
-   visually; the bold company name still signals "unread" on urgent rows. */
-tr.unread:not(:has(.badge.bg-danger)) {
-    border-left: 4px solid #0d6efd;
+/* Clickable dashboard rows — smooth hover wash */
+.clickable-row { cursor: pointer; transition: background-color .14s ease; }
+.clickable-row:hover { background-color: var(--surface-2) !important; }
+
+/* Left-edge accents use inset box-shadow (no layout shift, unlike border) */
+tr.clickable-row:has(.badge.bg-danger) { box-shadow: inset 3px 0 0 #d93a3a; }
+
+/* Unread rows: subtle blue wash + bolder company name.
+   State reflects page-load time; the scroll-tracking JS intentionally
+   does not repaint rows mid-session (that would feel jumpy). */
+tr.unread:not(:has(.badge.bg-danger)) { box-shadow: inset 3px 0 0 var(--accent); }
+tr.unread td:nth-child(4) { font-weight: 650; }
+
+/* Collapsed PASS rows — routine filings shrink to one quiet line */
+tr.pass-row { font-size: 0.85rem; color: var(--ink-soft); }
+tr.pass-row td { padding-top: 8px; padding-bottom: 8px; }
+
+/* Staggered entrance — ONLY the dashboard table (.table-hover).
+   Detail/metadata tables (.table-sm) are excluded so they don't animate.
+   Rows fade + rise in sequence for a polished load. */
+.table-hover tbody tr {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: rowIn .42s cubic-bezier(0.2, 0, 0, 1) forwards;
 }
-tr.unread td:nth-child(4) {
-    /* "Company" is the 4th visible column (star, badges, date, company, ...) */
-    font-weight: 600;
+.table-hover tbody tr:nth-child(1)  { animation-delay: .02s; }
+.table-hover tbody tr:nth-child(2)  { animation-delay: .06s; }
+.table-hover tbody tr:nth-child(3)  { animation-delay: .10s; }
+.table-hover tbody tr:nth-child(4)  { animation-delay: .14s; }
+.table-hover tbody tr:nth-child(5)  { animation-delay: .18s; }
+.table-hover tbody tr:nth-child(6)  { animation-delay: .22s; }
+.table-hover tbody tr:nth-child(7)  { animation-delay: .26s; }
+.table-hover tbody tr:nth-child(8)  { animation-delay: .30s; }
+.table-hover tbody tr:nth-child(9)  { animation-delay: .34s; }
+.table-hover tbody tr:nth-child(10) { animation-delay: .38s; }
+/* Rows past the 10th just appear (no point delaying far down the page) */
+.table-hover tbody tr:nth-child(n+11) { animation-delay: .40s; }
+@keyframes rowIn { to { opacity: 1; transform: translateY(0); } }
+
+/* ---------- Dashboard cell details ---------- */
+.summary-cell { max-width: 400px; font-size: 0.85rem; color: var(--ink-soft); }
+
+/* Ticker sub-labels under the ticker column */
+.market-cap  { font-size: 0.72rem; color: var(--ink-faint); }
+.stock-price { font-size: 0.72rem; color: var(--ink-soft); }
+.earnings-date { font-size: 0.72rem; color: #0d8a9c; }
+
+/* Watchlist star — comfortable 40x40 hit area around the small glyph */
+.watchlist-star {
+  width: 40px; height: 40px;
+  display: inline-grid; place-items: center;
+  transition: scale .12s ease;
+}
+.watchlist-star:active { scale: 0.9; }
+.watchlist-star .star-filled,
+.watchlist-star .star-empty { transition: scale .2s cubic-bezier(0.2,0,0,1); }
+.watchlist-star .star-filled { scale: 1.06; }
+
+/* ---------- Pagination ---------- */
+.pagination { gap: 4px; }
+.page-link {
+  border: 1px solid var(--line);
+  border-radius: var(--r-inner) !important;
+  color: var(--ink-soft);
+  box-shadow: var(--shadow-sm);
+  transition: background-color .15s ease, color .15s ease, scale .12s ease;
+}
+.page-link:hover { background: var(--surface-2); color: var(--ink); }
+.page-link:active { scale: 0.96; }
+.page-item.active .page-link {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.page-item.disabled .page-link { box-shadow: none; opacity: 0.5; }
+
+/* ---------- Alerts ---------- */
+.alert {
+  border: 1px solid var(--line);
+  border-radius: var(--r-inner);
+  box-shadow: var(--shadow-sm);
 }
 
-/* Collapsed PASS rows — routine filings (merger departure waves, equity-plan
-   housekeeping) shrink to one quiet line. The "Details ▶" toggle in the
-   summary cell expands the full structured card inline. */
-tr.pass-row {
-    font-size: 0.85rem;
-    color: #6c757d;
-}
-tr.pass-row td {
-    padding-top: 4px;
-    padding-bottom: 4px;
-}
+/* ---------- Filing detail polish ---------- */
+.comp-details-table th { width: 200px; color: var(--ink-soft); font-weight: 600; }
 
-/* Market cap subtitle shown under tickers */
-.market-cap {
-    font-size: 0.75rem;
-    color: #888;
-}
-
-/* Stock price subtitle shown under tickers */
-.stock-price {
-    font-size: 0.75rem;
-    color: #888;
-}
-
-/* Earnings date subtitle shown under tickers */
-.earnings-date {
-    font-size: 0.75rem;
-    color: #17a2b8;
-}
-
-/* Comp details table on the filing detail page */
-.comp-details-table th {
-    width: 200px;
-    color: #555;
-}
-
-/* Deep analysis card content */
 .deep-analysis-content h6 {
-    font-size: 0.95rem;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-bottom: 1px solid #dee2e6;
-    padding-bottom: 4px;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 5px;
 }
+.deep-analysis-content ul { padding-left: 1.2rem; }
+.deep-analysis-content li { margin-bottom: 3px; font-size: 0.9rem; }
 
-.deep-analysis-content ul {
-    padding-left: 1.2rem;
-}
+/* Structured-summary section labels keep their semantic colors but read
+   a touch softer against the new lighter surfaces. */
+.structured-summary .ss-body li { margin-bottom: 3px; }
 
-.deep-analysis-content li {
-    margin-bottom: 2px;
-    font-size: 0.9rem;
+/* ---------- Respect reduced-motion preferences ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .table-hover tbody tr { opacity: 1; transform: none; }
 }
 
 /* ------------------------------------------------------------------ */

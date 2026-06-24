@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>8-K Analyzer — Polished Preview</title>
+<style>
+  /* ============================================================
+     DEMO ONLY — standalone preview of the "polished" treatment.
+     Nothing here touches your real Flask app. Open in a browser.
+     Every section is annotated with the design principle it shows.
+     ============================================================ */
+
+  /* --- Design tokens: one place to tune the whole look --- */
+  :root {
+    --bg:            #f6f7f9;   /* page background — soft, not pure white */
+    --surface:       #ffffff;   /* cards, table, nav */
+    --surface-2:     #fbfcfd;   /* subtle zebra / hover wash */
+    --ink:           #1a1d21;   /* primary text */
+    --ink-soft:      #5b626b;   /* secondary text */
+    --ink-faint:     #8a919b;   /* tertiary / captions */
+    --line:          rgba(20, 24, 31, 0.08);  /* hairlines */
+    --accent:        #2f6df6;   /* primary brand blue */
+    --accent-soft:   #eaf1ff;   /* tinted blue background */
+
+    /* Verdict colors */
+    --deep:    #111418;   /* DEEP LOOK — near black, highest priority */
+    --monitor: #e07c14;   /* MONITOR — amber */
+    --pass:    #98a0aa;   /* PASS — muted grey */
+    --bull:    #11936b;   /* bullish green */
+    --bear:    #d93a3a;   /* bearish red */
+    --urgent:  #d93a3a;
+    --target:  #f5b800;
+
+    /* Concentric radii: outer = inner + padding (Principle #1) */
+    --r-card:  16px;
+    --r-inner: 10px;
+    --r-pill:  999px;
+
+    /* Layered shadows over borders (Principle #3) */
+    --shadow-sm: 0 1px 2px rgba(20,24,31,0.04),
+                 0 1px 3px rgba(20,24,31,0.06);
+    --shadow-md: 0 2px 4px rgba(20,24,31,0.04),
+                 0 4px 12px rgba(20,24,31,0.07),
+                 0 12px 28px rgba(20,24,31,0.05);
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    /* System font stack — crisp on every OS */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    /* Principle #8 — font smoothing for crisper text */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  /* Principle #9 — every number that can change uses tabular figures
+     so columns never jitter as values update. Applied broadly here. */
+  .num, .signal, .price, .mcap, .count, td, th { font-variant-numeric: tabular-nums; }
+
+  /* ===================== NAV ===================== */
+  .nav {
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    backdrop-filter: saturate(1.2);
+  }
+  .nav-inner {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 24px;
+    height: 58px;
+    display: flex;
+    align-items: center;
+    gap: 28px;
+  }
+  .brand {
+    font-weight: 650;
+    font-size: 15px;
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .brand-mark {
+    width: 26px; height: 26px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #2f6df6, #1b4fd0);
+    color: #fff;
+    display: grid; place-items: center;
+    font-size: 13px; font-weight: 700;
+    box-shadow: var(--shadow-sm);
+  }
+  .nav-links { margin-left: auto; display: flex; gap: 4px; }
+  .nav-link {
+    color: var(--ink-soft);
+    text-decoration: none;
+    font-weight: 500;
+    font-size: 13.5px;
+    padding: 7px 12px;
+    border-radius: 9px;
+    /* Principle #14 — never transition: all. Name the properties. */
+    transition: background-color .16s ease, color .16s ease;
+  }
+  .nav-link:hover { background: var(--surface-2); color: var(--ink); }
+  .nav-link.active { background: var(--accent-soft); color: var(--accent); }
+
+  /* ===================== LAYOUT ===================== */
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 80px; }
+
+  .page-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 680;
+    letter-spacing: -0.02em;
+    margin: 0;
+    /* Principle #10 — balanced wrapping on headings */
+    text-wrap: balance;
+  }
+  .subtitle { color: var(--ink-faint); font-size: 13px; margin-top: 3px; }
+  .head-badges { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    font-size: 12px;
+    color: var(--ink-soft);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 5px 11px;
+    border-radius: var(--r-pill);
+    box-shadow: var(--shadow-sm);
+    white-space: nowrap;
+  }
+  .chip strong { color: var(--ink); font-weight: 650; }
+
+  /* ===================== FILTER CARD ===================== */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-card);
+    box-shadow: var(--shadow-sm);
+  }
+  .filter-card { padding: 16px; margin-bottom: 22px; }
+
+  /* Verdict pills — the main "skip the noise" control */
+  .pills { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 14px; }
+  .pill {
+    font-size: 12.5px;
+    font-weight: 550;
+    padding: 7px 13px;
+    border-radius: var(--r-pill);
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-soft);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    /* Principle #4 — interruptible CSS transitions on interactive state */
+    transition: background-color .15s ease, color .15s ease,
+                border-color .15s ease, box-shadow .15s ease, scale .12s ease;
+  }
+  .pill:hover { border-color: rgba(20,24,31,0.18); background: var(--surface-2); }
+  /* Principle #12 — tactile scale(0.96) on press, never below 0.95 */
+  .pill:active { scale: 0.96; }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .pill[data-v="DEEP_LOOK"] .dot { background: var(--deep); }
+  .pill[data-v="MONITOR"]  .dot { background: var(--monitor); }
+  .pill[data-v="PASS"]     .dot { background: var(--pass); }
+  .pill[data-v="all"]      .dot { background: var(--accent); }
+  .pill.active {
+    color: #fff;
+    border-color: transparent;
+    box-shadow: var(--shadow-sm);
+  }
+  .pill.active[data-v="all"]       { background: var(--accent); }
+  .pill.active[data-v="DEEP_LOOK"] { background: var(--deep); }
+  .pill.active[data-v="MONITOR"]   { background: var(--monitor); }
+  .pill.active[data-v="PASS"]      { background: var(--pass); }
+  .pill.active .dot { background: rgba(255,255,255,0.9); }
+
+  /* Inputs row */
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .field { position: relative; }
+  .field svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--ink-faint); }
+  input[type="text"], select {
+    font: inherit;
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-inner);
+    padding: 9px 12px;
+    height: 38px;
+    box-shadow: var(--shadow-sm);
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .search-input { padding-left: 32px; width: 240px; }
+  select { cursor: pointer; padding-right: 28px; }
+  input[type="text"]:focus, select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(47,109,246,0.15);
+  }
+
+  .toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    cursor: pointer;
+    /* Principle #16 — comfortable hit area */
+    min-height: 38px;
+    padding: 0 4px;
+    user-select: none;
+  }
+  .switch {
+    width: 34px; height: 20px;
+    border-radius: var(--r-pill);
+    background: #d7dbe1;
+    position: relative;
+    transition: background-color .18s ease;
+    flex: none;
+  }
+  .switch::after {
+    content: "";
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: var(--shadow-sm);
+    transition: translate .18s cubic-bezier(0.2,0,0,1);
+  }
+  .toggle.on .switch { background: var(--accent); }
+  .toggle.on .switch::after { translate: 14px 0; }
+
+  /* ===================== TABLE ===================== */
+  .table-card { overflow: hidden; padding: 0; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-faint);
+    padding: 12px 14px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  tbody td { padding: 13px 14px; vertical-align: top; border-bottom: 1px solid var(--line); }
+  tbody tr:last-child td { border-bottom: none; }
+
+  /* Row hover — washes the whole row, with a left accent that grows in.
+     Uses a box-shadow inset for the accent so layout never shifts. */
+  tbody tr {
+    cursor: pointer;
+    transition: background-color .14s ease, box-shadow .14s ease;
+  }
+  tbody tr:hover { background: var(--surface-2); }
+  tbody tr.row-deep    { box-shadow: inset 3px 0 0 var(--deep); }
+  tbody tr.row-monitor { box-shadow: inset 3px 0 0 var(--monitor); }
+  tbody tr.row-urgent  { box-shadow: inset 3px 0 0 var(--urgent); }
+  tbody tr.unread { background: linear-gradient(90deg, rgba(47,109,246,0.035), transparent 40%); }
+  tbody tr.unread .company { font-weight: 650; }
+
+  /* PASS rows collapse to one quiet line */
+  tbody tr.row-pass td { padding-top: 9px; padding-bottom: 9px; color: var(--ink-soft); }
+
+  /* Staggered row enter (Principle #5) — rows fade+rise in sequence on load */
+  tbody tr.enter {
+    opacity: 0;
+    transform: translateY(6px);
+    animation: rowIn .42s cubic-bezier(0.2,0,0,1) forwards;
+  }
+  @keyframes rowIn { to { opacity: 1; transform: translateY(0); } }
+
+  /* Cells */
+  .date { color: var(--ink-soft); white-space: nowrap; font-size: 12.5px; }
+  .company { font-weight: 550; letter-spacing: -0.005em; }
+  .ticker { font-weight: 650; font-size: 13px; }
+  .mcap, .price { font-size: 11.5px; color: var(--ink-faint); display: block; margin-top: 2px; }
+  .price { color: var(--ink-soft); }
+
+  /* Verdict badge */
+  .verdict {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10.5px;
+    font-weight: 650;
+    letter-spacing: 0.03em;
+    padding: 3px 8px;
+    border-radius: 7px;
+    white-space: nowrap;
+  }
+  .v-deep    { background: var(--deep); color: #fff; }
+  .v-monitor { background: #fff3e4; color: #b5630a; box-shadow: inset 0 0 0 1px rgba(224,124,20,0.25); }
+  .v-pass    { background: #eef0f2; color: #6b727b; }
+
+  /* Signal — arrow + score/10 */
+  .signal {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 650;
+    margin-top: 6px;
+  }
+  .signal.bull { color: var(--bull); }
+  .signal.bear { color: var(--bear); }
+  .signal.mixed { color: var(--ink-soft); }
+
+  /* Tiny meta badges */
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: var(--r-pill);
+    margin: 4px 4px 0 0;
+  }
+  .tag-urgent { background: #fdeaea; color: var(--bear); }
+  .tag-target { background: #fff7d6; color: #8a6a00; }
+  .tag-dep    { background: #fbe9ec; color: #b02a4a; }
+
+  .cat {
+    display: inline-flex;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: var(--r-pill);
+  }
+  .cat-mgmt { background: var(--accent-soft); color: #1b56d6; }
+  .cat-comp { background: #e4f7ee; color: #0d7a52; }
+  .cat-both { background: #fff3d6; color: #8a6a00; }
+  .subcat {
+    display: inline-block;
+    font-size: 9.5px;
+    color: var(--ink-soft);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    padding: 1px 6px;
+    border-radius: 5px;
+    margin: 4px 3px 0 0;
+  }
+
+  /* Summary */
+  .summary { max-width: 360px; }
+  .top-signal {
+    font-size: 12px;
+    color: var(--ink);
+    border-left: 2.5px solid var(--accent);
+    padding-left: 9px;
+    margin-bottom: 5px;
+    /* Principle #10 — pretty wrap avoids orphan words in body text */
+    text-wrap: pretty;
+  }
+  .summary-body { font-size: 12px; color: var(--ink-soft); text-wrap: pretty; }
+  .pass-summary { font-size: 12px; color: var(--ink-faint); font-style: italic; }
+
+  /* Star button */
+  .star {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    /* Principle #16 — extend tiny control to a 40x40 hit area via the button box */
+    width: 40px; height: 40px;
+    margin: -10px;
+    display: grid; place-items: center;
+    color: #c7ccd3;
+    transition: color .15s ease, scale .12s ease;
+  }
+  .star:hover { color: var(--target); }
+  .star:active { scale: 0.92; }
+  .star.on { color: var(--target); }
+  .star svg { transition: scale .2s cubic-bezier(0.2,0,0,1); }
+  .star.on svg { scale: 1.08; }
+
+  /* Open-filing button */
+  .btn-open {
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 550;
+    color: var(--accent);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    text-decoration: none;
+    box-shadow: var(--shadow-sm);
+    transition: background-color .15s ease, border-color .15s ease, scale .12s ease;
+  }
+  .btn-open:hover { background: var(--accent-soft); border-color: rgba(47,109,246,0.3); }
+  .btn-open:active { scale: 0.96; }
+
+  /* Details toggle on PASS rows */
+  .details-toggle {
+    font: inherit;
+    font-size: 10.5px;
+    color: var(--ink-soft);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 2px 8px;
+    cursor: pointer;
+    margin-left: 8px;
+    transition: background-color .15s ease, scale .12s ease;
+  }
+  .details-toggle:hover { background: #eef0f2; }
+  .details-toggle:active { scale: 0.95; }
+
+  .empty {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--ink-faint);
+  }
+  .empty h3 { color: var(--ink-soft); font-weight: 600; margin: 0 0 6px; }
+
+  /* ===================== DETAIL DRAWER ===================== */
+  .scrim {
+    position: fixed; inset: 0;
+    background: rgba(20,24,31,0.32);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .25s ease;
+    z-index: 90;
+    backdrop-filter: blur(1px);
+  }
+  .scrim.open { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: 460px;
+    max-width: 92vw;
+    background: var(--surface);
+    box-shadow: var(--shadow-md);
+    z-index: 100;
+    transform: translateX(100%);
+    transition: transform .32s cubic-bezier(0.2,0,0,1);
+    display: flex;
+    flex-direction: column;
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawer-head {
+    padding: 20px 22px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .drawer-body { padding: 20px 22px; overflow-y: auto; }
+  /* Principle #5 — split + stagger: each block enters ~90ms after the last */
+  .drawer.open .stagger { animation: blockIn .4s cubic-bezier(0.2,0,0,1) backwards; }
+  .drawer.open .stagger:nth-child(1) { animation-delay: .06s; }
+  .drawer.open .stagger:nth-child(2) { animation-delay: .14s; }
+  .drawer.open .stagger:nth-child(3) { animation-delay: .22s; }
+  .drawer.open .stagger:nth-child(4) { animation-delay: .30s; }
+  @keyframes blockIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .drawer-close {
+    position: absolute; top: 16px; right: 16px;
+    width: 40px; height: 40px;
+    border: none; background: var(--surface-2);
+    border-radius: 10px; cursor: pointer;
+    color: var(--ink-soft); font-size: 18px;
+    display: grid; place-items: center;
+    transition: background-color .15s ease, scale .12s ease;
+  }
+  .drawer-close:hover { background: #eef0f2; color: var(--ink); }
+  .drawer-close:active { scale: 0.94; }
+  .d-company { font-size: 19px; font-weight: 680; letter-spacing: -0.02em; text-wrap: balance; }
+  .d-meta { color: var(--ink-faint); font-size: 12.5px; margin-top: 2px; }
+  .d-section-title {
+    font-size: 11px; font-weight: 650; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--ink-faint);
+    margin: 0 0 8px;
+  }
+  .d-block { margin-bottom: 22px; }
+  .d-block p { margin: 0; color: var(--ink-soft); font-size: 13px; text-wrap: pretty; }
+  .d-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .d-stat {
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: var(--r-inner);
+    padding: 11px 13px;
+  }
+  .d-stat .k { font-size: 11px; color: var(--ink-faint); }
+  .d-stat .val { font-size: 17px; font-weight: 680; margin-top: 2px; letter-spacing: -0.01em; }
+  .d-list { margin: 0; padding-left: 18px; }
+  .d-list li { font-size: 13px; color: var(--ink-soft); margin-bottom: 5px; text-wrap: pretty; }
+
+  /* small footer note */
+  .demo-note {
+    margin-top: 26px;
+    font-size: 12px;
+    color: var(--ink-faint);
+    text-align: center;
+  }
+
+  /* Respect reduced-motion */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+  <!-- ===================== NAV ===================== -->
+  <nav class="nav">
+    <div class="nav-inner">
+      <div class="brand">
+        <span class="brand-mark">8K</span>
+        Filing Analyzer
+      </div>
+      <div class="nav-links">
+        <a class="nav-link active" href="#">Dashboard</a>
+        <a class="nav-link" href="#">Watchlist</a>
+        <a class="nav-link" href="#">Backfill</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="wrap">
+    <!-- ===================== HEAD ===================== -->
+    <div class="page-head">
+      <div>
+        <h1>Filtered 8-K Filings</h1>
+        <div class="subtitle">Scored triage inbox — skip the noise, surface the signal.</div>
+      </div>
+      <div class="head-badges">
+        <span class="chip">Last updated <strong>Jun 23, 9:14 AM</strong></span>
+        <span class="chip"><strong class="num" id="totalCount">8</strong> shown · <strong class="num">2,481</strong> total</span>
+      </div>
+    </div>
+
+    <!-- ===================== FILTERS ===================== -->
+    <div class="card filter-card">
+      <!-- Verdict pills -->
+      <div class="pills" id="pills">
+        <button class="pill active" data-v="all"><span class="dot"></span>All verdicts</button>
+        <button class="pill" data-v="DEEP_LOOK"><span class="dot"></span>Deep Look</button>
+        <button class="pill" data-v="MONITOR"><span class="dot"></span>Monitor</button>
+        <button class="pill" data-v="PASS"><span class="dot"></span>Pass</button>
+      </div>
+
+      <!-- Inputs -->
+      <div class="controls">
+        <div class="field">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input type="text" class="search-input" id="search" placeholder="Company, ticker, or keyword…" />
+        </div>
+        <select id="sort">
+          <option value="date">Newest first</option>
+          <option value="signal">Signal strength</option>
+        </select>
+        <select>
+          <option>All categories</option>
+          <option>Management Change</option>
+          <option>Compensation</option>
+          <option>Both</option>
+        </select>
+        <label class="toggle" data-toggle="urgent"><span class="switch"></span>Urgent only</label>
+        <label class="toggle" data-toggle="targets"><span class="switch"></span>🎯 Market Targets</label>
+        <label class="toggle" data-toggle="unread"><span class="switch"></span>Unread only</label>
+      </div>
+    </div>
+
+    <!-- ===================== TABLE ===================== -->
+    <div class="card table-card">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:40px"></th>
+            <th style="width:96px">Triage</th>
+            <th>Date</th>
+            <th>Company</th>
+            <th>Ticker</th>
+            <th>Category</th>
+            <th>Summary</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="tbody"><!-- rows injected by JS --></tbody>
+      </table>
+      <div class="empty" id="empty" style="display:none">
+        <h3>No filings match</h3>
+        <p>Try clearing a filter or widening your search.</p>
+      </div>
+    </div>
+
+    <div class="demo-note">
+      Demo preview · sample data · nothing here is connected to your live app.
+      Try: search a ticker, click the verdict pills, flip the toggles, star a row, or click any row to open its detail drawer.
+    </div>
+  </div>
+
+  <!-- ===================== DETAIL DRAWER ===================== -->
+  <div class="scrim" id="scrim"></div>
+  <aside class="drawer" id="drawer">
+    <div class="drawer-head">
+      <button class="drawer-close" id="drawerClose" aria-label="Close">✕</button>
+      <div class="d-company" id="dCompany">—</div>
+      <div class="d-meta" id="dMeta">—</div>
+    </div>
+    <div class="drawer-body" id="drawerBody"><!-- filled by JS --></div>
+  </aside>
+
+<script>
+/* ============================================================
+   Sample 8-K data — realistic shape, entirely fictional values.
+   ============================================================ */
+const FILINGS = [
+  { id:1, date:"Jun 23", company:"Aperture Diagnostics", ticker:"APDX", mcap:"$4.2B", price:"$38.41",
+    verdict:"DEEP_LOOK", signal:8, dir:"bear", cat:"Management Change", subcats:["CEO exit","No successor"],
+    urgent:true, target:false, dep:3, unread:true,
+    top:"CEO departs with no named successor 5 weeks before a pivotal FDA readout.",
+    body:"Board accepted the resignation of CEO effective immediately; CFO named interim. Filing notes the search 'is underway' but gives no timeline.",
+    why:"Abrupt, unplanned, and timed against a binary catalyst — classic destabilization pattern. Third C-suite exit in 24 months.",
+    stats:[["Signal","8 / 10 ▾"],["Departures / 24mo","3"]] },
+
+  { id:2, date:"Jun 23", company:"Meridian Freight Holdings", ticker:"MFH", mcap:"$11.8B", price:"$72.10",
+    verdict:"MONITOR", signal:5, dir:"mixed", cat:"Compensation", subcats:["New TSR target"],
+    urgent:false, target:true, dep:0, unread:true,
+    top:"New equity plan ties 60% of NEO payout to a 3-yr relative TSR ≥ 75th percentile.",
+    body:"Comp committee adopted a performance share program. Discloses an explicit market-cap-linked vesting hurdle — a 🎯 market target.",
+    why:"Aggressive, measurable hurdle signals management confidence (or pressure). Worth tracking against peer performance.",
+    stats:[["Signal","5 / 10 ◆"],["TSR hurdle","≥ 75th pct"]] },
+
+  { id:3, date:"Jun 22", company:"Cascade Renewables", ticker:"CSDR", mcap:"$1.1B", price:"$9.74",
+    verdict:"DEEP_LOOK", signal:7, dir:"bull", cat:"Both", subcats:["New CEO","Sign-on grant"],
+    urgent:false, target:false, dep:1, unread:false,
+    top:"Hires turnaround CEO from a larger peer with a $14M performance-weighted package.",
+    body:"New CEO joins from a $20B-cap competitor. 70% of the sign-on award vests only on hitting EBITDA-margin and stock-price milestones.",
+    why:"Outside hire with skin in the game and an explicit price milestone — credible turnaround setup.",
+    stats:[["Signal","7 / 10 ▴"],["Sign-on","$14.0M"]] },
+
+  { id:4, date:"Jun 22", company:"Halcyon Bioworks", ticker:"HCYN", mcap:"$680M", price:"$5.12",
+    verdict:"MONITOR", signal:4, dir:"bear", cat:"Management Change", subcats:["CFO exit"],
+    urgent:false, target:false, dep:2, unread:false,
+    top:"CFO resigns 'to pursue other opportunities'; controller steps up on interim basis.",
+    body:"Second finance-team departure this year. No restatement language, but cash runway disclosed at ~5 quarters.",
+    why:"Routine-adjacent, but the finance-seat churn plus thin runway keeps it on the watch list.",
+    stats:[["Signal","4 / 10 ▾"],["Departures / 24mo","2"]] },
+
+  { id:5, date:"Jun 21", company:"Northwind Logistics", ticker:"NWL", mcap:"$3.5B", price:"$44.90",
+    verdict:"PASS", signal:null, dir:null, cat:"Management Change", subcats:[],
+    urgent:false, target:false, dep:0, unread:false,
+    top:"Scheduled retirement of a long-tenured director; successor already seated.",
+    body:"Planned, pre-announced board transition with overlap period. No investor signal.",
+    why:"Administrative housekeeping — collapsed to one line on purpose.",
+    stats:[["Signal","—"],["Type","Routine"]] },
+
+  { id:6, date:"Jun 21", company:"Vantage Semiconductor", ticker:"VTSM", mcap:"$28.4B", price:"$131.55",
+    verdict:"DEEP_LOOK", signal:9, dir:"bull", cat:"Compensation", subcats:["Mega-grant","Price hurdle"],
+    urgent:true, target:true, dep:0, unread:true,
+    top:"Founder-CEO granted a $180M mega-award unlocking only above a $200 share price.",
+    body:"A Musk-style ladder: tranches vest at escalating market-cap thresholds, the first ~52% above today's price.",
+    why:"Extraordinary alignment bet and a loud 🎯 market-cap target. High conviction from the inside.",
+    stats:[["Signal","9 / 10 ▴"],["Top hurdle","$200.00"]] },
+
+  { id:7, date:"Jun 20", company:"Pioneer Equity Trust", ticker:"PNET", mcap:"$2.0B", price:"$19.30",
+    verdict:"PASS", signal:null, dir:null, cat:"Compensation", subcats:[],
+    urgent:false, target:false, dep:0, unread:false,
+    top:"Equity-plan share reserve replenishment; standard annual housekeeping.",
+    body:"Routine 401(k)/equity plan amendment. No new performance conditions.",
+    why:"Plan housekeeping — no signal.",
+    stats:[["Signal","—"],["Type","Routine"]] },
+
+  { id:8, date:"Jun 20", company:"Granite Peak Mining", ticker:"GPMN", mcap:"$5.9B", price:"$61.78",
+    verdict:"MONITOR", signal:6, dir:"mixed", cat:"Both", subcats:["COO exit","Retention grants"],
+    urgent:false, target:false, dep:1, unread:false,
+    top:"COO departs amid a $40M retention pool handed to remaining operations leaders.",
+    body:"One senior exit offset by sizable retention grants to the rest of the ops bench — board is ring-fencing the team.",
+    why:"Mixed read: loss of a key operator, but the retention spend signals the board sees the rest as critical.",
+    stats:[["Signal","6 / 10 ◆"],["Retention pool","$40.0M"]] },
+];
+
+/* ----- icons ----- */
+const arrow = d => d==="bull" ? "▴" : d==="bear" ? "▾" : "◆";
+function starSVG(){
+  return '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5l2.9 6.1 6.6.9-4.8 4.6 1.2 6.6L12 18.6 6.1 21.3l1.2-6.6L2.5 9.5l6.6-.9z"/></svg>';
+}
+
+/* ----- state ----- */
+let state = { verdict:"all", search:"", sort:"date", urgent:false, targets:false, unread:false, starred:new Set() };
+
+/* ----- render ----- */
+const tbody = document.getElementById('tbody');
+const emptyEl = document.getElementById('empty');
+const totalCount = document.getElementById('totalCount');
+
+function matches(f){
+  if (state.verdict !== "all" && f.verdict !== state.verdict) return false;
+  if (state.urgent && !f.urgent) return false;
+  if (state.targets && !f.target) return false;
+  if (state.unread && !f.unread) return false;
+  if (state.search){
+    const q = state.search.toLowerCase();
+    const hay = (f.company+" "+f.ticker+" "+f.top+" "+f.cat).toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
+function render(){
+  let rows = FILINGS.filter(matches);
+  if (state.sort === "signal") rows = rows.slice().sort((a,b)=>(b.signal||0)-(a.signal||0));
+
+  totalCount.textContent = rows.length;
+  tbody.innerHTML = "";
+
+  if (rows.length === 0){ emptyEl.style.display = "block"; return; }
+  emptyEl.style.display = "none";
+
+  rows.forEach((f, i) => {
+    const tr = document.createElement('tr');
+    const isPass = f.verdict === "PASS";
+    tr.className = "enter " +
+      (isPass ? "row-pass " : "") +
+      (f.urgent ? "row-urgent " : f.verdict==="DEEP_LOOK" ? "row-deep " : f.verdict==="MONITOR" ? "row-monitor " : "") +
+      (f.unread ? "unread " : "");
+    // Stagger each row's entrance ~45ms apart (Principle #5)
+    tr.style.animationDelay = (i * 0.045) + "s";
+
+    const verdictBadge =
+      f.verdict==="DEEP_LOOK" ? '<span class="verdict v-deep">DEEP LOOK</span>' :
+      f.verdict==="MONITOR"   ? '<span class="verdict v-monitor">MONITOR</span>' :
+                                '<span class="verdict v-pass">PASS</span>';
+
+    const signalLine = (f.signal!=null && !isPass)
+      ? `<div class="signal ${f.dir}">${arrow(f.dir)} ${f.signal}/10</div>` : "";
+
+    const tags =
+      (f.urgent && !isPass ? '<span class="tag tag-urgent">URGENT</span>' : "") +
+      (f.target && !isPass ? '<span class="tag tag-target">🎯 Target</span>' : "") +
+      (f.dep>=2 && !isPass ? `<span class="tag tag-dep">⚠ ${f.dep} dep/24mo</span>` : "");
+
+    const catClass = f.cat==="Management Change" ? "cat-mgmt" : f.cat==="Compensation" ? "cat-comp" : "cat-both";
+    const subcats = (!isPass ? f.subcats : []).map(s=>`<span class="subcat">${s}</span>`).join("");
+
+    const summaryCell = isPass
+      ? `<div class="summary">
+           <span class="pass-summary">${f.top}</span>
+           <button class="details-toggle" data-id="${f.id}">Details ▶</button>
+           <div class="pass-detail" id="pd-${f.id}" style="display:none;margin-top:7px">
+             <div class="summary-body">${f.body}</div>
+           </div>
+         </div>`
+      : `<div class="summary">
+           <div class="top-signal">${f.top}</div>
+           <div class="summary-body">${f.body}</div>
+         </div>`;
+
+    const starred = state.starred.has(f.id);
+
+    tr.innerHTML = `
+      <td><button class="star ${starred?'on':''}" data-star="${f.id}" aria-label="Star">${starSVG()}</button></td>
+      <td>${verdictBadge}${signalLine}<div>${tags}</div></td>
+      <td><span class="date">${f.date}</span></td>
+      <td><span class="company">${f.company}</span></td>
+      <td>
+        <span class="ticker">${f.ticker}</span>
+        ${!isPass ? `<span class="mcap">${f.mcap}</span><span class="price">${f.price}</span>` : ""}
+      </td>
+      <td><span class="cat ${catClass}">${f.cat}</span><div>${subcats}</div></td>
+      <td>${summaryCell}</td>
+      <td><a class="btn-open" href="#" onclick="event.preventDefault()">Open filing</a></td>
+    `;
+
+    // Row click opens drawer (but not when clicking interactive children)
+    tr.addEventListener('click', (e)=>{
+      if (e.target.closest('.star,.details-toggle,.btn-open')) return;
+      openDrawer(f);
+    });
+
+    tbody.appendChild(tr);
+  });
+}
+
+/* ----- interactions ----- */
+// Verdict pills
+document.getElementById('pills').addEventListener('click', e=>{
+  const pill = e.target.closest('.pill'); if(!pill) return;
+  document.querySelectorAll('.pill').forEach(p=>p.classList.remove('active'));
+  pill.classList.add('active');
+  state.verdict = pill.dataset.v;
+  render();
+});
+// Search (live)
+document.getElementById('search').addEventListener('input', e=>{ state.search = e.target.value; render(); });
+// Sort
+document.getElementById('sort').addEventListener('change', e=>{ state.sort = e.target.value; render(); });
+// Toggles
+document.querySelectorAll('.toggle').forEach(t=>{
+  t.addEventListener('click', ()=>{
+    t.classList.toggle('on');
+    state[t.dataset.toggle] = t.classList.contains('on');
+    render();
+  });
+});
+// Star + details toggle (event delegation, survives re-render)
+tbody.addEventListener('click', e=>{
+  const star = e.target.closest('.star');
+  if (star){
+    const id = +star.dataset.star;
+    state.starred.has(id) ? state.starred.delete(id) : state.starred.add(id);
+    star.classList.toggle('on');
+    return;
+  }
+  const dt = e.target.closest('.details-toggle');
+  if (dt){
+    const pd = document.getElementById('pd-'+dt.dataset.id);
+    const open = pd.style.display !== 'none';
+    pd.style.display = open ? 'none' : 'block';
+    dt.textContent = open ? 'Details ▶' : 'Details ▼';
+  }
+});
+
+/* ----- drawer ----- */
+const scrim = document.getElementById('scrim');
+const drawer = document.getElementById('drawer');
+function openDrawer(f){
+  document.getElementById('dCompany').textContent = f.company;
+  document.getElementById('dMeta').textContent = `${f.ticker} · ${f.mcap} · filed ${f.date} · ${f.cat}`;
+  const verdictBadge =
+    f.verdict==="DEEP_LOOK" ? '<span class="verdict v-deep">DEEP LOOK</span>' :
+    f.verdict==="MONITOR"   ? '<span class="verdict v-monitor">MONITOR</span>' :
+                              '<span class="verdict v-pass">PASS</span>';
+  document.getElementById('drawerBody').innerHTML = `
+    <div class="d-block stagger">${verdictBadge}</div>
+    <div class="d-block stagger">
+      <div class="d-section-title">Top signal</div>
+      <p>${f.top}</p>
+    </div>
+    <div class="d-block stagger">
+      <div class="d-section-title">At a glance</div>
+      <div class="d-stat-grid">
+        ${f.stats.map(s=>`<div class="d-stat"><div class="k">${s[0]}</div><div class="val">${s[1]}</div></div>`).join("")}
+      </div>
+    </div>
+    <div class="d-block stagger">
+      <div class="d-section-title">Why it scored this way</div>
+      <ul class="d-list"><li>${f.why}</li><li>${f.body}</li></ul>
+    </div>
+  `;
+  scrim.classList.add('open');
+  drawer.classList.add('open');
+}
+function closeDrawer(){ scrim.classList.remove('open'); drawer.classList.remove('open'); }
+scrim.addEventListener('click', closeDrawer);
+document.getElementById('drawerClose').addEventListener('click', closeDrawer);
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDrawer(); });
+
+/* ----- go ----- */
+render();
+</script>
+</body>
+</html>
