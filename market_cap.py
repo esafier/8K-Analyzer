@@ -60,9 +60,11 @@ def fetch_from_api_ninjas(tickers):
                 )
                 if response.status_code == 200:
                     data = response.json()
-                    # API returns a list with one item, or a dict directly
-                    if isinstance(data, list) and len(data) > 0:
-                        data = data[0]
+                    # API returns a list with one item, or a dict directly.
+                    # Unknown tickers come back as an empty list — treat as
+                    # "no data" (cache None) so they aren't retried forever.
+                    if isinstance(data, list):
+                        data = data[0] if data else {}
                     cap = data.get("market_cap")
                     # Treat zero or negative as "no data" — cache None
                     result[ticker] = cap if cap and cap > 0 else None
