@@ -143,6 +143,11 @@ def get_departures_for_filing(cik, current_accession):
         return []
 
     history = get_edgar_departure_history(cik, exclude_accession="", months=24)
+    if history is None:
+        # EDGAR lookup failed — this is NOT "no departures". Raise so
+        # enrich_filing_departure_history leaves the row unstamped (retryable)
+        # instead of permanently recording a false zero.
+        raise RuntimeError(f"EDGAR departure history fetch failed for CIK {cik}")
     if not history:
         return []
 

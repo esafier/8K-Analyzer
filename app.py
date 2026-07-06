@@ -535,7 +535,12 @@ def deep_analysis(filing_id):
             cik = filing.get("cik", "")
             accession = filing.get("accession_no", "")
             departures = get_edgar_departure_history(cik, accession)
-            if departures:
+            if departures is None:
+                # EDGAR lookup failed — tell the LLM the data gap explicitly
+                # (its prompt has data-quality gates) instead of implying zero.
+                departures = []
+                departure_str = "Departure history unavailable — EDGAR lookup failed"
+            elif departures:
                 dep_lines = []
                 for dep in departures:
                     date = dep.get("filing_date", "Unknown date")

@@ -441,15 +441,30 @@ def fetch_daily():
     return fetch_filings(yesterday, today)
 
 
-def _fetch_502_snippet(cik, accession_no, primary_doc):
-    """Fetch the Item 5.02 section from a filing and return a brief snippet.
+# Cap on the Item 5.02 section text kept for LLM extraction. Full sections
+# are usually 1-4k chars; the cap only guards against pathological documents.
+MAX_502_SECTION_CHARS = 6000
 
-    Downloads the filing HTML, extracts text, and grabs the first ~800
-    characters after "Item 5.02" — enough to capture who departed,
-    their title, and the basic circumstances.
+# The signature block reliably starts with this phrase — a safe end marker.
+_SIGNATURE_BLOCK_RE = re.compile(
+    r"Pursuant\s+to\s+the\s+requirements\s+of\s+the\s+Securities\s+Exchange\s+Act",
+    re.IGNORECASE,
+)
+
+
+def _fetch_502_snippet(cik, accession_no, primary_doc):
+    """Fetch the full Item 5.02 section text from a filing.
+
+    Downloads the filing HTML, extracts text, and returns the Item 5.02
+    section — from the "Item 5.02" heading to the next different Item
+    heading or the signature block, capped at MAX_502_SECTION_CHARS.
+
+    This used to grab only the first ~800 characters, which silently
+    dropped later departures in multi-executive filings and undercounted
+    the departure clusters the dashboard badge is built on.
 
     Returns:
-        String snippet, or empty string on failure.
+        String section text, or empty string on failure.
     """
     acc_nodash = accession_no.replace("-", "")
     # CIK in the URL path should not have leading zeros
@@ -462,17 +477,35 @@ def _fetch_502_snippet(cik, accession_no, primary_doc):
         soup = BeautifulSoup(resp.text, "html.parser")
         text = soup.get_text(separator=" ", strip=True)
 
-        # Find the Item 5.02 section and grab enough to identify who/what
         match = re.search(r"Item\s+5\.02", text, re.IGNORECASE)
-        if match:
-            # Skip the standard header ("Departure of Directors or Certain Officers...")
-            # and grab the substance
-            snippet = text[match.start():match.start() + 800]
-            # Trim to last complete sentence
-            last_period = snippet.rfind(".")
-            if last_period > 200:
-                snippet = snippet[:last_period + 1]
-            return snippet
+        if not match:
+            return ""
+
+        section = text[match.start():]
+        heading_len = match.end() - match.start()
+
+        # End at the next DIFFERENT item heading. In-prose references to
+        # "Item 5.02(e)" etc. must not truncate the section early.
+        end = None
+        for m2 in re.finditer(r"\bItem\s+(\d+\.\d{2})\b", section[heading_len:], re.IGNORECASE):
+            if m2.group(1) != "5.02":
+                end = heading_len + m2.start()
+                break
+
+        # ...or at the signature block, whichever comes first.
+        sig = _SIGNATURE_BLOCK_RE.search(section)
+        if sig and (end is None or sig.start() < end):
+            end = sig.start()
+
+        if end:
+            section = section[:end]
+        section = section[:MAX_502_SECTION_CHARS]
+
+        # Trim to last complete sentence
+        last_period = section.rfind(".")
+        if last_period > 200:
+            section = section[:last_period + 1]
+        return section
     except Exception as e:
         print(f"  Failed to fetch 5.02 snippet from {url}: {e}")
 
@@ -493,7 +526,10 @@ def get_edgar_departure_history(cik, exclude_accession="", months=12):
 
     Returns:
         List of dicts: [{filing_date, items, accession_no, snippet}, ...]
-        Returns empty list on failure.
+        Empty list means "no matching filings". Returns None when the EDGAR
+        lookup itself failed — callers MUST distinguish the two, otherwise a
+        transient network error gets recorded as "zero departures" and the
+        cluster signal is permanently suppressed.
     """
     if not cik:
         return []
@@ -508,7 +544,7 @@ def get_edgar_departure_history(cik, exclude_accession="", months=12):
         data = resp.json()
     except Exception as e:
         print(f"  EDGAR departure history lookup failed: {e}")
-        return []
+        return None
 
     recent = data.get("filings", {}).get("recent", {})
     forms = recent.get("form", [])
