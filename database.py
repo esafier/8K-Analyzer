@@ -143,6 +143,14 @@ def get_connection():
         conn = sqlite3.connect(DATABASE_PATH)
         # This makes query results accessible by column name (e.g., row["company"])
         conn.row_factory = sqlite3.Row
+        # WAL lets the background cache-refresh threads write while the web
+        # request reads; busy_timeout retries briefly instead of raising
+        # "database is locked" the instant two writers collide.
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+        except sqlite3.Error:
+            pass  # pragmas are best-effort (e.g., read-only filesystems)
         return conn
 
 
@@ -276,6 +284,33 @@ def initialize_database():
     conn.close()
 
 
+def _add_column(conn, cursor, existing, name, ddl):
+    """ALTER TABLE ADD COLUMN, tolerant of a concurrent worker adding the
+    same column first — multiple gunicorn workers boot simultaneously on
+    Render, and both can see the column as missing before either ALTERs.
+    Commits per column so rolling back a benign duplicate failure doesn't
+    discard earlier successful ALTERs.
+
+    Returns True when this call actually added the column."""
+    if name in existing:
+        return False
+    try:
+        cursor.execute(ddl)
+        conn.commit()
+        print(f"[MIGRATE] Added '{name}' column")
+        return True
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        msg = str(e).lower()
+        if "duplicate column" in msg or "already exists" in msg:
+            print(f"[MIGRATE] '{name}' added by another worker — continuing")
+            return False
+        raise
+
+
 def _migrate_add_columns(conn):
     """Add new columns for urgency flags and comp details.
     Uses ALTER TABLE so existing data is preserved (new columns get NULL/0)."""
@@ -292,61 +327,50 @@ def _migrate_add_columns(conn):
         cursor.execute("PRAGMA table_info(filings)")
         existing = {row[1] for row in cursor.fetchall()}
 
-    # Add urgent flag (0 or 1) if missing
-    if "urgent" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN urgent INTEGER DEFAULT 0")
-        print("[MIGRATE] Added 'urgent' column")
+    # Urgent flag (0 or 1)
+    _add_column(conn, cursor, existing, "urgent",
+                "ALTER TABLE filings ADD COLUMN urgent INTEGER DEFAULT 0")
 
-    # Add comp_details JSON blob if missing
-    if "comp_details" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN comp_details TEXT DEFAULT NULL")
-        print("[MIGRATE] Added 'comp_details' column")
+    # comp_details JSON blob
+    _add_column(conn, cursor, existing, "comp_details",
+                "ALTER TABLE filings ADD COLUMN comp_details TEXT DEFAULT NULL")
 
-    # Add deep_analysis text column for comprehensive investor analysis
-    if "deep_analysis" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN deep_analysis TEXT DEFAULT NULL")
-        print("[MIGRATE] Added 'deep_analysis' column")
+    # deep_analysis text column for comprehensive investor analysis
+    _add_column(conn, cursor, existing, "deep_analysis",
+                "ALTER TABLE filings ADD COLUMN deep_analysis TEXT DEFAULT NULL")
 
-    # Add filing_document_url (primary 8-K document URL for one-click navigation)
-    if "filing_document_url" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN filing_document_url TEXT DEFAULT NULL")
-        print("[MIGRATE] Added 'filing_document_url' column")
+    # filing_document_url (primary 8-K document URL for one-click navigation)
+    _add_column(conn, cursor, existing, "filing_document_url",
+                "ALTER TABLE filings ADD COLUMN filing_document_url TEXT DEFAULT NULL")
 
-    # Add is_complex flag — set when filing doesn't fit structured buckets cleanly
-    if "is_complex" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN is_complex INTEGER DEFAULT 0")
-        print("[MIGRATE] Added 'is_complex' column")
+    # is_complex flag — set when filing doesn't fit structured buckets cleanly
+    _add_column(conn, cursor, existing, "is_complex",
+                "ALTER TABLE filings ADD COLUMN is_complex INTEGER DEFAULT 0")
 
-    # Add narrative_summary — free-text fallback for complex filings
-    if "narrative_summary" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN narrative_summary TEXT DEFAULT NULL")
-        print("[MIGRATE] Added 'narrative_summary' column")
+    # narrative_summary — free-text fallback for complex filings
+    _add_column(conn, cursor, existing, "narrative_summary",
+                "ALTER TABLE filings ADD COLUMN narrative_summary TEXT DEFAULT NULL")
 
-    # Add relevant_reason — LLM's justification when relevant:false
-    if "relevant_reason" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN relevant_reason TEXT DEFAULT NULL")
-        print("[MIGRATE] Added 'relevant_reason' column")
+    # relevant_reason — LLM's justification when relevant:false
+    _add_column(conn, cursor, existing, "relevant_reason",
+                "ALTER TABLE filings ADD COLUMN relevant_reason TEXT DEFAULT NULL")
 
-    # Add structured_summary — JSON blob holding the full v3 payload (departures[], etc.)
-    if "structured_summary" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN structured_summary TEXT DEFAULT NULL")
-        print("[MIGRATE] Added 'structured_summary' column")
+    # structured_summary — JSON blob holding the full v3 payload (departures[], etc.)
+    _add_column(conn, cursor, existing, "structured_summary",
+                "ALTER TABLE filings ADD COLUMN structured_summary TEXT DEFAULT NULL")
 
-    # Add has_market_targets — 1 when filing discloses market-based comp targets
+    # has_market_targets — 1 when filing discloses market-based comp targets
     # (stock-price, market-cap, or TSR). Powers the dashboard "Market Targets" filter.
-    if "has_market_targets" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN has_market_targets INTEGER DEFAULT 0")
-        print("[MIGRATE] Added 'has_market_targets' column")
+    _add_column(conn, cursor, existing, "has_market_targets",
+                "ALTER TABLE filings ADD COLUMN has_market_targets INTEGER DEFAULT 0")
 
-    # Add read_at timestamp for tracking which filings the user has reviewed.
+    # read_at timestamp for tracking which filings the user has reviewed.
     # NULL = unread; non-null timestamp = read at that time.
-    if "read_at" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN read_at TIMESTAMP DEFAULT NULL")
-        print("[MIGRATE] Added 'read_at' column")
-
+    if _add_column(conn, cursor, existing, "read_at",
+                   "ALTER TABLE filings ADD COLUMN read_at TIMESTAMP DEFAULT NULL"):
         # Clean-slate: mark every pre-existing row as read so the user isn't
         # buried under thousands of "unread" items the moment the feature ships.
-        # Runs only once — this branch only fires when the column is freshly added.
+        # Runs only once — only when this worker actually added the column.
         cursor.execute("UPDATE filings SET read_at = CURRENT_TIMESTAMP WHERE read_at IS NULL")
         print(f"[MIGRATE] Marked {cursor.rowcount} pre-existing filings as read (clean slate)")
 
@@ -355,39 +379,28 @@ def _migrate_add_columns(conn):
 
     # --- Triage columns: verdict / score / direction / top signal ---
     # Populated by the v3 prompt at ingest. NULL on legacy rows = "unrated".
-    if "triage_verdict" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN triage_verdict TEXT DEFAULT NULL")
-        print("[MIGRATE] Added 'triage_verdict' column")
-
-    if "signal_score" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN signal_score INTEGER DEFAULT NULL")
-        print("[MIGRATE] Added 'signal_score' column")
-
-    if "signal_direction" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN signal_direction TEXT DEFAULT NULL")
-        print("[MIGRATE] Added 'signal_direction' column")
-
-    if "top_signal" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN top_signal TEXT DEFAULT NULL")
-        print("[MIGRATE] Added 'top_signal' column")
+    _add_column(conn, cursor, existing, "triage_verdict",
+                "ALTER TABLE filings ADD COLUMN triage_verdict TEXT DEFAULT NULL")
+    _add_column(conn, cursor, existing, "signal_score",
+                "ALTER TABLE filings ADD COLUMN signal_score INTEGER DEFAULT NULL")
+    _add_column(conn, cursor, existing, "signal_direction",
+                "ALTER TABLE filings ADD COLUMN signal_direction TEXT DEFAULT NULL")
+    _add_column(conn, cursor, existing, "top_signal",
+                "ALTER TABLE filings ADD COLUMN top_signal TEXT DEFAULT NULL")
 
     # Number of departures extracted from THIS filing (len of structured
     # departures[]). Used to decide which filings need EDGAR history enrichment.
-    if "departure_count" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN departure_count INTEGER DEFAULT NULL")
-        print("[MIGRATE] Added 'departure_count' column")
+    _add_column(conn, cursor, existing, "departure_count",
+                "ALTER TABLE filings ADD COLUMN departure_count INTEGER DEFAULT NULL")
 
     # EDGAR-based 24-month departure history, stamped at ingest by
     # departures.enrich_new_filings(). departure_count_24mo is the deduped
     # person count (dashboard cluster badge); departure_history is the full
     # JSON list (detail-page card renders without a click).
-    if "departure_count_24mo" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN departure_count_24mo INTEGER DEFAULT NULL")
-        print("[MIGRATE] Added 'departure_count_24mo' column")
-
-    if "departure_history" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN departure_history TEXT DEFAULT NULL")
-        print("[MIGRATE] Added 'departure_history' column")
+    _add_column(conn, cursor, existing, "departure_count_24mo",
+                "ALTER TABLE filings ADD COLUMN departure_count_24mo INTEGER DEFAULT NULL")
+    _add_column(conn, cursor, existing, "departure_history",
+                "ALTER TABLE filings ADD COLUMN departure_history TEXT DEFAULT NULL")
 
     # Same-CIK lookups by date (departure history, related-filing queries)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_filings_cik_date ON filings(cik, filed_date)")
@@ -395,13 +408,10 @@ def _migrate_add_columns(conn):
     # --- Bearish departure sub-signals, promoted to real columns so the
     # dashboard can filter on them (they used to live only inside the
     # structured_summary JSON). NULL = legacy row / no departures.
-    if "forfeited_comp" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN forfeited_comp INTEGER DEFAULT NULL")
-        print("[MIGRATE] Added 'forfeited_comp' column")
-
-    if "has_successor" not in existing:
-        cursor.execute("ALTER TABLE filings ADD COLUMN has_successor INTEGER DEFAULT NULL")
-        print("[MIGRATE] Added 'has_successor' column")
+    _add_column(conn, cursor, existing, "forfeited_comp",
+                "ALTER TABLE filings ADD COLUMN forfeited_comp INTEGER DEFAULT NULL")
+    _add_column(conn, cursor, existing, "has_successor",
+                "ALTER TABLE filings ADD COLUMN has_successor INTEGER DEFAULT NULL")
 
     conn.commit()
 
@@ -446,10 +456,8 @@ def _create_watchlist_table(conn):
         cursor.execute("PRAGMA table_info(watchlist)")
         existing = {row[1] for row in cursor.fetchall()}
 
-    if "email_sent_at" not in existing:
-        cursor.execute("ALTER TABLE watchlist ADD COLUMN email_sent_at TIMESTAMP NULL")
-        conn.commit()
-        print("[MIGRATE] Added 'email_sent_at' column to watchlist")
+    _add_column(conn, cursor, existing, "email_sent_at",
+                "ALTER TABLE watchlist ADD COLUMN email_sent_at TIMESTAMP NULL")
 
     print("[STARTUP] Watchlist table ready")
 
