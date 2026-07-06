@@ -24,7 +24,7 @@ def daily_fetch_job():
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Running daily fetch for {yesterday}...")
 
     # Track this run so it shows up on the backfill page
-    run_id = create_backfill_run("scheduled", yesterday, today, "GPT-4o-mini")
+    run_id = create_backfill_run("scheduled", yesterday, today, "GPT-5.4-nano")
 
     # Step 1: Fetch filing metadata. A fetch error (e.g. EDGAR 5xx that
     # survived retries) must mark the run failed — otherwise it sits in

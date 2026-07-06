@@ -32,7 +32,7 @@ def classify_and_summarize(filing_text, prompt_file=None, model=None):
         filing_text: The plain text content of the 8-K filing
         prompt_file: Which prompt file to use (default: ACTIVE_PROMPT from config)
         model: Which model to use (default: LLM_MODEL from config). Pass a model
-               name like "gpt-5.2" to override for premium analysis.
+               name like "gpt-5.4" to override for premium analysis.
 
     Returns:
         Dictionary with keys: relevant, category, subcategory, summary
@@ -83,7 +83,7 @@ def deep_analyze(filing_text, model=None):
 
     Args:
         filing_text: The plain text content of the 8-K filing
-        model: Which model to use (default: LLM_MODEL_PREMIUM / GPT-5.2)
+        model: Which model to use (default: LLM_MODEL_PREMIUM / GPT-5.4)
 
     Returns:
         Dictionary with keys: analysis (str), _tokens_in (int), _tokens_out (int)
@@ -119,10 +119,13 @@ def deep_analyze(filing_text, model=None):
 
 
 # Default model for signal analysis. Now uses Chat Completions (no web_search
-# needed) since context is pre-gathered, so any model works — including GPT-5.2.
-LLM_MODEL_SIGNAL = "gpt-4o"
+# needed) since context is pre-gathered, so any model works. This is the most
+# judgment-heavy call in the app — worth a frontier-tier model.
+LLM_MODEL_SIGNAL = "gpt-5.4"
 
 # Model for the web search pre-step — must support web_search in Responses API.
+# Kept on gpt-4o (verified working) — change only after confirming the new
+# model supports the web_search tool, or news context silently degrades.
 LLM_MODEL_WEB_SEARCH = "gpt-4o"
 
 
@@ -187,7 +190,7 @@ def signal_analyze(filing_text, context_block, model=None, prompt_version="v1"):
         context_block: Pre-formatted string with company context (ticker,
                        market cap, stock price, earnings date, comp details,
                        departure history, and optionally web search results)
-        model: Which model to use (default: gpt-4o)
+        model: Which model to use (default: gpt-5.4)
         prompt_version: "v1" for original prompt, "v2" for hardened prompt
                         with data quality gates and broader filing type coverage.
 

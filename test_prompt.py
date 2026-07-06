@@ -3,7 +3,7 @@
 # Usage:
 #   python test_prompt.py                          Test active prompt on 10 recent filings
 #   python test_prompt.py --prompt prompt_v2.txt   Test a specific prompt
-#   python test_prompt.py --model gpt-5.2          Test with a specific model
+#   python test_prompt.py --model gpt-5.4          Test with a specific model
 #   python test_prompt.py --all                    Test against ALL filings in the database
 #   python test_prompt.py --count 20               Test against 20 filings
 #   python test_prompt.py --compare prompt_v1.txt prompt_v2.txt   Compare two prompts side-by-side
@@ -24,14 +24,17 @@ from llm import classify_and_summarize
 
 # Pricing per 1M tokens for each model (update when prices change)
 MODEL_PRICING = {
-    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-    "gpt-5.2":     {"input": 1.75, "output": 14.00},
+    "gpt-5.4-nano": {"input": 0.20, "output": 1.25},
+    "gpt-5.4-mini": {"input": 0.75, "output": 4.50},
+    "gpt-5.4":      {"input": 2.50, "output": 15.00},
+    "gpt-5.2":      {"input": 1.75, "output": 14.00},
+    "gpt-4o-mini":  {"input": 0.15, "output": 0.60},  # legacy
 }
 
 
 def get_cost_rates(model_name):
-    """Look up pricing for a model. Falls back to GPT-4o-mini rates if unknown."""
-    return MODEL_PRICING.get(model_name, MODEL_PRICING["gpt-4o-mini"])
+    """Look up pricing for a model. Falls back to the default model's rates if unknown."""
+    return MODEL_PRICING.get(model_name, MODEL_PRICING["gpt-5.4-nano"])
 
 
 def get_test_filings(count=None):
@@ -216,7 +219,7 @@ def list_prompts():
 def main():
     parser = argparse.ArgumentParser(description="Test LLM prompts against existing filings")
     parser.add_argument("--prompt", default=None, help="Prompt file to test (default: active prompt)")
-    parser.add_argument("--model", default=None, help="Model to use (default: gpt-4o-mini). Try: gpt-5.2")
+    parser.add_argument("--model", default=None, help="Model to use (default: gpt-5.4-nano). Try: gpt-5.4-mini or gpt-5.4")
     parser.add_argument("--count", type=int, default=10, help="Number of filings to test (default: 10)")
     parser.add_argument("--all", action="store_true", help="Test against ALL filings")
     parser.add_argument("--compare", nargs=2, metavar=("PROMPT_A", "PROMPT_B"),

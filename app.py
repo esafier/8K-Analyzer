@@ -917,7 +917,7 @@ def backfill():
         thread.daemon = True
         thread.start()
 
-        model_label = model or "GPT-4o-mini"
+        model_label = model or "GPT-5.4-nano"
         flash(f"Backfill started for {start_date} to {end_date} using {model_label}. This runs in the background — refresh the main page to see new filings as they appear.", "success")
         return redirect(url_for("index"))
 
@@ -945,7 +945,7 @@ def resummarize():
     thread.start()
 
     date_label = f"{date_from} to {date_to}" if date_from else "most recent filings"
-    model_label = model or "GPT-4o-mini"
+    model_label = model or "GPT-5.4-nano"
     flash(f"Re-summarize started for {date_label} using {model_label}. Refresh the main page to see updated summaries.", "success")
     return redirect(url_for("index"))
 
@@ -960,7 +960,7 @@ def run_resummarize(date_from=None, date_to=None, model=None):
     from llm import classify_and_summarize
     from fetcher import strip_cover_page
 
-    model_label = model or "GPT-4o-mini"
+    model_label = model or "GPT-5.4-nano"
     print(f"\n--- Re-summarize started (model: {model_label}) ---", flush=True)
 
     filings = get_filings_for_resummarize(date_from, date_to)
@@ -1164,7 +1164,7 @@ def retry_missing_summaries():
     thread.start()
 
     date_label = f"{date_from} to {date_to}" if date_from else "last 7 days"
-    model_label = model or "GPT-4o-mini"
+    model_label = model or "GPT-5.4-nano"
     flash(f"Retry started for filings missing summaries ({date_label}, {model_label}). Watch the logs.", "success")
     return redirect(url_for("index"))
 
@@ -1179,7 +1179,7 @@ def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
     from filter import _build_legacy_summary
     from market_targets import detect_market_targets
 
-    model_label = model or "GPT-4o-mini"
+    model_label = model or "GPT-5.4-nano"
     print(f"\n--- Retry missing summaries started (model: {model_label}) ---", flush=True)
 
     filings = get_filings_missing_text(date_from, date_to)
@@ -1305,14 +1305,14 @@ def clear_market_cap_cache():
 def run_backfill(start_date, end_date, model=None):
     """Background task: fetch, filter, summarize, and store filings.
     This is the main pipeline that ties all the pieces together.
-    Pass model="gpt-5.2" to use the premium model for this backfill.
+    Pass model="gpt-5.4" to use the premium model for this backfill.
 
     NOTE: flush=True on every print() — Gunicorn runs with buffered stdout,
     so without it the daemon thread's output never appears in Render logs."""
     run_id = None
     try:
         import sys
-        model_label = model or "GPT-4o-mini"
+        model_label = model or "GPT-5.4-nano"
         print(f"\n--- Starting backfill: {start_date} to {end_date} (model: {model_label}) ---", flush=True)
 
         # Create a tracking record so we can see stats when this finishes
