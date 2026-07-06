@@ -197,9 +197,29 @@ def index():
     sort = request.args.get("sort", "date")
     if sort not in ("date", "signal"):
         sort = "date"
-    page = int(request.args.get("page", 1))
+    # Page must never 500 on garbage input, and an out-of-range page must
+    # clamp to the last real page instead of dead-ending on an empty list.
+    try:
+        page = int(request.args.get("page", 1))
+    except (TypeError, ValueError):
+        page = 1
+    page = max(1, page)
 
     per_page = 50
+
+    # Count first so we can clamp the page before fetching
+    filtered_count = get_filtered_filing_count(
+        category=category if category else None,
+        search=search if search else None,
+        date_from=date_from if date_from else None,
+        date_to=date_to if date_to else None,
+        urgent_only=urgent_only,
+        market_targets_only=market_targets_only,
+        unread_only=unread_only,
+        verdict=verdict if verdict else None,
+    )
+    total_pages = max(1, math.ceil(filtered_count / per_page))
+    page = min(page, total_pages)
     offset = (page - 1) * per_page
 
     # Fetch filtered filings from the database
@@ -244,10 +264,10 @@ def index():
 
     # Fetch market cap data for tickers on this page
     # Wrapped in try/except so a yfinance failure never breaks the dashboard
+    unique_tickers = list({f['ticker'] for f in filings if f.get('ticker')})
     market_caps = {}
     try:
         from market_cap import get_market_cap_map
-        unique_tickers = list({f['ticker'] for f in filings if f.get('ticker')})
         market_caps = get_market_cap_map(unique_tickers)
     except Exception as e:
         print(f"[MARKET CAP] Failed to load market caps: {e}")
@@ -268,18 +288,22 @@ def index():
     except Exception as e:
         print(f"[STOCK PRICE] Failed to load stock prices: {e}")
 
-    # Count filings matching current filters so we know total pages
-    filtered_count = get_filtered_filing_count(
-        category=category if category else None,
-        search=search if search else None,
-        date_from=date_from if date_from else None,
-        date_to=date_to if date_to else None,
-        urgent_only=urgent_only,
-        market_targets_only=market_targets_only,
-        unread_only=unread_only,
-        verdict=verdict if verdict else None,
-    )
-    total_pages = max(1, math.ceil(filtered_count / per_page))
+    # Canonical query string for the current filter state (page excluded).
+    # Pagination links and row back-links both use this, so they can't drift
+    # apart — and values are properly encoded (a search containing '&' or
+    # spaces used to break every pagination link).
+    from urllib.parse import urlencode
+    filter_qs = urlencode([
+        ("category", category),
+        ("search", search),
+        ("date_from", date_from),
+        ("date_to", date_to),
+        ("urgent", "1" if urgent_only else ""),
+        ("market_targets", "1" if market_targets_only else ""),
+        ("unread", "1" if unread_only else ""),
+        ("verdict", verdict),
+        ("sort", sort),
+    ])
 
     return render_template(
         "index.html",
@@ -299,6 +323,7 @@ def index():
         current_page=page,
         per_page=per_page,
         total_pages=total_pages,
+        filter_qs=filter_qs,
         watchlist_ids=watchlist_ids,
         market_caps=market_caps,
         earnings=earnings,
