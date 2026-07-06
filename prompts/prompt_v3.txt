@@ -177,4 +177,6 @@ These reveal board expectations about value creation — they are the single mos
 - Be specific. "CFO John Smith resigned" beats "An executive departed."
 
 ## FILING TEXT
+The text below contains the 8-K body, possibly followed by labeled exhibit sections ("===== EXHIBIT EX-10.1 ====="). Exhibits contain the primary-source terms: separation agreements, employment agreements, resignation letters, press releases. When the 8-K body and an exhibit disagree or the body omits specifics, extract the exact numbers (grant values, vesting hurdles, severance amounts, forfeiture terms) from the exhibit.
+
 {filing_text}

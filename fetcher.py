@@ -113,6 +113,37 @@ def _sec_get_with_retry(url, headers, timeout=30, max_retries=SEC_MAX_RETRIES, p
 # The EDGAR full-text search endpoint (free, no API key needed)
 SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
 
+# --- Exhibit fetching ---
+# The main 8-K body often just references its exhibits — the real signal
+# (separation agreements with comp terms, resignation letters, press releases)
+# lives in them. We pull the highest-value exhibit types into the text the LLM
+# sees, in priority order, with size caps to bound cost.
+#   EX-17 — resignation letters (rare, but pure signal on why someone left)
+#   EX-10 — material agreements (employment/separation terms, grant values, hurdles)
+#   EX-99 — press releases (narrative context the 8-K body omits)
+EXHIBIT_PRIORITY = ("EX-17", "EX-10", "EX-99")
+MAX_EXHIBITS_PER_FILING = 4
+MAX_EXHIBIT_CHARS = 30_000       # per exhibit
+MAX_FILING_TEXT_CHARS = 120_000  # main doc + all exhibits combined (~30k tokens)
+
+
+def _exhibit_sort_key(doc_type):
+    """Rank an exhibit type by EXHIBIT_PRIORITY (lower = fetched first)."""
+    upper = doc_type.upper()
+    for rank, prefix in enumerate(EXHIBIT_PRIORITY):
+        if upper.startswith(prefix):
+            return rank
+    return len(EXHIBIT_PRIORITY)
+
+
+def _html_to_text(html):
+    """Extract whitespace-normalized plain text from a filing HTML document."""
+    soup = BeautifulSoup(html, "html.parser")
+    for element in soup(["script", "style"]):
+        element.decompose()
+    text = soup.get_text(separator=" ", strip=True)
+    return re.sub(r'\s+', ' ', text)
+
 
 def search_8k_filings(start_date, end_date, page=0):
     """Search EDGAR for 8-K filings within a date range.
@@ -257,24 +288,34 @@ def fetch_filing_text(filing_url, cik, accession_no):
 
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # Look for the main 8-K document link in the filing index table
+        # Walk the filing index table once, collecting the main 8-K document
+        # link AND the high-value exhibits (EX-17 / EX-10 / EX-99).
         doc_url = None
+        exhibit_links = []  # (doc_type, url)
         table = soup.find("table", class_="tableFile")
         if table:
             for row in table.find_all("tr"):
                 cells = row.find_all("td")
-                if len(cells) >= 4:
-                    doc_type = cells[3].get_text(strip=True)
-                    if doc_type in ["8-K", "8-K/A"]:
-                        link = cells[2].find("a")
-                        if link and link.get("href"):
-                            href = link["href"]
-                            # Some links use the inline XBRL viewer: /ix?doc=/Archives/...
-                            # We need the direct URL, so strip the /ix?doc= prefix
-                            if "/ix?doc=" in href:
-                                href = href.split("/ix?doc=")[-1]
-                            doc_url = "https://www.sec.gov" + href
-                            break
+                if len(cells) < 4:
+                    continue
+                doc_type = cells[3].get_text(strip=True)
+                link = cells[2].find("a")
+                if not (link and link.get("href")):
+                    continue
+                href = link["href"]
+                # Some links use the inline XBRL viewer: /ix?doc=/Archives/...
+                # We need the direct URL, so strip the /ix?doc= prefix
+                if "/ix?doc=" in href:
+                    href = href.split("/ix?doc=")[-1]
+                # Only text-bearing documents — skip graphics, XBRL, zips
+                if not href.lower().endswith((".htm", ".html", ".txt")):
+                    continue
+                url = "https://www.sec.gov" + href if href.startswith("/") else href
+                if doc_type in ("8-K", "8-K/A"):
+                    if doc_url is None:
+                        doc_url = url
+                elif doc_type.upper().startswith(EXHIBIT_PRIORITY):
+                    exhibit_links.append((doc_type, url))
 
         if not doc_url:
             # Fallback: look for any .htm link in the filing
@@ -294,18 +335,41 @@ def fetch_filing_text(filing_url, cik, accession_no):
         time.sleep(REQUEST_DELAY)
         doc_response = _sec_get_with_retry(doc_url, FILING_HEADERS, timeout=30)
 
-        # Parse HTML and extract just the text
-        doc_soup = BeautifulSoup(doc_response.text, "html.parser")
-        for element in doc_soup(["script", "style"]):
-            element.decompose()
-
-        text = doc_soup.get_text(separator=" ", strip=True)
-        text = re.sub(r'\s+', ' ', text)
+        text = _html_to_text(doc_response.text)
 
         # Strip the SEC cover page — it's all boilerplate before the actual content.
         # The real 8-K content starts at "Item X.XX" (e.g., "Item 5.02", "Item 1.01").
         # Everything before that is filer info, checkboxes, and form headers.
         text = strip_cover_page(text)
+
+        # Append high-value exhibits, best-signal types first. A failed exhibit
+        # fetch never fails the filing — the main document text still returns.
+        exhibit_links.sort(key=lambda e: _exhibit_sort_key(e[0]))
+        sections = [text]
+        total_chars = len(text)
+        for ex_type, ex_url in exhibit_links[:MAX_EXHIBITS_PER_FILING]:
+            if total_chars >= MAX_FILING_TEXT_CHARS:
+                break
+            if ex_url == doc_url:
+                continue
+            try:
+                time.sleep(REQUEST_DELAY)
+                ex_response = _sec_get_with_retry(ex_url, FILING_HEADERS, timeout=30)
+                ex_text = _html_to_text(ex_response.text)
+            except requests.exceptions.RequestException as e:
+                print(f"  WARN: exhibit fetch failed ({ex_type}): {e}", flush=True)
+                continue
+            if not ex_text:
+                continue
+            if len(ex_text) > MAX_EXHIBIT_CHARS:
+                ex_text = ex_text[:MAX_EXHIBIT_CHARS] + " [exhibit truncated]"
+            section = f"===== EXHIBIT {ex_type} =====\n{ex_text}"
+            remaining = MAX_FILING_TEXT_CHARS - total_chars
+            if len(section) > remaining:
+                section = section[:remaining] + " [truncated]"
+            sections.append(section)
+            total_chars += len(section)
+        text = "\n\n".join(sections)
 
         return text, doc_url
 
