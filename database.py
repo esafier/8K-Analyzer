@@ -392,6 +392,17 @@ def _migrate_add_columns(conn):
     # Same-CIK lookups by date (departure history, related-filing queries)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_filings_cik_date ON filings(cik, filed_date)")
 
+    # --- Bearish departure sub-signals, promoted to real columns so the
+    # dashboard can filter on them (they used to live only inside the
+    # structured_summary JSON). NULL = legacy row / no departures.
+    if "forfeited_comp" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN forfeited_comp INTEGER DEFAULT NULL")
+        print("[MIGRATE] Added 'forfeited_comp' column")
+
+    if "has_successor" not in existing:
+        cursor.execute("ALTER TABLE filings ADD COLUMN has_successor INTEGER DEFAULT NULL")
+        print("[MIGRATE] Added 'has_successor' column")
+
     conn.commit()
 
 
@@ -490,6 +501,8 @@ def insert_filing(filing_data):
     signal_direction_val = _to_str(filing_data.get("signal_direction"))
     top_signal_val = _to_str(filing_data.get("top_signal"))
     departure_count_val = filing_data.get("departure_count")
+    forfeited_comp_val = filing_data.get("forfeited_comp")
+    has_successor_val = filing_data.get("has_successor")
 
     insert_values = (
         _to_str(filing_data.get("accession_no")),
@@ -517,6 +530,8 @@ def insert_filing(filing_data):
         signal_direction_val,
         top_signal_val,
         departure_count_val,
+        forfeited_comp_val,
+        has_successor_val,
     )
 
     insert_columns = """
@@ -526,7 +541,7 @@ def insert_filing(filing_data):
              filing_document_url, is_complex, narrative_summary,
              relevant_reason, structured_summary, has_market_targets,
              triage_verdict, signal_score, signal_direction, top_signal,
-             departure_count)
+             departure_count, forfeited_comp, has_successor)
     """
     placeholders_sql = ", ".join([p] * len(insert_values))
 
@@ -567,7 +582,8 @@ _SIGNAL_SORT_SQL = (
 
 def _build_filing_filters(p, category=None, search=None, date_from=None,
                           date_to=None, urgent_only=False, market_targets_only=False,
-                          unread_only=False, verdict=None):
+                          unread_only=False, verdict=None, direction=None,
+                          forfeited_only=False, clusters_only=False):
     """Build the shared WHERE-clause suffix + params for filing list queries.
 
     Shared by get_filings() and get_filtered_filing_count() so the list and
@@ -611,17 +627,33 @@ def _build_filing_filters(p, category=None, search=None, date_from=None,
         where += f" AND triage_verdict = {p}"
         params.append(verdict)
 
+    if direction in ("BEARISH", "BULLISH", "MIXED", "NEUTRAL"):
+        where += f" AND signal_direction = {p}"
+        params.append(direction)
+
+    if forfeited_only:
+        # Departing exec walked away from unvested comp — loudest bearish tell
+        where += " AND forfeited_comp = 1"
+
+    if clusters_only:
+        # 2+ departures at this company in 24 months (EDGAR-based)
+        where += " AND COALESCE(departure_count_24mo, 0) >= 2"
+
     return where, params
 
 
 def get_filings(category=None, search=None, date_from=None, date_to=None,
                 urgent_only=False, market_targets_only=False, unread_only=False,
-                verdict=None, sort="date", limit=100, offset=0):
+                verdict=None, direction=None, forfeited_only=False,
+                clusters_only=False, sort="date", limit=100, offset=0):
     """Fetch filings from the database with optional filters.
     Used by the dashboard to display results.
 
     sort: "date" (newest first, default) or "signal" (triage tier, then score).
     verdict: "DEEP_LOOK" | "MONITOR" | "PASS" | "actionable" (Deep Look + Monitor).
+    direction: "BEARISH" | "BULLISH" | "MIXED" | "NEUTRAL".
+    forfeited_only: only filings where a departing exec forfeits comp.
+    clusters_only: only filings with >= 2 departures at the company in 24mo.
     """
     conn = get_connection()
     cursor = conn.cursor()
@@ -630,7 +662,8 @@ def get_filings(category=None, search=None, date_from=None, date_to=None,
     where, params = _build_filing_filters(
         p, category=category, search=search, date_from=date_from, date_to=date_to,
         urgent_only=urgent_only, market_targets_only=market_targets_only,
-        unread_only=unread_only, verdict=verdict,
+        unread_only=unread_only, verdict=verdict, direction=direction,
+        forfeited_only=forfeited_only, clusters_only=clusters_only,
     )
     query = "SELECT * FROM filings WHERE 1=1" + where
 
@@ -649,7 +682,8 @@ def get_filings(category=None, search=None, date_from=None, date_to=None,
 
 def get_filtered_filing_count(category=None, search=None, date_from=None,
                               date_to=None, urgent_only=False, market_targets_only=False,
-                              unread_only=False, verdict=None):
+                              unread_only=False, verdict=None, direction=None,
+                              forfeited_only=False, clusters_only=False):
     """Count filings matching the current filters (for pagination)."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -658,7 +692,8 @@ def get_filtered_filing_count(category=None, search=None, date_from=None,
     where, params = _build_filing_filters(
         p, category=category, search=search, date_from=date_from, date_to=date_to,
         urgent_only=urgent_only, market_targets_only=market_targets_only,
-        unread_only=unread_only, verdict=verdict,
+        unread_only=unread_only, verdict=verdict, direction=direction,
+        forfeited_only=forfeited_only, clusters_only=clusters_only,
     )
     cursor.execute("SELECT COUNT(*) FROM filings WHERE 1=1" + where, params)
     count = cursor.fetchone()[0]
@@ -784,6 +819,8 @@ def update_filing_analysis(
     signal_direction=None,
     top_signal=None,
     departure_count=None,
+    forfeited_comp=None,
+    has_successor=None,
 ):
     """Update a filing's LLM-generated fields after re-analysis.
     Only touches analysis fields — leaves user_tag, raw_text, etc. untouched."""
@@ -803,12 +840,12 @@ def update_filing_analysis(
             has_market_targets = {p},
             triage_verdict = {p}, signal_score = {p},
             signal_direction = {p}, top_signal = {p},
-            departure_count = {p}
+            departure_count = {p}, forfeited_comp = {p}, has_successor = {p}
         WHERE id = {p}
     """, (summary, auto_category, auto_subcategory, urgent_val, comp_val,
           structured_summary, complex_val, narrative_summary, relevant_reason,
           has_mt_val, triage_verdict, signal_score, signal_direction,
-          top_signal, departure_count, filing_id))
+          top_signal, departure_count, forfeited_comp, has_successor, filing_id))
     conn.commit()
     conn.close()
 

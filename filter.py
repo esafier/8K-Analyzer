@@ -389,6 +389,12 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
                 # Departures in THIS filing — summed per company for cluster badges
                 filing["departure_count"] = count_departures(structured)
 
+                # Bearish sub-signals promoted to filterable columns
+                from summary_utils import derive_departure_flags
+                flags = derive_departure_flags(structured)
+                filing["forfeited_comp"] = flags["forfeited_comp"]
+                filing["has_successor"] = flags["has_successor"]
+
                 # Legacy "summary" field stays populated for older templates/emails.
                 # Use narrative if present, else a brief assembly from the first event.
                 filing["summary"] = _build_legacy_summary(llm_result)

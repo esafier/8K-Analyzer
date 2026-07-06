@@ -173,12 +173,13 @@ Also the only way to populate <b>triage verdicts</b> (Deep Look / Monitor / Pass
 
 <hr class="my-5">
 
-<h2 class="mb-4">Retrofit Flags (Market Targets + Departure Counts)</h2>
+<h2 class="mb-4">Retrofit Flags (Market Targets, Departure Counts, Forfeiture)</h2>
 <p class="text-muted">
     Scans every existing filing's structured summary and (1) flags those that disclose
-    stock-price, market-cap, or TSR comp targets, and (2) counts each filing's executive
-    departures — which powers the "N departures / 24mo" cluster badge on the dashboard.
-    Zero LLM cost — pure data transform on what's already stored.
+    stock-price, market-cap, or TSR comp targets, (2) stamps the FORFEITS COMP /
+    NO SUCCESSOR flags that power the bearish dashboard filters, and (3) counts each
+    filing's executive departures — which powers the "N departures / 24mo" cluster
+    badge on the dashboard. Zero LLM cost — pure data transform on what's already stored.
 </p>
 
 <div class="card" style="max-width: 500px;">

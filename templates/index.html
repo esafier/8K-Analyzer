@@ -29,6 +29,17 @@
                 </select>
             </div>
 
+            <!-- Direction filter — bearish departures vs bullish comp structures -->
+            <div class="col-md-2">
+                <label class="form-label">Direction</label>
+                <select name="direction" class="form-select">
+                    <option value="">All directions</option>
+                    <option value="BEARISH" {{ 'selected' if current_direction == 'BEARISH' }}>&#9660; Bearish</option>
+                    <option value="BULLISH" {{ 'selected' if current_direction == 'BULLISH' }}>&#9650; Bullish</option>
+                    <option value="MIXED" {{ 'selected' if current_direction == 'MIXED' }}>&#9670; Mixed</option>
+                </select>
+            </div>
+
             <!-- Sort order -->
             <div class="col-md-2">
                 <label class="form-label">Sort</label>
@@ -88,6 +99,20 @@
                            id="unreadCheck" {{ 'checked' if current_unread }}>
                     <label class="form-check-label" for="unreadCheck">
                         <span class="badge bg-primary">Unread</span> only
+                    </label>
+                </div>
+                <div class="form-check mb-2">
+                    <input type="checkbox" name="forfeited" value="1" class="form-check-input"
+                           id="forfeitedCheck" {{ 'checked' if current_forfeited }}>
+                    <label class="form-check-label" for="forfeitedCheck" title="Departing exec walks away from unvested comp — the loudest bearish tell">
+                        <span class="badge" style="background:#8b0000;color:#fff;">FORFEITS COMP</span> only
+                    </label>
+                </div>
+                <div class="form-check mb-2">
+                    <input type="checkbox" name="clusters" value="1" class="form-check-input"
+                           id="clustersCheck" {{ 'checked' if current_clusters }}>
+                    <label class="form-check-label" for="clustersCheck" title="2+ executive departures at the company within 24 months (per EDGAR)">
+                        <span class="badge" style="background:#b02a37;color:#fff;">&#9888; Dep cluster</span> only
                     </label>
                 </div>
             </div>
@@ -167,6 +192,14 @@
                         {% if not is_pass %}<br>{% endif %}<span class="badge" style="background:#b02a37;color:#fff;margin-top:2px;"
                               title="{{ filing['departure_count_24mo'] }} executive departures at this company in the last 24 months (per SEC EDGAR)">
                             &#9888; {{ filing['departure_count_24mo'] }} dep/24mo</span>
+                    {% endif %}
+                    {% if filing['forfeited_comp'] %}
+                        {% if not is_pass %}<br>{% endif %}<span class="badge" style="background:#8b0000;color:#fff;margin-top:2px;"
+                              title="Departing executive walks away from unvested compensation">FORFEITS COMP</span>
+                    {% endif %}
+                    {% if filing['has_successor'] == 0 and not is_pass %}
+                        <br><span class="badge" style="background:#6f42c1;color:#fff;margin-top:2px;"
+                              title="Departure with no successor named">NO SUCCESSOR</span>
                     {% endif %}
                 </td>
                 <td class="text-nowrap" data-label="Date">{{ filing['filed_date'] }}</td>

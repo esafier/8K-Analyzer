@@ -117,6 +117,62 @@ def count_departures(structured):
     return len([d for d in departures if isinstance(d, dict)])
 
 
+# forfeiture_flag values meaning the departing exec walked away from money —
+# the loudest bearish departure signal ("mixed" = partial forfeit still counts).
+_FORFEIT_VALUES = {"forfeited", "mixed"}
+
+# successor_info values that mean nobody is filling the seat.
+_NO_SUCCESSOR_HINTS = ("search underway", "search is underway", "no successor",
+                       "not named", "none named", "tbd", "to be determined",
+                       "unknown", "n/a", "null", "none")
+
+
+def derive_departure_flags(structured):
+    """Derive row-level bearish flags from a structured_summary dict (or JSON).
+
+    Single source of truth for all ingest paths (backfill, re-summarize,
+    retry-missing) and the retrofit script, so the flags can't drift apart.
+
+    Returns:
+        {
+          "forfeited_comp": 1 if any departure forfeits comp (fully or mixed), else 0,
+          "has_successor": None when the filing has no departures;
+                           0 when at least one departure names no successor;
+                           1 when every departure has a successor lined up.
+        }
+    Never raises on malformed input.
+    """
+    out = {"forfeited_comp": 0, "has_successor": None}
+
+    if isinstance(structured, str):
+        try:
+            structured = json.loads(structured)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return out
+    if not isinstance(structured, dict):
+        return out
+
+    departures = structured.get("departures")
+    if not isinstance(departures, list):
+        return out
+    departures = [d for d in departures if isinstance(d, dict)]
+    if not departures:
+        return out
+
+    any_missing_successor = False
+    for d in departures:
+        flag = str(d.get("forfeiture_flag") or "").strip().lower()
+        if flag in _FORFEIT_VALUES:
+            out["forfeited_comp"] = 1
+
+        successor = str(d.get("successor_info") or "").strip().lower()
+        if not successor or any(h in successor for h in _NO_SUCCESSOR_HINTS):
+            any_missing_successor = True
+
+    out["has_successor"] = 0 if any_missing_successor else 1
+    return out
+
+
 def structured_summary_for_display(raw):
     """Parse the structured_summary JSON column into a dict safe for templates.
 

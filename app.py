@@ -193,6 +193,13 @@ def index():
     unread_only = request.args.get("unread", "") == "1"
     # Triage verdict filter: DEEP_LOOK / MONITOR / PASS / actionable (= first two)
     verdict = request.args.get("verdict", "")
+    # Direction filter: BEARISH / BULLISH / MIXED / NEUTRAL
+    direction = request.args.get("direction", "").upper()
+    if direction not in ("BEARISH", "BULLISH", "MIXED", "NEUTRAL"):
+        direction = ""
+    # Bearish sub-signal toggles: forfeited comp, departure clusters
+    forfeited_only = request.args.get("forfeited", "") == "1"
+    clusters_only = request.args.get("clusters", "") == "1"
     # Sort: "date" (newest first) or "signal" (Deep Look first, then by score)
     sort = request.args.get("sort", "date")
     if sort not in ("date", "signal"):
@@ -217,6 +224,9 @@ def index():
         market_targets_only=market_targets_only,
         unread_only=unread_only,
         verdict=verdict if verdict else None,
+        direction=direction if direction else None,
+        forfeited_only=forfeited_only,
+        clusters_only=clusters_only,
     )
     total_pages = max(1, math.ceil(filtered_count / per_page))
     page = min(page, total_pages)
@@ -232,6 +242,9 @@ def index():
         market_targets_only=market_targets_only,
         unread_only=unread_only,
         verdict=verdict if verdict else None,
+        direction=direction if direction else None,
+        forfeited_only=forfeited_only,
+        clusters_only=clusters_only,
         sort=sort,
         limit=per_page,
         offset=offset,
@@ -302,6 +315,9 @@ def index():
         ("market_targets", "1" if market_targets_only else ""),
         ("unread", "1" if unread_only else ""),
         ("verdict", verdict),
+        ("direction", direction),
+        ("forfeited", "1" if forfeited_only else ""),
+        ("clusters", "1" if clusters_only else ""),
         ("sort", sort),
     ])
 
@@ -319,6 +335,9 @@ def index():
         current_market_targets=market_targets_only,
         current_unread=unread_only,
         current_verdict=verdict,
+        current_direction=direction,
+        current_forfeited=forfeited_only,
+        current_clusters=clusters_only,
         current_sort=sort,
         current_page=page,
         per_page=per_page,
@@ -977,6 +996,8 @@ def run_resummarize(date_from=None, date_to=None, model=None):
 
             # Triage verdict + departure count (same validation as backfill path)
             triage = parse_triage(llm_result)
+            from summary_utils import derive_departure_flags
+            flags = derive_departure_flags(structured)
 
             update_filing_analysis(
                 filing_id,
@@ -995,6 +1016,8 @@ def run_resummarize(date_from=None, date_to=None, model=None):
                 signal_direction=triage["direction"],
                 top_signal=triage["top_signal"],
                 departure_count=count_departures(structured),
+                forfeited_comp=flags["forfeited_comp"],
+                has_successor=flags["has_successor"],
             )
             updated += 1
 
@@ -1194,6 +1217,8 @@ def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
             comp_json = json.dumps(comp_details)
 
         triage = parse_triage(llm_result)
+        from summary_utils import derive_departure_flags
+        flags = derive_departure_flags(structured)
 
         update_filing_analysis(
             filing_id,
@@ -1212,6 +1237,8 @@ def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
             signal_direction=triage["direction"],
             top_signal=triage["top_signal"],
             departure_count=count_departures(structured),
+            forfeited_comp=flags["forfeited_comp"],
+            has_successor=flags["has_successor"],
         )
         updated += 1
         tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
