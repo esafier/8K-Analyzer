@@ -79,3 +79,15 @@ def test_502_near_miss_still_kept_when_llm_fails():
 
     assert len(result) == 1
     assert result[0]["auto_category"] == "Management Change"
+
+
+def test_801_only_keyword_failure_is_still_dropped():
+    """8.01 ('Other Events') is too high-volume to LLM-review every keyword
+    miss — 8.01-only filings without keyword hits stay filtered out."""
+    from filter import filter_filings
+
+    with patch("filter.classify_and_summarize") as mock_llm:
+        result = filter_filings(_meta(["8.01"]), fetch_text_func=_fetch_no_keywords)
+
+    assert result == []
+    assert not mock_llm.called

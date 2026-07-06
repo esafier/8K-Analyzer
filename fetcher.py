@@ -121,18 +121,23 @@ SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
 #   EX-17 — resignation letters (rare, but pure signal on why someone left)
 #   EX-10 — material agreements (employment/separation terms, grant values, hurdles)
 #   EX-99 — press releases (narrative context the 8-K body omits)
-EXHIBIT_PRIORITY = ("EX-17", "EX-10", "EX-99")
+EXHIBIT_PRIORITY = ("17", "10", "99")
 MAX_EXHIBITS_PER_FILING = 4
 MAX_EXHIBIT_CHARS = 30_000       # per exhibit
 MAX_FILING_TEXT_CHARS = 120_000  # main doc + all exhibits combined (~30k tokens)
 
+# Matches the exhibit NUMBER exactly — a bare startswith("EX-10") also caught
+# EX-101/EX-104 (XBRL and cover-page artifacts present on most modern 8-Ks),
+# which would burn exhibit slots ahead of the real press release.
+_EXHIBIT_TYPE_RE = re.compile(r"^EX-(\d+)", re.IGNORECASE)
+
 
 def _exhibit_sort_key(doc_type):
-    """Rank an exhibit type by EXHIBIT_PRIORITY (lower = fetched first)."""
-    upper = doc_type.upper()
-    for rank, prefix in enumerate(EXHIBIT_PRIORITY):
-        if upper.startswith(prefix):
-            return rank
+    """Rank an exhibit type by EXHIBIT_PRIORITY (lower = fetched first).
+    Returns len(EXHIBIT_PRIORITY) for types we don't fetch."""
+    m = _EXHIBIT_TYPE_RE.match((doc_type or "").strip())
+    if m and m.group(1) in EXHIBIT_PRIORITY:
+        return EXHIBIT_PRIORITY.index(m.group(1))
     return len(EXHIBIT_PRIORITY)
 
 
@@ -314,7 +319,7 @@ def fetch_filing_text(filing_url, cik, accession_no):
                 if doc_type in ("8-K", "8-K/A"):
                     if doc_url is None:
                         doc_url = url
-                elif doc_type.upper().startswith(EXHIBIT_PRIORITY):
+                elif _exhibit_sort_key(doc_type) < len(EXHIBIT_PRIORITY):
                     exhibit_links.append((doc_type, url))
 
         if not doc_url:
@@ -344,14 +349,15 @@ def fetch_filing_text(filing_url, cik, accession_no):
 
         # Append high-value exhibits, best-signal types first. A failed exhibit
         # fetch never fails the filing — the main document text still returns.
+        # Dedupe against the main doc BEFORE slicing so a duplicate can't
+        # burn one of the exhibit slots.
+        exhibit_links = [(t, u) for t, u in exhibit_links if u != doc_url]
         exhibit_links.sort(key=lambda e: _exhibit_sort_key(e[0]))
         sections = [text]
         total_chars = len(text)
         for ex_type, ex_url in exhibit_links[:MAX_EXHIBITS_PER_FILING]:
             if total_chars >= MAX_FILING_TEXT_CHARS:
                 break
-            if ex_url == doc_url:
-                continue
             try:
                 time.sleep(REQUEST_DELAY)
                 ex_response = _sec_get_with_retry(ex_url, FILING_HEADERS, timeout=30)
@@ -484,13 +490,21 @@ def _fetch_502_snippet(cik, accession_no, primary_doc):
         section = text[match.start():]
         heading_len = match.end() - match.start()
 
-        # End at the next DIFFERENT item heading. In-prose references to
-        # "Item 5.02(e)" etc. must not truncate the section early.
+        # End at the next DIFFERENT item heading. Two kinds of in-prose
+        # mention must NOT truncate the section: "Item 5.02(e)" self-references,
+        # and cross-references like "the information set forth in Item 1.01 is
+        # incorporated by reference into this Item 5.02" (extremely common
+        # boilerplate). A real heading starts a sentence, so only accept a
+        # boundary whose preceding text ends in sentence punctuation.
         end = None
         for m2 in re.finditer(r"\bItem\s+(\d+\.\d{2})\b", section[heading_len:], re.IGNORECASE):
-            if m2.group(1) != "5.02":
-                end = heading_len + m2.start()
-                break
+            if m2.group(1) == "5.02":
+                continue
+            before = section[:heading_len + m2.start()].rstrip()
+            if before and before[-1] not in ".:;":
+                continue  # mid-sentence cross-reference, not a heading
+            end = heading_len + m2.start()
+            break
 
         # ...or at the signature block, whichever comes first.
         sig = _SIGNATURE_BLOCK_RE.search(section)

@@ -143,14 +143,13 @@ def get_connection():
         conn = sqlite3.connect(DATABASE_PATH)
         # This makes query results accessible by column name (e.g., row["company"])
         conn.row_factory = sqlite3.Row
-        # WAL lets the background cache-refresh threads write while the web
-        # request reads; busy_timeout retries briefly instead of raising
-        # "database is locked" the instant two writers collide.
+        # busy_timeout retries briefly instead of raising "database is locked"
+        # the instant two writers collide. (journal_mode=WAL is persistent per
+        # database file and is set once in initialize_database.)
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
         except sqlite3.Error:
-            pass  # pragmas are best-effort (e.g., read-only filesystems)
+            pass  # best-effort
         return conn
 
 
@@ -197,6 +196,15 @@ def initialize_database():
 
     conn = get_connection()
     cursor = conn.cursor()
+
+    if not _using_postgres():
+        # WAL lets the background cache-refresh threads write while a web
+        # request reads. It's a persistent property of the DB file — setting
+        # it once here is enough for every later connection.
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.Error:
+            pass  # best-effort (e.g., unsupported filesystem)
 
     if _using_postgres():
         # PostgreSQL version: uses SERIAL for auto-increment
@@ -371,8 +379,11 @@ def _migrate_add_columns(conn):
         # Clean-slate: mark every pre-existing row as read so the user isn't
         # buried under thousands of "unread" items the moment the feature ships.
         # Runs only once — only when this worker actually added the column.
+        # Commit immediately: a later _add_column losing a concurrent-worker
+        # race calls rollback(), which would silently discard this UPDATE.
         cursor.execute("UPDATE filings SET read_at = CURRENT_TIMESTAMP WHERE read_at IS NULL")
         print(f"[MIGRATE] Marked {cursor.rowcount} pre-existing filings as read (clean slate)")
+        conn.commit()
 
     # Index on read_at — the "Show unread only" dashboard query uses WHERE read_at IS NULL
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_filings_read_at ON filings(read_at)")

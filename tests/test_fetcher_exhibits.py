@@ -157,3 +157,13 @@ def test_no_exhibits_behaves_as_before():
 
     assert "solo body" in text
     assert "EXHIBIT" not in text
+
+
+def test_xbrl_and_cover_page_exhibits_are_not_fetched():
+    """Regression: startswith('EX-10') also matched EX-101/EX-104 (XBRL and
+    cover-page artifacts), burning exhibit slots ahead of real press releases."""
+    assert _exhibit_sort_key("EX-101.SCH") == 3  # not a fetchable priority
+    assert _exhibit_sort_key("EX-104") == 3
+    assert _exhibit_sort_key("EX-10.1") == 1
+    assert _exhibit_sort_key("EX-17.1") == 0
+    assert _exhibit_sort_key("EX-99.1") == 2

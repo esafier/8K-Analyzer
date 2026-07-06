@@ -130,7 +130,9 @@ def detect_market_targets(structured):
 
 # Dollar amounts inside a free-text price-target string, e.g.
 # "$12.50 and $15.00 sustained over 60 days" -> [12.50, 15.00]
-_PRICE_VALUE_RE = re.compile(r"\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,4})?|\d+(?:\.\d{1,4})?)")
+# The comma branch requires an actual comma group and the trailing (?!\d)
+# stops partial matches — without it "$1000" parsed as 100.0.
+_PRICE_VALUE_RE = re.compile(r"\$\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,4})?|\d+(?:\.\d{1,4})?)(?![\d,])")
 
 
 def extract_price_values(text):
@@ -172,10 +174,12 @@ def annotate_price_targets(market_targets, current_price):
           - current_price
         or None when nothing is computable (no price, no parseable targets).
     """
-    if not market_targets or not current_price or current_price <= 0:
+    if not isinstance(market_targets, dict) or not current_price or current_price <= 0:
         return None
 
     entries = market_targets.get("stock_price") or []
+    if not isinstance(entries, list):
+        return None
     by_value = {}
     all_pcts = []
     for e in entries:

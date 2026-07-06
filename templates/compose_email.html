@@ -39,7 +39,7 @@
             <!-- AI Summary (read-only) -->
             <div class="mb-3">
                 <label class="form-label small fw-bold">AI Summary:</label>
-                <p class="filing-summary text-muted small mb-0">{{ filing['summary'] }}</p>
+                <p class="filing-summary text-muted small mb-0">{{ filing['top_signal'] or filing['summary'] or '' }}</p>
             </div>
 
             <!-- Editable commentary (pre-filled from watchlist notes) -->

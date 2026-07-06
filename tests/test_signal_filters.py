@@ -151,3 +151,13 @@ def test_dashboard_direction_filter_route(tmp_sqlite_db):
     resp = client.get("/?direction=SIDEWAYS")
     assert resp.status_code == 200
     assert b"Co acc-route-bull" in resp.data
+
+
+def test_flags_named_successor_with_tricky_words_not_flagged():
+    """Regression: 'none' matched inside 'nonexecutive'/'nonemployee', flagging
+    filings that explicitly name an interim successor."""
+    for info in ("A nonemployee director will serve as interim CEO",
+                 "Jane Roe, nonexecutive director, appointed interim CEO"):
+        structured = {"departures": [{"name": "X", "forfeiture_flag": "paid_out",
+                                      "successor_info": info}]}
+        assert derive_departure_flags(structured)["has_successor"] == 1, info

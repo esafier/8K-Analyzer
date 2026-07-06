@@ -122,9 +122,14 @@ def count_departures(structured):
 _FORFEIT_VALUES = {"forfeited", "mixed"}
 
 # successor_info values that mean nobody is filling the seat.
-_NO_SUCCESSOR_HINTS = ("search underway", "search is underway", "no successor",
-                       "not named", "none named", "tbd", "to be determined",
-                       "unknown", "n/a", "null", "none")
+# Short tokens are matched EXACTLY (bare substring matching flagged
+# "nonexecutive director appointed interim CEO" via "none"); multi-word
+# phrases are safe as substrings.
+_NO_SUCCESSOR_EXACT = {"", "none", "n/a", "na", "null", "tbd", "unknown", "-"}
+_NO_SUCCESSOR_PHRASES = ("search underway", "search is underway", "no successor",
+                         "not named", "none named", "not yet named",
+                         "to be determined", "successor has not",
+                         "search for a successor")
 
 
 def derive_departure_flags(structured):
@@ -166,7 +171,7 @@ def derive_departure_flags(structured):
             out["forfeited_comp"] = 1
 
         successor = str(d.get("successor_info") or "").strip().lower()
-        if not successor or any(h in successor for h in _NO_SUCCESSOR_HINTS):
+        if successor in _NO_SUCCESSOR_EXACT or any(p in successor for p in _NO_SUCCESSOR_PHRASES):
             any_missing_successor = True
 
     out["has_successor"] = 0 if any_missing_successor else 1

@@ -251,11 +251,12 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
 
     # Stage 2: Keyword filter (requires downloading each filing)
     # Filings that pass keywords go to Stage 3 (LLM).
-    # ALL keyword failures also go to Stage 3 as "near-misses" — keyword lists
-    # miss unusual phrasing, and the LLM's relevance gate keeps irrelevant
-    # filings out of the database. The marginal LLM cost is negligible.
+    # Keyword failures with executive-relevant item codes (5.02/1.01/1.02)
+    # also go to Stage 3 as "near-misses" — keyword lists miss unusual
+    # phrasing, and the LLM's relevance gate keeps irrelevant filings out of
+    # the database. 8.01-only keyword failures are still dropped (too broad).
     stage2_passed = []   # Keyword matches — will get LLM review
-    near_misses = []     # Keyword failures — LLM gets a look anyway
+    near_misses = []     # Keyword failures on in-scope items — LLM gets a look
 
     for i, filing in enumerate(stage1_passed):
         print(f"  Stage 2: Checking filing {i + 1}/{len(stage1_passed)} — {filing.get('company', 'Unknown')}")
@@ -298,16 +299,21 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
             filing["matched_keywords"] = ",".join(result["keywords"])
             stage2_passed.append(filing)
             print(f"    KEYWORD MATCH — {result['category']} / {result['subcategory']}")
-        else:
+        elif any(code in items for code in ("5.02", "1.01", "1.02")):
             # Near-miss: keywords didn't fire, but the item codes are in scope.
             # The LLM decides relevance — it catches the unusual phrasing the
-            # keyword list can't.
+            # keyword list can't. 8.01-only filings are excluded: "Other
+            # Events" is the highest-volume, lowest-hit-rate item, and LLM-
+            # reviewing every keyword miss there would multiply daily cost
+            # for little recall.
             filing["auto_category"] = "Management Change" if "5.02" in items else None
             filing["auto_subcategory"] = None
             filing["matched_keywords"] = "item " + ",".join(items) if items else "near-miss"
             filing["_near_miss"] = True
             near_misses.append(filing)
             print(f"    NEAR-MISS (no keywords, items {','.join(items)} — sending to LLM)")
+        else:
+            print(f"    No keyword match (8.01-only), filtered out")
 
     print(f"  Stage 2 (keywords): {len(stage2_passed)} matched, {len(near_misses)} near-misses")
 

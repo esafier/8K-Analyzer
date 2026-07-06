@@ -102,3 +102,17 @@ def test_dashboard_shows_pct_chip(tmp_sqlite_db):
     resp = client.get(f"/filing/{row['id']}")
     assert resp.status_code == 200
     assert b"+100%" in resp.data
+
+
+def test_extracts_four_digit_prices_without_commas():
+    """Regression: '$1000' was parsed as 100.0 (comma branch matched greedily)."""
+    assert extract_price_values("$1000 per share") == [1000.0]
+    assert extract_price_values("$1250.50") == [1250.5]
+    assert extract_price_values("$4500") == [4500.0]
+
+
+def test_annotate_tolerates_non_dict_targets():
+    """Regression: corrupt/legacy structured_summary shapes must not raise."""
+    assert annotate_price_targets("not a dict", 5.0) is None
+    assert annotate_price_targets({"stock_price": "oops"}, 5.0) is None
+    assert annotate_price_targets({"stock_price": ["bare string"]}, 5.0) is None

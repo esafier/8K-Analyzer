@@ -114,3 +114,25 @@ def test_502_section_stops_at_signature_block():
 
     assert "Sam Delta" in section
     assert "duly caused" not in section
+
+
+def test_502_section_survives_incorporation_by_reference_boilerplate():
+    """Regression: 'The information set forth in Item 1.01 ... is incorporated
+    by reference into this Item 5.02' truncated the section to zero names."""
+    from fetcher import _fetch_502_snippet
+
+    body = (
+        "Item 5.02 Departure of Directors. The information set forth in Item 1.01 "
+        "of this Current Report is incorporated by reference into this Item 5.02. "
+        "On July 1, 2026, John Alpha resigned as CEO and Mary Beta resigned as CFO. "
+        "Item 9.01 Financial Statements and Exhibits. Exhibit list follows."
+    )
+    resp = Mock(status_code=200, text=f"<html><body>{body}</body></html>")
+    resp.raise_for_status = Mock()
+
+    with patch("fetcher.requests.get", return_value=resp):
+        section = _fetch_502_snippet("123", "0001-26-000001", "d.htm")
+
+    assert "John Alpha" in section
+    assert "Mary Beta" in section
+    assert "Exhibit list follows" not in section

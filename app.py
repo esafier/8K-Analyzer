@@ -306,7 +306,9 @@ def index():
             structured = json.loads(filing.get("structured_summary") or "{}")
         except (json.JSONDecodeError, ValueError, TypeError):
             continue
-        tp = annotate_price_targets((structured or {}).get("market_targets"), price)
+        if not isinstance(structured, dict):
+            continue  # corrupt/legacy non-object JSON must not 500 the dashboard
+        tp = annotate_price_targets(structured.get("market_targets"), price)
         if tp:
             target_pcts[filing["id"]] = tp
 
@@ -458,9 +460,10 @@ def _render_filing_detail(filing_id, departures=None):
         try:
             from market_targets import annotate_price_targets
             structured = json.loads(filing.get("structured_summary") or "{}")
-            tp = annotate_price_targets((structured or {}).get("market_targets"), stock_price)
-            if tp:
-                target_pcts[filing["id"]] = tp
+            if isinstance(structured, dict):
+                tp = annotate_price_targets(structured.get("market_targets"), stock_price)
+                if tp:
+                    target_pcts[filing["id"]] = tp
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
@@ -521,7 +524,13 @@ def deep_analysis(filing_id):
                 flash("This filing has no CIK on record — cannot look up departures.", "error")
                 return redirect(url_for("filing_detail", filing_id=filing_id))
 
-            departures_data = get_departures_for_filing(cik=cik, current_accession=current_accession)
+            try:
+                departures_data = get_departures_for_filing(cik=cik, current_accession=current_accession)
+            except RuntimeError:
+                # EDGAR lookup failed (transient) — tell the user plainly
+                # instead of surfacing a raw exception via the generic handler.
+                flash("EDGAR is unreachable right now — departure history lookup failed. Try again in a minute.", "error")
+                return redirect(url_for("filing_detail", filing_id=filing_id))
             departures_lines = render_prose_lines(departures_data)
 
             # Persist so the badge + auto-rendered card stay current (and so a
@@ -620,7 +629,10 @@ def deep_analysis(filing_id):
                 dep_lines = []
                 for dep in departures:
                     date = dep.get("filing_date", "Unknown date")
-                    snippet = dep.get("snippet", "")
+                    # Snippets are now full 5.02 sections (up to 6k chars) —
+                    # cap what goes into the context block so a serial filer
+                    # can't flood the prompt.
+                    snippet = (dep.get("snippet", "") or "")[:1500]
                     if snippet:
                         dep_lines.append(f"  [{date}] {snippet}")
                     else:
