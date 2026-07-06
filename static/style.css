@@ -199,14 +199,37 @@ p, .summary-body, .top-signal { text-wrap: pretty; }
 .clickable-row { cursor: pointer; transition: background-color .14s ease; }
 .clickable-row:hover { background-color: var(--surface-2) !important; }
 
-/* Left-edge accents use inset box-shadow (no layout shift, unlike border) */
-tr.clickable-row:has(.badge.bg-danger) { box-shadow: inset 3px 0 0 #d93a3a; }
+/* Left-edge accents use inset box-shadow (no layout shift, unlike border).
+   Keyed off an explicit row class — the old :has(.badge.bg-danger) matched
+   any row whose summary happened to contain a red badge (e.g. FORFEITS
+   COMP), which then silently lost its unread indicator. */
+tr.urgent-row { box-shadow: inset 3px 0 0 #d93a3a; }
 
 /* Unread rows: subtle blue wash + bolder company name.
    State reflects page-load time; the scroll-tracking JS intentionally
    does not repaint rows mid-session (that would feel jumpy). */
-tr.unread:not(:has(.badge.bg-danger)) { box-shadow: inset 3px 0 0 var(--accent); }
+tr.unread:not(.urgent-row) { box-shadow: inset 3px 0 0 var(--accent); }
 tr.unread td:nth-child(4) { font-weight: 650; }
+
+/* Signal score chip — the primary scan element on each row */
+.score-chip {
+  display: inline-block;
+  min-width: 44px;
+  text-align: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: #fff;
+  background: #6c757d;
+  margin-top: 3px;
+}
+.score-chip.bearish { background: #c0392b; }
+.score-chip.bullish { background: #1e8449; }
+.score-chip.mixed   { background: #b45309; }
+
+/* Collapsed MONITOR rows — one-line signal, details behind a toggle */
+tr.monitor-row td { padding-top: 8px; padding-bottom: 8px; }
 
 /* Collapsed PASS rows — routine filings shrink to one quiet line */
 tr.pass-row { font-size: 0.85rem; color: var(--ink-soft); }

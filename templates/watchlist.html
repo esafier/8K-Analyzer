@@ -30,8 +30,27 @@
                                 {% if filing['ticker'] and earnings.get(filing['ticker']) and earnings[filing['ticker']].get('date') %}
                                 <span class="badge bg-info">Earnings: {{ earnings[filing['ticker']] | format_earnings_date }}</span>
                                 {% endif %}
+                                {% if filing['triage_verdict'] == 'DEEP_LOOK' %}
+                                <span class="badge bg-dark">DEEP LOOK</span>
+                                {% elif filing['triage_verdict'] == 'MONITOR' %}
+                                <span class="badge" style="background:#fd7e14;color:#fff;">MONITOR</span>
+                                {% endif %}
+                                {% if filing['signal_score'] is not none %}
+                                <span class="score-chip {{ filing['signal_direction']|lower if filing['signal_direction'] in ('BEARISH', 'BULLISH', 'MIXED') }}"
+                                      title="Signal strength {{ filing['signal_score'] }}/10{% if filing['signal_direction'] %}, {{ filing['signal_direction'].lower() }}{% endif %}">
+                                    {%- if filing['signal_direction'] == 'BEARISH' %}&#9660;
+                                    {%- elif filing['signal_direction'] == 'BULLISH' %}&#9650;
+                                    {%- elif filing['signal_direction'] == 'MIXED' %}&#9670;
+                                    {%- endif %} {{ filing['signal_score'] }}</span>
+                                {% endif %}
                                 {% if filing['urgent'] %}
                                 <span class="badge bg-danger">URGENT</span>
+                                {% endif %}
+                                {% if filing['forfeited_comp'] %}
+                                <span class="badge" style="background:#8b0000;color:#fff;">FORFEITS COMP</span>
+                                {% endif %}
+                                {% if filing['has_market_targets'] %}
+                                <span class="badge" style="background:#f5b800;color:#000;">🎯</span>
                                 {% endif %}
                                 <span class="badge
                                     {% if filing['auto_category'] == 'Management Change' %}bg-primary
@@ -55,9 +74,14 @@
                         Filed: {{ filing['filed_date'] }}
                     </p>
 
-                    <!-- Summary snippet -->
+                    <!-- Top signal + summary snippet -->
+                    {% if filing['top_signal'] %}
+                    <p class="small fst-italic mb-2" style="color:#444;border-left:3px solid #adb5bd;padding-left:6px;">
+                        {{ filing['top_signal'] }}
+                    </p>
+                    {% endif %}
                     <p class="mb-3">
-                        {{ filing['summary'][:200] }}{% if filing['summary']|length > 200 %}...{% endif %}
+                        {{ (filing['summary'] or '')[:200] }}{% if (filing['summary'] or '')|length > 200 %}...{% endif %}
                     </p>
 
                     <!-- Notes section -->

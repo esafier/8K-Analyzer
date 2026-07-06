@@ -143,11 +143,14 @@
         </thead>
         <tbody>
             {% for filing in filings %}
-            {# PASS filings collapse to one quiet line — routine merger departure
-               waves and plan housekeeping shouldn't cost a full card. The data
-               is all still there behind the "Details" toggle. #}
+            {# Scan hierarchy: DEEP_LOOK gets a full card; MONITOR collapses to
+               its one-line top signal (details behind a toggle); PASS collapses
+               to a quiet muted line. Everything stays reachable, nothing costs
+               vertical space it hasn't earned. #}
             {% set is_pass = filing['triage_verdict'] == 'PASS' %}
-            <tr class="clickable-row{% if is_pass %} pass-row{% endif %}{% if not filing['read_at'] %} unread{% endif %}"
+            {% set is_monitor = filing['triage_verdict'] == 'MONITOR' %}
+            {% set is_collapsed = is_pass or is_monitor %}
+            <tr class="clickable-row{% if is_pass %} pass-row{% endif %}{% if is_monitor %} monitor-row{% endif %}{% if filing['urgent'] %} urgent-row{% endif %}{% if not filing['read_at'] %} unread{% endif %}"
                 data-filing-id="{{ filing['id'] }}"
                 onclick="window.location='/filing/{{ filing['id'] }}?back={{ ('/?page=' ~ current_page ~ '&' ~ filter_qs)|urlencode }}'">
                 <!-- Watchlist star toggle -->
@@ -172,35 +175,32 @@
                         <span class="badge bg-secondary" title="Administrative — no investor signal">PASS</span>
                     {% endif %}
                     {% if not is_pass and filing['signal_score'] is not none %}
-                        <br><span class="small fw-bold
-                            {% if filing['signal_direction'] == 'BEARISH' %}text-danger
-                            {% elif filing['signal_direction'] == 'BULLISH' %}text-success
-                            {% else %}text-muted{% endif %}"
+                        {% if not is_collapsed %}<br>{% endif %}<span class="score-chip {{ filing['signal_direction']|lower if filing['signal_direction'] in ('BEARISH', 'BULLISH', 'MIXED') }}"
                             title="Signal strength {{ filing['signal_score'] }}/10{% if filing['signal_direction'] %}, {{ filing['signal_direction'].lower() }}{% endif %}">
                             {%- if filing['signal_direction'] == 'BEARISH' %}&#9660;
                             {%- elif filing['signal_direction'] == 'BULLISH' %}&#9650;
                             {%- elif filing['signal_direction'] == 'MIXED' %}&#9670;
-                            {%- endif %} {{ filing['signal_score'] }}/10</span>
+                            {%- endif %} {{ filing['signal_score'] }}</span>
                     {% endif %}
                     {% if filing['urgent'] %}
-                        {% if not is_pass %}<br>{% endif %}<span class="badge bg-danger">URGENT</span>
+                        {% if not is_collapsed %}<br>{% endif %}<span class="badge bg-danger">URGENT</span>
                     {% endif %}
                     {% if filing['has_market_targets'] %}
                         {% set tp = target_pcts.get(filing['id']) %}
-                        {% if not is_pass %}<br>{% endif %}<span class="badge" style="background:#f5b800;color:#000;"
+                        {% if not is_collapsed %}<br>{% endif %}<span class="badge" style="background:#f5b800;color:#000;"
                               title="{% if tp %}Stock-price hurdle needs {{ '%+d' % tp.max_pct|round|int }}% from ${{ '%.2f' % tp.current_price }}{% else %}Discloses stock-price, market-cap, or TSR target{% endif %}">🎯{% if tp %} {{ '%+d' % tp.max_pct|round|int }}%{% endif %}</span>
                     {% endif %}
                     {% if (filing['departure_count_24mo'] or 0) >= 2 %}
-                        {% if not is_pass %}<br>{% endif %}<span class="badge" style="background:#b02a37;color:#fff;margin-top:2px;"
+                        {% if not is_collapsed %}<br>{% endif %}<span class="badge" style="background:#b02a37;color:#fff;margin-top:2px;"
                               title="{{ filing['departure_count_24mo'] }} executive departures at this company in the last 24 months (per SEC EDGAR)">
                             &#9888; {{ filing['departure_count_24mo'] }} dep/24mo</span>
                     {% endif %}
                     {% if filing['forfeited_comp'] %}
-                        {% if not is_pass %}<br>{% endif %}<span class="badge" style="background:#8b0000;color:#fff;margin-top:2px;"
+                        {% if not is_collapsed %}<br>{% endif %}<span class="badge" style="background:#8b0000;color:#fff;margin-top:2px;"
                               title="Departing executive walks away from unvested compensation">FORFEITS COMP</span>
                     {% endif %}
                     {% if filing['has_successor'] == 0 and not is_pass %}
-                        <br><span class="badge" style="background:#6f42c1;color:#fff;margin-top:2px;"
+                        {% if not is_collapsed %}<br>{% endif %}<span class="badge" style="background:#6f42c1;color:#fff;margin-top:2px;"
                               title="Departure with no successor named">NO SUCCESSOR</span>
                     {% endif %}
                 </td>
@@ -208,7 +208,7 @@
                 <td data-label="Company">{{ filing['company'] }}</td>
                 <td data-label="Ticker">
                     <strong>{{ filing['ticker'] or '—' }}</strong>
-                    {% if not is_pass %}
+                    {% if not is_collapsed %}
                     {% if filing['ticker'] and market_caps.get(filing['ticker']) %}
                     <br><span class="market-cap">{{ market_caps[filing['ticker']] | format_market_cap }}</span>
                     {% endif %}
@@ -231,22 +231,23 @@
                         {{ display_category or 'Uncategorized' }}
                     </span>
                     {% set subcats = filing['auto_subcategory'] | parse_subcategories %}
-                    {% if subcats and not is_pass %}
+                    {% if subcats and not is_collapsed %}
                       <br>
                       {% for s in subcats %}
                         <span class="badge bg-light text-dark border" style="font-size:10px;margin-top:2px;">{{ s }}</span>
                       {% endfor %}
                     {% endif %}
                 </td>
-                {% if is_pass %}
-                {# Collapsed summary: one-line top signal + expandable details #}
+                {% if is_collapsed %}
+                {# Collapsed summary: one-line top signal + expandable details.
+                   MONITOR reads normally; PASS is muted/italic. #}
                 <td class="summary-cell" data-label="Summary" style="min-width: 320px; white-space: normal;">
-                    <span class="small text-muted fst-italic">{{ filing['top_signal'] or (filing['summary'] or '') | truncate(160) }}</span>
+                    <span class="small{% if is_pass %} text-muted fst-italic{% endif %}">{{ filing['top_signal'] or (filing['summary'] or '') | truncate(160) }}</span>
                     <button class="btn btn-sm btn-outline-secondary" style="font-size:10px;padding:0 6px;margin-left:6px;vertical-align:baseline;"
-                            onclick="event.stopPropagation();var el=document.getElementById('pass-details-{{ filing['id'] }}');var open=el.style.display!=='none';el.style.display=open?'none':'block';this.textContent=open?'Details ▶':'Details ▼';">
+                            onclick="event.stopPropagation();var el=document.getElementById('row-details-{{ filing['id'] }}');var open=el.style.display!=='none';el.style.display=open?'none':'block';this.textContent=open?'Details ▶':'Details ▼';">
                         Details ▶
                     </button>
-                    <div id="pass-details-{{ filing['id'] }}" style="display:none;margin-top:6px;" onclick="event.stopPropagation()">
+                    <div id="row-details-{{ filing['id'] }}" style="display:none;margin-top:6px;" onclick="event.stopPropagation()">
                         {% set structured = filing['structured_summary'] | structured_summary %}
                         {% include '_structured_summary.html' %}
                     </div>

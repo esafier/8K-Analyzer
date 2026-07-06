@@ -253,17 +253,7 @@ def index():
     # Convert to plain dicts so .get() works on both SQLite and PostgreSQL
     filings = [dict(f) for f in filings]
 
-    # Parse comp_details JSON for each filing so templates can use it
     import json
-    for filing in filings:
-        raw = filing.get("comp_details") or filing.get("comp_details", None)
-        if raw and isinstance(raw, str):
-            try:
-                filing["_comp"] = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                filing["_comp"] = None
-        else:
-            filing["_comp"] = None
 
     # Get all categories for the filter dropdown
     categories = get_categories()
