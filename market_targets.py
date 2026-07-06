@@ -128,6 +128,78 @@ def detect_market_targets(structured):
     return out
 
 
+# Dollar amounts inside a free-text price-target string, e.g.
+# "$12.50 and $15.00 sustained over 60 days" -> [12.50, 15.00]
+_PRICE_VALUE_RE = re.compile(r"\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,4})?|\d+(?:\.\d{1,4})?)")
+
+
+def extract_price_values(text):
+    """Pull per-share dollar amounts out of a free-text stock-price target.
+
+    Returns a list of floats (may be empty). Values outside (0, 100000) are
+    discarded as parse noise.
+    """
+    if not _is_meaningful(text):
+        return []
+    if not isinstance(text, str):
+        text = str(text)
+    values = []
+    for m in _PRICE_VALUE_RE.finditer(text):
+        try:
+            v = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if 0 < v < 100_000:
+            values.append(v)
+    return values
+
+
+def annotate_price_targets(market_targets, current_price):
+    """Compute the % appreciation required to hit each stock-price hurdle.
+
+    This is what turns "vests at $10" into "needs +100% from here" — the
+    number that actually ranks bullish comp conviction.
+
+    Args:
+        market_targets: the targets dict stored in structured_summary
+                        ({"stock_price": [{executive, value}], ...})
+        current_price: current share price (float)
+
+    Returns:
+        dict with:
+          - by_value: {original value string: [{"target": 12.5, "pct": 25.0}, ...]}
+          - min_pct / max_pct: across all parsed targets
+          - current_price
+        or None when nothing is computable (no price, no parseable targets).
+    """
+    if not market_targets or not current_price or current_price <= 0:
+        return None
+
+    entries = market_targets.get("stock_price") or []
+    by_value = {}
+    all_pcts = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        raw = e.get("value")
+        vals = extract_price_values(raw)
+        if not vals:
+            continue
+        points = [{"target": v, "pct": (v / current_price - 1.0) * 100.0} for v in vals]
+        by_value[str(raw).strip()] = points
+        all_pcts.extend(pt["pct"] for pt in points)
+
+    if not all_pcts:
+        return None
+
+    return {
+        "by_value": by_value,
+        "min_pct": min(all_pcts),
+        "max_pct": max(all_pcts),
+        "current_price": current_price,
+    }
+
+
 def detect_from_json_string(structured_summary_json):
     """Convenience wrapper: parse JSON string then run detect_market_targets."""
     if not structured_summary_json:

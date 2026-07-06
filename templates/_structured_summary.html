@@ -11,11 +11,17 @@
   {% endif %}
 
   {% if structured.has_market_targets and structured.market_targets %}
+    {% set tp = target_pcts.get(filing['id']) if target_pcts is defined and target_pcts else none %}
     <div class="ss-section ss-market-targets" style="margin-top:6px;background:#fffbe6;border-left:3px solid #f5b800;padding:6px 10px;border-radius:4px;">
-      <div class="ss-label" style="font-size:10px;font-weight:700;text-transform:uppercase;color:#8a6d00;">Market-Based Targets</div>
+      <div class="ss-label" style="font-size:10px;font-weight:700;text-transform:uppercase;color:#8a6d00;">Market-Based Targets
+        {%- if tp %} <span style="text-transform:none;color:#333;">— needs {{ '%+d' % tp.max_pct|round|int }}% from ${{ '%.2f' % tp.current_price }}</span>{% endif %}</div>
       <ul class="ss-body" style="padding-left:14px;margin:2px 0 4px 0;">
         {% for t in structured.market_targets.stock_price %}
-          <li><b>Stock price:</b> {{ t.value }} <span class="text-muted small">({{ t.executive }})</span></li>
+          {% set pts = tp.by_value.get(t.value|string|trim) if tp else none %}
+          <li><b>Stock price:</b> {{ t.value }} <span class="text-muted small">({{ t.executive }})</span>
+            {%- if pts %} <span class="small" style="color:#8a6d00;font-weight:600;">
+              {%- for pt in pts %}${{ '%.2f' % pt.target }} &rarr; {{ '%+d' % pt.pct|round|int }}%{{ ' · ' if not loop.last }}{% endfor -%}
+            </span>{% endif %}</li>
         {% endfor %}
         {% for t in structured.market_targets.market_cap %}
           <li><b>Market cap:</b> {{ t.value }} <span class="text-muted small">({{ t.executive }})</span></li>

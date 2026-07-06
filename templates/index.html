@@ -186,7 +186,9 @@
                         {% if not is_pass %}<br>{% endif %}<span class="badge bg-danger">URGENT</span>
                     {% endif %}
                     {% if filing['has_market_targets'] %}
-                        {% if not is_pass %}<br>{% endif %}<span class="badge" style="background:#f5b800;color:#000;" title="Discloses stock-price, market-cap, or TSR target">🎯</span>
+                        {% set tp = target_pcts.get(filing['id']) %}
+                        {% if not is_pass %}<br>{% endif %}<span class="badge" style="background:#f5b800;color:#000;"
+                              title="{% if tp %}Stock-price hurdle needs {{ '%+d' % tp.max_pct|round|int }}% from ${{ '%.2f' % tp.current_price }}{% else %}Discloses stock-price, market-cap, or TSR target{% endif %}">🎯{% if tp %} {{ '%+d' % tp.max_pct|round|int }}%{% endif %}</span>
                     {% endif %}
                     {% if (filing['departure_count_24mo'] or 0) >= 2 %}
                         {% if not is_pass %}<br>{% endif %}<span class="badge" style="background:#b02a37;color:#fff;margin-top:2px;"

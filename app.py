@@ -301,6 +301,25 @@ def index():
     except Exception as e:
         print(f"[STOCK PRICE] Failed to load stock prices: {e}")
 
+    # % appreciation required for stock-price hurdles vs the current price —
+    # turns the bare 🎯 badge into "🎯 +120%" so bullish conviction is
+    # rankable at a glance. Cached prices only; rows without a price skip it.
+    from market_targets import annotate_price_targets
+    target_pcts = {}
+    for filing in filings:
+        if not filing.get("has_market_targets"):
+            continue
+        price = stock_prices.get((filing.get("ticker") or "").strip().upper())
+        if not price:
+            continue
+        try:
+            structured = json.loads(filing.get("structured_summary") or "{}")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+        tp = annotate_price_targets((structured or {}).get("market_targets"), price)
+        if tp:
+            target_pcts[filing["id"]] = tp
+
     # Canonical query string for the current filter state (page excluded).
     # Pagination links and row back-links both use this, so they can't drift
     # apart — and values are properly encoded (a search containing '&' or
@@ -347,6 +366,7 @@ def index():
         market_caps=market_caps,
         earnings=earnings,
         stock_prices=stock_prices,
+        target_pcts=target_pcts,
     )
 
 
@@ -434,6 +454,26 @@ def _render_filing_detail(filing_id, departures=None):
         except Exception as e:
             print(f"[EARNINGS] Failed for {filing.get('ticker')}: {e}")
 
+    # Current price + % appreciation required for any stock-price hurdles
+    stock_price = None
+    target_pcts = {}
+    if filing.get("ticker"):
+        try:
+            from stock_price import get_stock_price_map
+            price_map = get_stock_price_map([filing["ticker"]])
+            stock_price = price_map.get(filing["ticker"].strip().upper())
+        except Exception as e:
+            print(f"[STOCK PRICE] Failed for {filing.get('ticker')}: {e}")
+    if stock_price and filing.get("has_market_targets"):
+        try:
+            from market_targets import annotate_price_targets
+            structured = json.loads(filing.get("structured_summary") or "{}")
+            tp = annotate_price_targets((structured or {}).get("market_targets"), stock_price)
+            if tp:
+                target_pcts[filing["id"]] = tp
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+
     return render_template(
         "filing.html",
         filing=filing,
@@ -443,6 +483,8 @@ def _render_filing_detail(filing_id, departures=None):
         watchlist_notes=watchlist_notes,
         market_cap=market_cap,
         earnings_info=earnings_info,
+        stock_price=stock_price,
+        target_pcts=target_pcts,
         departures=departures,
     )
 
