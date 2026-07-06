@@ -26,8 +26,15 @@ def daily_fetch_job():
     # Track this run so it shows up on the backfill page
     run_id = create_backfill_run("scheduled", yesterday, today, "GPT-4o-mini")
 
-    # Step 1: Fetch filing metadata
-    filings_metadata = fetch_filings(yesterday, today)
+    # Step 1: Fetch filing metadata. A fetch error (e.g. EDGAR 5xx that
+    # survived retries) must mark the run failed — otherwise it sits in
+    # "running" forever and the failure is invisible on the backfill page.
+    try:
+        filings_metadata = fetch_filings(yesterday, today)
+    except Exception as e:
+        print(f"  Fetch failed: {e} — marking run as failed")
+        complete_backfill_run(run_id, status="failed")
+        return
 
     if not filings_metadata:
         print("  No filings found")

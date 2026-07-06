@@ -10,8 +10,13 @@ from bs4 import BeautifulSoup
 from config import USER_AGENT, TARGET_ITEM_CODES, REQUEST_DELAY, RESULTS_PER_PAGE
 
 # How many times to retry a SEC request that comes back 429 (rate limited)
-# before giving up. Each retry uses exponential backoff with jitter.
+# or a transient 5xx before giving up. Each retry uses exponential backoff
+# with jitter. EDGAR occasionally throws one-off 500s that succeed on retry.
 SEC_MAX_RETRIES = 3
+
+# HTTP statuses worth retrying: rate limits and transient server errors.
+# Other 4xx (bad request, not found) are permanent and fail immediately.
+SEC_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 
 
 def strip_cover_page(text):
@@ -58,8 +63,8 @@ FILING_HEADERS = {
 }
 
 
-def _sec_get_with_retry(url, headers, timeout=30, max_retries=SEC_MAX_RETRIES):
-    """GET a SEC URL, retrying on 429 with exponential backoff + jitter.
+def _sec_get_with_retry(url, headers, timeout=30, max_retries=SEC_MAX_RETRIES, params=None):
+    """GET a SEC URL, retrying on 429/transient-5xx with exponential backoff + jitter.
 
     Honors the `Retry-After` response header when SEC sends one (sometimes a
     number of seconds, sometimes an HTTP-date — we only handle the seconds form
@@ -71,14 +76,14 @@ def _sec_get_with_retry(url, headers, timeout=30, max_retries=SEC_MAX_RETRIES):
     last_exc = None
     for attempt in range(max_retries + 1):
         try:
-            resp = requests.get(url, headers=headers, timeout=timeout)
+            resp = requests.get(url, headers=headers, timeout=timeout, params=params)
             resp.raise_for_status()
             return resp
         except requests.exceptions.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
             last_exc = e
-            # Only retry rate-limit errors — other 4xx/5xx are likely permanent
-            if status != 429 or attempt == max_retries:
+            # Retry rate limits and transient server errors — other 4xx are permanent
+            if status not in SEC_RETRYABLE_STATUSES or attempt == max_retries:
                 raise
             # Prefer SEC's Retry-After hint if present; otherwise exponential backoff
             retry_after = None
@@ -92,7 +97,7 @@ def _sec_get_with_retry(url, headers, timeout=30, max_retries=SEC_MAX_RETRIES):
             backoff = retry_after if retry_after is not None else (2 ** attempt)
             # Jitter spreads concurrent retries so they don't pile on at once
             sleep_for = backoff + random.uniform(0, 0.5)
-            print(f"  SEC 429 on attempt {attempt + 1}/{max_retries + 1} — sleeping {sleep_for:.1f}s before retry: {url}", flush=True)
+            print(f"  SEC {status} on attempt {attempt + 1}/{max_retries + 1} — sleeping {sleep_for:.1f}s before retry: {url}", flush=True)
             time.sleep(sleep_for)
         except requests.exceptions.RequestException as e:
             # Connection errors, timeouts, etc. — also worth one retry
@@ -121,6 +126,11 @@ def search_8k_filings(start_date, end_date, page=0):
 
     Returns:
         Dictionary with 'total' count and list of 'hits' (filing metadata)
+
+    Raises:
+        requests.exceptions.RequestException if the search fails after
+        retries. Errors must propagate — swallowing them here made failed
+        backfills look like successful runs with 0 results.
     """
     params = {
         "forms": "8-K",              # Only 8-K filings
@@ -131,18 +141,16 @@ def search_8k_filings(start_date, end_date, page=0):
     }
 
     try:
-        response = requests.get(SEARCH_URL, headers=REQUEST_HEADERS, params=params, timeout=30)
-        response.raise_for_status()
+        response = _sec_get_with_retry(SEARCH_URL, REQUEST_HEADERS, timeout=30, params=params)
         data = response.json()
-
-        total = data.get("hits", {}).get("total", {}).get("value", 0)
-        hits = data.get("hits", {}).get("hits", [])
-
-        return {"total": total, "hits": hits}
-
     except requests.exceptions.RequestException as e:
-        print(f"  Error searching EDGAR: {e}", flush=True)
-        return {"total": 0, "hits": []}
+        print(f"  Error searching EDGAR (after retries): {e}", flush=True)
+        raise
+
+    total = data.get("hits", {}).get("total", {}).get("value", 0)
+    hits = data.get("hits", {}).get("hits", [])
+
+    return {"total": total, "hits": hits}
 
 
 def parse_filing_metadata(hit):
