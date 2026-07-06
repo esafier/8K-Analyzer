@@ -152,6 +152,8 @@ DATA_GAPS: [comma-separated list of unavailable context fields, or "None"]
 - Deal structure that aligns incentives long-term (earnouts, milestone payments)
 - Exclusivity provisions that lock out competitors
 
+**Neutral mechanics — do not misread as signal:** pre-funded warrants (buyer pays full price now, exercises later for a nominal amount — an ownership-timing mechanic) and beneficial-ownership caps/blockers (4.99%/9.99% ceilings that keep holders under SEC reporting thresholds) are routine offering plumbing. Translate them into plain English for the reader and do not count them as bullish or bearish. In an offering, the real signals are: pricing/discount to market, warrant coverage ratio, insider participation, and use of proceeds.
+
 **Bearish:**
 - Related-party transactions (officers, directors, or affiliates on the other side of the deal)
 - Terms worse than market (above-market rates, tight covenants, unfavorable conversion terms)

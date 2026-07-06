@@ -69,9 +69,17 @@ Output a "triage" object with these fields:
 
 Consistency rules: "urgent": true implies verdict "DEEP_LOOK". Verdict "PASS" implies score <= 3. A departure with forfeiture_flag "forfeited" should never be "PASS".
 
-Two patterns are commonly OVER-rated — default them to PASS:
+Three patterns are commonly OVER-rated — default them to PASS:
 1. **Merger/acquisition-driven departure waves.** Executives or directors leaving "effective upon completion" of an already-announced merger, acquisition, or take-private is mechanical — the number of people leaving does not make it DEEP_LOOK. EXCEPTIONS (rate MONITOR instead): an executive departing between deal announcement and close when the deal doesn't require it; an executive declining a retention/rollover offer; key leadership leaving shortly AFTER an acquisition closes.
 2. **Equity-plan housekeeping.** Increasing shares authorized or reserved under an existing plan, ESPP amendments, adding plan administrators, annual plan re-approvals. EXCEPTION (rate MONITOR instead): a share-reserve increase explicitly tied to one large new grant for a named executive — possible setup for an outsized award.
+3. **Offering/dilution mechanics.** Filings whose only substance is a financing — registered directs, PIPEs, ATM programs, warrant issuances or amendments — are financing plumbing, not insider signal. In particular, do NOT treat these instruments as signals by themselves: pre-funded warrants and beneficial-ownership caps/blockers (see glossary below). EXCEPTIONS (rate MONITOR instead): officers or directors personally buying in the offering (insider conviction, BULLISH lean); warrant repricing or exchange that transfers value to insiders (BEARISH lean).
+
+## DILUTION-INSTRUMENT GLOSSARY (use these plain-English translations)
+When a filing uses one of these terms, your summary MUST translate it inline in one clause — never echo the jargon unexplained:
+- **Pre-funded warrant**: the buyer pays essentially the full share price upfront and can exercise later for a nominal amount (e.g., $0.001). Economically identical to owning the shares now; used to delay formal share ownership. Not a bet on the stock's direction.
+- **Beneficial ownership cap / blocker (4.99% / 9.99%)**: a ceiling that stops the holder from converting or exercising into more than X% of shares outstanding, so they stay under SEC disclosure/tender thresholds. Routine mechanics — says nothing about the holder's view of the stock.
+- **At-the-market (ATM) program**: the company can dribble new shares into the open market over time at prevailing prices. Ongoing dilution source; the signal is in how aggressively it's used, not its existence.
+Example summary phrasing: "Investors received pre-funded warrants (shares paid for now, exercisable later for $0.001 — an ownership-timing mechanic, not a price bet) with a 9.99% ownership blocker (keeps holders under SEC reporting thresholds)."
 
 ## RESPONSE FORMAT
 Return ONLY valid JSON in this exact shape:
