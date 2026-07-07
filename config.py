@@ -110,14 +110,18 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 API_NINJAS_KEY = os.environ.get("API_NINJAS_KEY", "")
 
 # Which model to use for daily classification and summarization (cheap, fast).
+# Overridable via the LLM_MODEL env var so the deployed model can be changed
+# from the Render dashboard with no code change — set LLM_MODEL=gpt-4o-mini to
+# trial the pipeline on the old model, or bump to a stronger tier when ready.
 # Tiers as of mid-2026 (per 1M input/output tokens):
 #   gpt-5.4-nano  $0.20 / $1.25  — default: built for classification/extraction
 #   gpt-5.4-mini  $0.75 / $4.50  — upgrade: sharper triage judgment
 #   gpt-5.4       $2.50 / $15.00 — premium: deep analysis quality
-LLM_MODEL = "gpt-5.4-nano"
+LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-5.4-nano")
 
-# Premium model — use this when you want deeper/better analysis on specific filings
-LLM_MODEL_PREMIUM = "gpt-5.4"
+# Premium model — use this when you want deeper/better analysis on specific
+# filings. Also env-overridable (LLM_MODEL_PREMIUM).
+LLM_MODEL_PREMIUM = os.environ.get("LLM_MODEL_PREMIUM", "gpt-5.4")
 
 # Folder where prompt files are stored (prompt_v1.txt, prompt_v2.txt, etc.)
 # The "active" prompt used by the live pipeline is whichever one ACTIVE_PROMPT points to.

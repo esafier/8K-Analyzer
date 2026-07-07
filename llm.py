@@ -120,8 +120,9 @@ def deep_analyze(filing_text, model=None):
 
 # Default model for signal analysis. Now uses Chat Completions (no web_search
 # needed) since context is pre-gathered, so any model works. This is the most
-# judgment-heavy call in the app — worth a frontier-tier model.
-LLM_MODEL_SIGNAL = "gpt-5.4"
+# judgment-heavy call in the app — worth a frontier-tier model. Env-overridable
+# (LLM_MODEL_SIGNAL) so it can be tuned from Render without a code change.
+LLM_MODEL_SIGNAL = os.environ.get("LLM_MODEL_SIGNAL", "gpt-5.4")
 
 # Model for the web search pre-step — must support web_search in Responses API.
 # Kept on gpt-4o (verified working) — change only after confirming the new
