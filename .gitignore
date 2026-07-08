@@ -15,7 +15,11 @@ venv/
 cik_tickers_cache.json
 
 # Local Claude Code / Superpowers working files
-.claude/
+# (.claude/skills and .claude/commands ARE tracked so they load in web sessions)
+.claude/*
+!.claude/skills/
+!.claude/commands/
+.claude/settings.local.json
 .superpowers/
 .worktrees/
 
