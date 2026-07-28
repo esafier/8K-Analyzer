@@ -931,30 +931,49 @@ def get_departure_history(cik, exclude_accession, months=12):
 def get_filings_missing_text(date_from=None, date_to=None):
     """Get filings that are missing raw_text (failed SEC fetch during backfill).
 
-    These are the ones that got saved with empty summary because the LLM never
-    ran on them. This returns id, cik, accession_no, filing_url so we can
+    These are the ones that got saved with a placeholder summary because the
+    LLM never ran on them. Returns id, cik, accession_no, filing_url so we can
     retry the SEC document fetch.
-    """
-    from datetime import datetime, timedelta
 
+    With no dates, returns EVERY such filing regardless of age. This is a
+    repair query, not a browse query: a rate-limit block strands rows on
+    whatever day it happened, and the old "last 7 days" default meant one
+    click could never reach the ones stranded weeks earlier — they just sat
+    there looking permanently broken.
+    """
     conn = get_connection()
     cursor = conn.cursor()
     p = _placeholder()
 
-    if not date_from or not date_to:
-        date_to = datetime.now().strftime("%Y-%m-%d")
-        date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-
-    query = f"""
+    query = """
         SELECT * FROM filings
         WHERE (raw_text IS NULL OR raw_text = '')
-          AND filed_date >= {p} AND filed_date <= {p}
-        ORDER BY filed_date DESC
     """
-    cursor.execute(query, (date_from, date_to))
+    params = ()
+    if date_from and date_to:
+        query += f"  AND filed_date >= {p} AND filed_date <= {p}\n"
+        params = (date_from, date_to)
+    query += "        ORDER BY filed_date DESC"
+
+    cursor.execute(query, params)
     results = _dict_rows(cursor.fetchall(), cursor)
     conn.close()
     return results
+
+
+def count_filings_missing_text():
+    """How many filings are stranded without raw_text (and so without a real
+    summary). Surfaced on the backfill page so a rate-limited run leaves a
+    visible number instead of an unexplained gap in the dashboard."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*) AS count FROM filings WHERE raw_text IS NULL OR raw_text = ''"
+    )
+    row = cursor.fetchone()
+    count = row[0] if _using_postgres() else row["count"]
+    conn.close()
+    return count
 
 
 def update_filing_raw_text(filing_id, raw_text, filing_document_url=None):

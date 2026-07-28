@@ -3,6 +3,22 @@ import os
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def reset_sec_throttle():
+    """Clear fetcher's process-wide SEC rate-limit gate around every test.
+
+    The gate is deliberately global — that's what makes one 429 park every
+    other SEC caller in production. In a test run that same statefulness
+    leaks: a test that drives a 429 would leave a multi-minute cooldown armed,
+    and the next test to touch fetcher would sit in it for real.
+    """
+    import fetcher
+
+    fetcher._reset_sec_throttle()
+    yield
+    fetcher._reset_sec_throttle()
+
+
 @pytest.fixture
 def tmp_sqlite_db(tmp_path, monkeypatch):
     """Point the app's SQLite DATABASE_PATH at a fresh temp file per test.

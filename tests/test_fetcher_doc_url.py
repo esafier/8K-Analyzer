@@ -182,10 +182,12 @@ def test_fetch_honors_retry_after_header_on_429():
             "0001-23-000001",
         )
 
-    # At least one sleep call must have been >= 7 (the Retry-After value)
+    # A 429 now arms a process-wide cooldown deadline and the gate sleeps
+    # until that deadline, so the observed duration is Retry-After minus the
+    # few microseconds spent arming it — never the full 7.0 exactly.
     sleep_durations = [call.args[0] for call in mock_sleep.call_args_list if call.args]
-    assert any(d >= 7 for d in sleep_durations), \
-        f"Expected a sleep >= 7s honoring Retry-After, got: {sleep_durations}"
+    assert any(d >= 6.9 for d in sleep_durations), \
+        f"Expected a sleep of ~7s honoring Retry-After, got: {sleep_durations}"
 
 
 def test_search_and_filing_headers_use_same_user_agent():
