@@ -3,6 +3,7 @@
 
 import random
 import requests
+import threading
 import time
 import re
 from datetime import datetime, timedelta
@@ -17,6 +18,83 @@ SEC_MAX_RETRIES = 3
 # HTTP statuses worth retrying: rate limits and transient server errors.
 # Other 4xx (bad request, not found) are permanent and fail immediately.
 SEC_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+
+# --- SEC rate-limit handling ---------------------------------------------
+# A 429 from EDGAR is not a "wait a moment" signal — SEC puts the offending
+# IP in a penalty box for roughly 10 minutes. The old ladder (1s, 2s, 4s)
+# gave up after ~8 seconds, so once the block landed EVERY subsequent fetch
+# burned four doomed attempts and returned empty text. A single backfill lost
+# ~70 filings that way: the 5.02 ones were saved with a placeholder summary
+# and the rest were dropped without a trace.
+#
+# Two changes fix it:
+#   1. 429 waits are sized to outlast the block, not to look polite.
+#   2. The block is recorded process-wide, so only ONE request probes SEC
+#      while it lasts. Everything else parks at the gate instead of piling
+#      on more 429s (which is what keeps the penalty box refilling).
+SEC_RATE_LIMIT_BACKOFF = (60, 180, 420)
+
+# Never park longer than this on a single wait, no matter what SEC's
+# Retry-After says — a bad header shouldn't hang a backfill for an hour.
+SEC_MAX_COOLDOWN = 900
+
+_sec_cooldown_lock = threading.Lock()
+_sec_cooldown_until = 0.0   # time.monotonic() deadline; 0 = not rate limited
+_sec_next_request_at = 0.0  # global pacer deadline, keeps us under SEC's cap
+
+
+def _reset_sec_throttle():
+    """Clear the rate-limit gate and pacer. Test helper — never called in prod."""
+    global _sec_cooldown_until, _sec_next_request_at
+    with _sec_cooldown_lock:
+        _sec_cooldown_until = 0.0
+        _sec_next_request_at = 0.0
+
+
+def _note_sec_rate_limit(seconds):
+    """Record that SEC is rate-limiting us, so other callers wait it out.
+
+    Extends (never shortens) the existing cooldown — a second 429 arriving
+    mid-block must not let everyone back in early.
+    """
+    global _sec_cooldown_until
+    deadline = time.monotonic() + seconds
+    with _sec_cooldown_lock:
+        if deadline > _sec_cooldown_until:
+            _sec_cooldown_until = deadline
+
+
+# How many times _sec_gate re-checks the cooldown after sleeping it off.
+# One round covers the normal case; the extras absorb another thread
+# extending the block mid-wait. Bounded rather than `while True` so a stubbed
+# clock (tests) can't spin forever.
+_MAX_GATE_ROUNDS = 6
+
+
+def _sec_gate():
+    """Block until SEC is willing to hear from us again.
+
+    Combines two waits: the rate-limit cooldown (set by _note_sec_rate_limit)
+    and a steady global pacer so concurrent code paths — filing docs,
+    exhibits, departure-history lookups — share one request budget rather
+    than each keeping its own private time.sleep().
+    """
+    global _sec_next_request_at
+    for _ in range(_MAX_GATE_ROUNDS):
+        with _sec_cooldown_lock:
+            wait = _sec_cooldown_until - time.monotonic()
+        if wait <= 0:
+            break
+        time.sleep(min(wait, SEC_MAX_COOLDOWN))
+
+    with _sec_cooldown_lock:
+        now = time.monotonic()
+        wait = _sec_next_request_at - now
+        # Reserve our slot before releasing the lock so parallel callers
+        # queue up behind us instead of all claiming the same instant.
+        _sec_next_request_at = max(now, _sec_next_request_at) + REQUEST_DELAY
+    if wait > 0:
+        time.sleep(wait)
 
 
 def strip_cover_page(text):
@@ -75,6 +153,10 @@ def _sec_get_with_retry(url, headers, timeout=30, max_retries=SEC_MAX_RETRIES, p
     """
     last_exc = None
     for attempt in range(max_retries + 1):
+        # Wait out any active rate-limit block and take our slot in the pacer
+        # before spending an attempt — a request fired into the penalty box
+        # is a guaranteed 429 that also extends the block.
+        _sec_gate()
         try:
             resp = requests.get(url, headers=headers, timeout=timeout, params=params)
             resp.raise_for_status()
@@ -83,9 +165,10 @@ def _sec_get_with_retry(url, headers, timeout=30, max_retries=SEC_MAX_RETRIES, p
             status = getattr(getattr(e, "response", None), "status_code", None)
             last_exc = e
             # Retry rate limits and transient server errors — other 4xx are permanent
-            if status not in SEC_RETRYABLE_STATUSES or attempt == max_retries:
+            if status not in SEC_RETRYABLE_STATUSES:
                 raise
-            # Prefer SEC's Retry-After hint if present; otherwise exponential backoff
+
+            # Prefer SEC's Retry-After hint if present; otherwise back off.
             retry_after = None
             if e.response is not None:
                 ra_header = e.response.headers.get("Retry-After")
@@ -94,8 +177,26 @@ def _sec_get_with_retry(url, headers, timeout=30, max_retries=SEC_MAX_RETRIES, p
                         retry_after = float(ra_header)
                     except ValueError:
                         retry_after = None
+
+            if status == 429:
+                # Penalty-box wait: minutes, not seconds. Publish it so every
+                # other SEC caller parks too instead of hammering the block.
+                idx = min(attempt, len(SEC_RATE_LIMIT_BACKOFF) - 1)
+                backoff = retry_after if retry_after is not None else SEC_RATE_LIMIT_BACKOFF[idx]
+                backoff = min(backoff, SEC_MAX_COOLDOWN)
+                _note_sec_rate_limit(backoff)
+                if attempt == max_retries:
+                    raise
+                print(f"  SEC rate limited (429) on attempt {attempt + 1}/{max_retries + 1} — "
+                      f"pausing all SEC traffic {backoff:.0f}s: {url}", flush=True)
+                # _sec_gate() at the top of the next iteration does the waiting.
+                continue
+
+            if attempt == max_retries:
+                raise
+            # Transient 5xx — short exponential backoff, jittered so concurrent
+            # retries don't line up on the same instant.
             backoff = retry_after if retry_after is not None else (2 ** attempt)
-            # Jitter spreads concurrent retries so they don't pile on at once
             sleep_for = backoff + random.uniform(0, 0.5)
             print(f"  SEC {status} on attempt {attempt + 1}/{max_retries + 1} — sleeping {sleep_for:.1f}s before retry: {url}", flush=True)
             time.sleep(sleep_for)
@@ -235,7 +336,7 @@ def parse_filing_metadata(hit):
                 from cik_lookup import get_ticker_by_cik
                 ticker = get_ticker_by_cik(cik)
                 if ticker:
-                    print(f"    CIK lookup found ticker: {ticker} for {company_name}")
+                    print(f"    CIK lookup found ticker: {ticker} for {company_name}", flush=True)
 
             # Clean company name — remove (TICKER) and (CIK ...) parts
             company_name = re.sub(r'\s*\([^)]*\)\s*', ' ', full_name).strip()
@@ -266,7 +367,7 @@ def parse_filing_metadata(hit):
         }
 
     except Exception as e:
-        print(f"  Error parsing filing metadata: {e}")
+        print(f"  Error parsing filing metadata: {e}", flush=True)
         return None
 
 
@@ -287,8 +388,7 @@ def fetch_filing_text(filing_url, cik, accession_no):
     """
     try:
         # First, get the index page to find the actual 8-K document.
-        # _sec_get_with_retry handles 429s with exponential backoff + Retry-After.
-        time.sleep(REQUEST_DELAY)
+        # _sec_get_with_retry paces the request and waits out any 429 block.
         response = _sec_get_with_retry(filing_url, FILING_HEADERS, timeout=30)
 
         soup = BeautifulSoup(response.text, "html.parser")
@@ -337,7 +437,6 @@ def fetch_filing_text(filing_url, cik, accession_no):
             return "", None
 
         # Now fetch the actual filing document — same retry treatment.
-        time.sleep(REQUEST_DELAY)
         doc_response = _sec_get_with_retry(doc_url, FILING_HEADERS, timeout=30)
 
         text = _html_to_text(doc_response.text)
@@ -359,7 +458,6 @@ def fetch_filing_text(filing_url, cik, accession_no):
             if total_chars >= MAX_FILING_TEXT_CHARS:
                 break
             try:
-                time.sleep(REQUEST_DELAY)
                 ex_response = _sec_get_with_retry(ex_url, FILING_HEADERS, timeout=30)
                 ex_text = _html_to_text(ex_response.text)
             except requests.exceptions.RequestException as e:
@@ -380,7 +478,7 @@ def fetch_filing_text(filing_url, cik, accession_no):
         return text, doc_url
 
     except requests.exceptions.RequestException as e:
-        print(f"  Error fetching filing text: {e}")
+        print(f"  Error fetching filing text: {e}", flush=True)
         return "", None
 
 
@@ -405,9 +503,9 @@ def fetch_filings(start_date, end_date, max_filings=None):
     page = 0
 
     while True:
-        if page > 0:
-            time.sleep(REQUEST_DELAY)
-
+        # No explicit sleep here — _sec_get_with_retry's pacer spaces every
+        # SEC request globally, so search paging shares the same budget as
+        # document fetches instead of running on its own private clock.
         result = search_8k_filings(start_date, end_date, page=page)
         total = result["total"]
         hits = result["hits"]
@@ -478,8 +576,9 @@ def _fetch_502_snippet(cik, accession_no, primary_doc):
     url = f"https://www.sec.gov/Archives/edgar/data/{cik_stripped}/{acc_nodash}/{primary_doc}"
 
     try:
-        resp = requests.get(url, headers=FILING_HEADERS, timeout=15)
-        resp.raise_for_status()
+        # Goes through the shared retry/pacer path so a departure-history
+        # sweep can't quietly blow the SEC budget the backfill is using.
+        resp = _sec_get_with_retry(url, FILING_HEADERS, timeout=15)
         soup = BeautifulSoup(resp.text, "html.parser")
         text = soup.get_text(separator=" ", strip=True)
 
@@ -521,7 +620,7 @@ def _fetch_502_snippet(cik, accession_no, primary_doc):
             section = section[:last_period + 1]
         return section
     except Exception as e:
-        print(f"  Failed to fetch 5.02 snippet from {url}: {e}")
+        print(f"  Failed to fetch 5.02 snippet from {url}: {e}", flush=True)
 
     return ""
 
@@ -553,11 +652,10 @@ def get_edgar_departure_history(cik, exclude_accession="", months=12):
     url = f"https://data.sec.gov/submissions/CIK{padded_cik}.json"
 
     try:
-        resp = requests.get(url, headers=FILING_HEADERS, timeout=15)
-        resp.raise_for_status()
+        resp = _sec_get_with_retry(url, FILING_HEADERS, timeout=15)
         data = resp.json()
     except Exception as e:
-        print(f"  EDGAR departure history lookup failed: {e}")
+        print(f"  EDGAR departure history lookup failed: {e}", flush=True)
         return None
 
     recent = data.get("filings", {}).get("recent", {})
@@ -597,8 +695,8 @@ def get_edgar_departure_history(cik, exclude_accession="", months=12):
     for m in matches:
         snippet = ""
         if m["primary_doc"]:
+            # Pacing lives in _sec_get_with_retry now — no private sleep needed.
             snippet = _fetch_502_snippet(padded_cik, m["accession_no"], m["primary_doc"])
-            time.sleep(0.2)  # Respect SEC rate limits
         results.append({
             "filing_date": m["filing_date"],
             "items": m["items"],

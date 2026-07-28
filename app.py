@@ -16,7 +16,7 @@ from database import (
     get_watchlist_filings_by_ids, mark_filings_email_sent,
     update_last_backfill, get_last_backfill, update_filing_analysis,
     update_deep_analysis, get_filings_for_resummarize,
-    get_filings_missing_text, update_filing_raw_text,
+    get_filings_missing_text, count_filings_missing_text, update_filing_raw_text,
     create_backfill_run, complete_backfill_run, get_recent_backfill_runs
 )
 from fetcher import fetch_filings, fetch_filing_text
@@ -921,9 +921,19 @@ def backfill():
         flash(f"Backfill started for {start_date} to {end_date} using {model_label}. This runs in the background — refresh the main page to see new filings as they appear.", "success")
         return redirect(url_for("index"))
 
-    # Show recent backfill runs so the user can see stats
+    # Show recent backfill runs so the user can see stats, plus how many rows
+    # a rate-limited run left stranded without text (and so without a summary).
     recent_runs = get_recent_backfill_runs(limit=10)
-    return render_template("backfill.html", recent_runs=recent_runs)
+    try:
+        missing_text_count = count_filings_missing_text()
+    except Exception as e:
+        print(f"[BACKFILL PAGE] WARN: could not count stranded filings: {e}", flush=True)
+        missing_text_count = None
+    return render_template(
+        "backfill.html",
+        recent_runs=recent_runs,
+        missing_text_count=missing_text_count,
+    )
 
 
 @app.route("/resummarize", methods=["POST"])
@@ -973,6 +983,7 @@ def run_resummarize(date_from=None, date_to=None, model=None):
 
     updated = 0
     failed = 0
+    no_text = 0
 
     for i, filing in enumerate(filings):
         company = filing.get("company", "Unknown")
@@ -980,6 +991,7 @@ def run_resummarize(date_from=None, date_to=None, model=None):
         raw_text = filing.get("raw_text", "")
 
         if not raw_text:
+            no_text += 1
             print(f"  [{i+1}/{len(filings)}] {company} — no raw_text, skipping", flush=True)
             continue
 
@@ -1078,7 +1090,21 @@ def run_resummarize(date_from=None, date_to=None, model=None):
             failed += 1
             print(f"    LLM FAILED — summary unchanged", flush=True)
 
-    print(f"--- Re-summarize complete: {updated} updated, {failed} failed ---", flush=True)
+    print(f"--- Re-summarize complete: {updated} updated, {failed} failed, "
+          f"{no_text} skipped for missing text ---", flush=True)
+
+    # Re-summarize only reads text already in the database, so filings stranded
+    # by a SEC rate-limit block are invisible to it — it reports success while
+    # never touching the very rows that look broken on the dashboard. Say so
+    # explicitly and name the button that does fix them.
+    try:
+        stranded = count_filings_missing_text()
+    except Exception:
+        stranded = None
+    if stranded:
+        print(f"    NOTE: {stranded} filing(s) in the database still have no stored SEC text "
+              f"and cannot be re-summarized. Use 'Retry Missing Summaries' — it re-fetches "
+              f"from SEC first.", flush=True)
 
 
 @app.route("/retrofit-market-targets", methods=["POST"])
@@ -1163,9 +1189,11 @@ def retry_missing_summaries():
     thread.daemon = True
     thread.start()
 
-    date_label = f"{date_from} to {date_to}" if date_from else "last 7 days"
+    date_label = f"{date_from} to {date_to}" if date_from and date_to else "all dates"
     model_label = model or "GPT-5.4-nano"
-    flash(f"Retry started for filings missing summaries ({date_label}, {model_label}). Watch the logs.", "success")
+    flash(f"Retry started for filings missing summaries ({date_label}, {model_label}). "
+          f"If SEC is rate-limiting, the job now waits out the block instead of failing — "
+          f"it can pause for several minutes at a time. Watch the logs.", "success")
     return redirect(url_for("index"))
 
 
@@ -1187,7 +1215,8 @@ def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
         print("No filings found with missing text.", flush=True)
         return
 
-    print(f"Found {len(filings)} filings missing raw_text", flush=True)
+    scope = f"{date_from} to {date_to}" if date_from and date_to else "all dates"
+    print(f"Found {len(filings)} filings missing raw_text ({scope})", flush=True)
 
     fetched = 0
     updated = 0

@@ -23,9 +23,15 @@ _cik_to_ticker = None
 
 def _download_sec_tickers():
     """Download company_tickers.json from SEC and save it locally."""
+    # Imported lazily: fetcher pulls this module in from inside a function, so
+    # a module-level import here would close the circle.
+    from fetcher import _sec_get_with_retry
+
     headers = {"User-Agent": USER_AGENT}
-    response = requests.get(SEC_TICKERS_URL, headers=headers, timeout=30)
-    response.raise_for_status()
+    # Same gate as every other SEC call — this fires mid-backfill (on the first
+    # filing whose ticker EDGAR omitted), and an ungated 6MB request is exactly
+    # the kind of thing that trips the rate limit for everyone else.
+    response = _sec_get_with_retry(SEC_TICKERS_URL, headers, timeout=30)
 
     # Save to disk so we don't re-download for 7 days
     with open(CACHE_FILE, "w") as f:

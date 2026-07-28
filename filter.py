@@ -232,7 +232,7 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
     Returns:
         List of filing dicts that passed both stages, enriched with category info
     """
-    print(f"Filtering {len(filings_metadata)} filings...")
+    print(f"Filtering {len(filings_metadata)} filings...", flush=True)
 
     # Stage 1: Item code filter
     stage1_passed = []
@@ -243,10 +243,10 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
         else:
             stage1_skipped += 1
 
-    print(f"  Stage 1 (item codes): {len(stage1_passed)} passed, {stage1_skipped} filtered out")
+    print(f"  Stage 1 (item codes): {len(stage1_passed)} passed, {stage1_skipped} filtered out", flush=True)
 
     if not fetch_text_func:
-        print("  Warning: No text fetch function provided, skipping Stage 2")
+        print("  Warning: No text fetch function provided, skipping Stage 2", flush=True)
         return stage1_passed
 
     # Stage 2: Keyword filter (requires downloading each filing)
@@ -257,9 +257,10 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
     # the database. 8.01-only keyword failures are still dropped (too broad).
     stage2_passed = []   # Keyword matches — will get LLM review
     near_misses = []     # Keyword failures on in-scope items — LLM gets a look
+    fetch_failures = 0   # In-scope filings SEC wouldn't give us text for
 
     for i, filing in enumerate(stage1_passed):
-        print(f"  Stage 2: Checking filing {i + 1}/{len(stage1_passed)} — {filing.get('company', 'Unknown')}")
+        print(f"  Stage 2: Checking filing {i + 1}/{len(stage1_passed)} — {filing.get('company', 'Unknown')}", flush=True)
 
         items = filing.get("items_list", [])
 
@@ -272,20 +273,26 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
         filing["filing_document_url"] = doc_url
 
         if not text:
-            if "5.02" in items:
-                # Keep 5.02 filings even without text (can't LLM them though).
-                # Use a human-readable placeholder so the dashboard cell isn't
-                # ambiguously blank — these rows can be filled in later by the
-                # "Retry Missing Text / Summaries" job once SEC stops throttling.
+            # A failed fetch tells us nothing about the filing — we can't run
+            # keywords or the LLM on text we never got. So the decision has to
+            # come from the item codes alone, and it must match the near-miss
+            # policy below: 5.02/1.01/1.02 are in scope, 8.01-only is not.
+            #
+            # This used to keep 5.02 only, which meant a SEC rate-limit block
+            # silently deleted every in-scope 1.01/1.02 filing it touched —
+            # no row, no count, nothing in the logs to say they ever existed.
+            # Now anything in scope is parked as a retryable row instead.
+            if any(code in items for code in ("5.02", "1.01", "1.02")):
                 filing["raw_text"] = ""
-                filing["auto_category"] = "Management Change"
+                filing["auto_category"] = "Management Change" if "5.02" in items else None
                 filing["auto_subcategory"] = None
-                filing["matched_keywords"] = "item 5.02"
+                filing["matched_keywords"] = "item " + ",".join(items) if items else "fetch-failed"
                 filing["summary"] = "SEC rate-limited — pending retry"
                 stage2_passed.append(filing)
-                print(f"    MATCH (5.02 auto-pass, no text available)")
+                fetch_failures += 1
+                print(f"    FETCH FAILED (items {','.join(items)}) — saved for retry", flush=True)
             else:
-                print(f"    Could not fetch text, skipping")
+                print(f"    Could not fetch text (8.01-only), skipping", flush=True)
             continue
 
         filing["raw_text"] = text
@@ -298,7 +305,7 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
             filing["auto_subcategory"] = result["subcategory"]
             filing["matched_keywords"] = ",".join(result["keywords"])
             stage2_passed.append(filing)
-            print(f"    KEYWORD MATCH — {result['category']} / {result['subcategory']}")
+            print(f"    KEYWORD MATCH — {result['category']} / {result['subcategory']}", flush=True)
         elif any(code in items for code in ("5.02", "1.01", "1.02")):
             # Near-miss: keywords didn't fire, but the item codes are in scope.
             # The LLM decides relevance — it catches the unusual phrasing the
@@ -311,18 +318,24 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
             filing["matched_keywords"] = "item " + ",".join(items) if items else "near-miss"
             filing["_near_miss"] = True
             near_misses.append(filing)
-            print(f"    NEAR-MISS (no keywords, items {','.join(items)} — sending to LLM)")
+            print(f"    NEAR-MISS (no keywords, items {','.join(items)} — sending to LLM)", flush=True)
         else:
-            print(f"    No keyword match (8.01-only), filtered out")
+            print(f"    No keyword match (8.01-only), filtered out", flush=True)
 
-    print(f"  Stage 2 (keywords): {len(stage2_passed)} matched, {len(near_misses)} near-misses")
+    print(f"  Stage 2 (keywords): {len(stage2_passed)} matched, {len(near_misses)} near-misses", flush=True)
+    if fetch_failures:
+        # Loud on purpose — this is the number that silently ate ~70 filings
+        # before, and it's the signal to press "Retry Missing Summaries".
+        print(f"  Stage 2 WARNING: {fetch_failures} filing(s) had no text from SEC "
+              f"(rate limited or unavailable). They are saved with a placeholder "
+              f"summary — run 'Retry Missing Summaries' to fill them in.", flush=True)
 
     # Stage 3: LLM review — classify, validate, and summarize
     # Runs on both keyword matches (for better summaries) and near-misses (to rescue good ones)
     all_for_llm = stage2_passed + near_misses
     final_passed = []
 
-    print(f"  Stage 3 (LLM): Reviewing {len(all_for_llm)} filings...")
+    print(f"  Stage 3 (LLM): Reviewing {len(all_for_llm)} filings...", flush=True)
 
     for i, filing in enumerate(all_for_llm):
         company = filing.get("company", "Unknown")
@@ -336,7 +349,7 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
             final_passed.append(filing)
             continue
 
-        print(f"  Stage 3: LLM reviewing {i + 1}/{len(all_for_llm)} — {company}")
+        print(f"  Stage 3: LLM reviewing {i + 1}/{len(all_for_llm)} — {company}", flush=True)
 
         llm_result = classify_and_summarize(text, model=model)
 
@@ -417,10 +430,10 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
                 final_passed.append(filing)
                 tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
                 cats_display = subcats[0] if subcats else "—"
-                print(f"    LLM: RELEVANT — {filing['auto_category']} / {cats_display} ({tokens} tokens)")
+                print(f"    LLM: RELEVANT — {filing['auto_category']} / {cats_display} ({tokens} tokens)", flush=True)
             else:
                 reason = llm_result.get("relevant_reason") or "(no reason given)"
-                print(f"    LLM: NOT RELEVANT — {reason}")
+                print(f"    LLM: NOT RELEVANT — {reason}", flush=True)
         else:
             # LLM failed. Keyword matches and 5.02 near-misses fall back to the
             # keyword classification + sentence-scorer summary (previous
@@ -428,13 +441,13 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
             # keywords and no LLM verdict there's zero evidence of relevance,
             # and storing them would just be noise.
             if filing.get("_near_miss") and "5.02" not in filing.get("items_list", []):
-                print(f"    LLM FAILED on keywordless near-miss — dropping")
+                print(f"    LLM FAILED on keywordless near-miss — dropping", flush=True)
                 continue
-            print(f"    LLM FAILED — falling back to keyword classification")
+            print(f"    LLM FAILED — falling back to keyword classification", flush=True)
             filing["summary"] = extract_summary(text, filing.get("matched_keywords", "").split(","))
             final_passed.append(filing)
 
-    print(f"  Stage 3 (LLM): {len(final_passed)} passed out of {len(all_for_llm)}")
-    print(f"  Final result: {len(final_passed)} filings match your criteria")
+    print(f"  Stage 3 (LLM): {len(final_passed)} passed out of {len(all_for_llm)}", flush=True)
+    print(f"  Final result: {len(final_passed)} filings match your criteria", flush=True)
 
     return final_passed
