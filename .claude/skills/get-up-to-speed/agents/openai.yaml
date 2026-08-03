@@ -1,0 +1,4 @@
+interface:
+  display_name: "Get Up to Speed"
+  short_description: "Build a concise public-company briefing"
+  default_prompt: "Use $get-up-to-speed to build a concise, source-backed briefing on a public company."
