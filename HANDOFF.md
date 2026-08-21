@@ -85,6 +85,54 @@ All committed + pushed to `origin/claude/project-improvement-review-ne5ryf`, 151
 - URL: https://eightk-analyzer.onrender.com
 - All schema changes are **additive** → rolling back to `main` loses no data.
 
+### ⚠️ NOTHING SCHEDULED EVER RUNS IN PRODUCTION (discovered 2026-08-21)
+
+`render.yaml` defines one service: `gunicorn app:app`. The Render account was
+checked directly and contains **exactly one service, the web app** — no cron job,
+no background worker. `app.py` never imports `scheduler`, and `scheduler.py`'s
+loop sits under `if __name__ == "__main__"`.
+
+**So `daily_fetch_job()` has never run automatically.** This is pre-existing and
+affects the whole pipeline, not just outcome scoring: the 7am fetch, market-cap
+prefetch, earnings prefetch and departure enrichment are all dead code in prod.
+Everything that has ever populated the database came from manual runs on
+`/backfill`. (§4 note about "the 7am job's LLM calls" assumes a job that does not
+exist.)
+
+The same applies to the new outcome scoring: the **"Backfill Outcome Prices"
+button works and is the supported path**, but nothing marks new horizons on its
+own. Pressing the button again picks up whatever has come due.
+
+To actually automate it, add a Render Cron Job. **Not done — Render cron jobs are
+billable and this is the user's call:**
+
+```yaml
+  - type: cron
+    name: 8k-analyzer-daily
+    runtime: python
+    schedule: "0 11 * * *"        # 7am ET
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scheduler.py --now
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: 8k-analyzer-db
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: API_NINJAS_KEY
+        sync: false
+```
+
+`scheduler.py --now` runs one pass and exits, which is the right shape for cron.
+
+### ⚠️ RENDER IS SERVING `main`, NOT THE TRIAL BRANCH (corrected 2026-08-21)
+
+The Render API reports `branch: main` with `autoDeploy: yes` on commit. The note
+above saying the service points at `claude/project-improvement-review-ne5ryf` is
+**stale**. Consequence: **merging anything to `main` deploys it immediately.**
+Treat a merge as a deploy.
+
 ### Rollback (if the user wants the original back)
 Render dashboard → service Settings → Build & Deploy → **Branch** → set back to
 `main` → Save (auto-redeploys the original). Or Deploys tab → any prior deploy →
