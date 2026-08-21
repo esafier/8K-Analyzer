@@ -6,6 +6,7 @@ import os
 import ssl
 import sqlite3
 import threading
+from datetime import datetime, timedelta
 from config import DATABASE_PATH
 
 # Try to import pg8000 for PostgreSQL support
@@ -282,6 +283,9 @@ def initialize_database():
 
     # Create price_history tables for cached daily closes (outcome scoring)
     _create_price_history_table(conn)
+
+    # Create signal_outcomes table for tracking whether verdicts worked
+    _create_signal_outcomes_table(conn)
 
     # Log which database we're using and how many filings are stored
     # This helps us debug data loss issues on Render
@@ -2136,6 +2140,324 @@ def upsert_price_history_meta(ticker, span_start, span_end, status="ok"):
 
     conn.commit()
     conn.close()
+
+
+# ============================================================
+# SIGNAL OUTCOMES (did the verdict actually work?)
+# ============================================================
+
+# Horizons scored, in days after the filing date. Used to build column names,
+# so it doubles as the whitelist that keeps those names out of user reach.
+OUTCOME_HORIZONS = (7, 30, 90)
+
+# Row-level status. 'ok' means priced; the rest explain an unscored row rather
+# than letting it vanish silently from the scorecard's denominator.
+OUTCOME_OK = "ok"
+OUTCOME_NO_PRICE = "no_price"       # priced source had no bars for this span
+OUTCOME_DELISTED = "delisted"       # ticker stopped resolving after the filing
+
+
+def _create_signal_outcomes_table(conn):
+    """Create signal_outcomes — one row per scored filing, recording what the
+    scanner said and what the stock then did.
+
+    The verdict fields here are a deliberate SNAPSHOT, not a join back to
+    filings. Prompts change; a scorecard that re-scores history against
+    today's prompt measures nothing. What is stored is what the scanner
+    actually claimed at the time.
+    """
+    cursor = conn.cursor()
+
+    ts = "TIMESTAMPTZ" if _using_postgres() else "TIMESTAMP"
+    marks = "".join(
+        f"""
+                close_{h}d REAL,
+                spy_{h}d REAL,
+                marked_{h}d_at {ts},"""
+        for h in OUTCOME_HORIZONS
+    )
+
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS signal_outcomes (
+            filing_id INTEGER PRIMARY KEY,
+            accession_no TEXT,
+            ticker TEXT,
+            filed_date TEXT,
+            verdict TEXT,
+            direction TEXT,
+            signal_score REAL,
+            forfeited_comp INTEGER,
+            has_successor INTEGER,
+            departure_count_24mo INTEGER,
+            has_market_targets INTEGER,
+            baseline_date TEXT,
+            baseline_close REAL,
+            baseline_spy REAL,{marks}
+            status TEXT NOT NULL DEFAULT '{OUTCOME_OK}',
+            created_at {ts} DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_signal_outcomes_ticker "
+        "ON signal_outcomes(ticker)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_signal_outcomes_filed_date "
+        "ON signal_outcomes(filed_date)"
+    )
+
+    conn.commit()
+    print("[STARTUP] Signal outcomes table ready")
+
+
+_OUTCOME_COLUMNS = (
+    ["filing_id", "accession_no", "ticker", "filed_date", "verdict", "direction",
+     "signal_score", "forfeited_comp", "has_successor", "departure_count_24mo",
+     "has_market_targets", "baseline_date", "baseline_close", "baseline_spy"]
+    + [c for h in OUTCOME_HORIZONS
+       for c in (f"close_{h}d", f"spy_{h}d", f"marked_{h}d_at")]
+    + ["status", "created_at"]
+)
+
+
+def get_filings_needing_outcome_baseline(limit=500, verdicts=("DEEP_LOOK", "MONITOR")):
+    """Return filings that should be scored but have no outcome row yet.
+
+    Only filings with a ticker and a real verdict qualify — PASS rows are the
+    noise the scanner is meant to discard, and scoring them would triple the
+    price fetches for no read on signal quality.
+
+    Returns a list of real dicts (see CLAUDE.md — sqlite3.Row has no .get()).
+    """
+    if not verdicts:
+        return []
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    verdict_placeholders = ", ".join([p] * len(verdicts))
+    cursor.execute(f"""
+        SELECT f.id, f.accession_no, f.ticker, f.filed_date, f.triage_verdict,
+               f.signal_direction, f.signal_score, f.forfeited_comp,
+               f.has_successor, f.departure_count_24mo, f.has_market_targets
+        FROM filings f
+        LEFT JOIN signal_outcomes o ON o.filing_id = f.id
+        WHERE o.filing_id IS NULL
+          AND f.ticker IS NOT NULL AND f.ticker <> ''
+          AND f.filed_date IS NOT NULL AND f.filed_date <> ''
+          AND f.triage_verdict IN ({verdict_placeholders})
+        ORDER BY f.filed_date DESC
+        LIMIT {int(limit)}
+    """, tuple(verdicts))
+    rows = cursor.fetchall()
+    conn.close()
+
+    columns = ["id", "accession_no", "ticker", "filed_date", "triage_verdict",
+               "signal_direction", "signal_score", "forfeited_comp",
+               "has_successor", "departure_count_24mo", "has_market_targets"]
+    return [dict(zip(columns, [row[i] for i in range(len(columns))])) for row in rows]
+
+
+def upsert_signal_outcome(filing, baseline_date=None, baseline_close=None,
+                          baseline_spy=None, status=OUTCOME_OK):
+    """Create or refresh the baseline row for a filing.
+
+    `filing` is a dict from get_filings_needing_outcome_baseline (or any dict
+    carrying the same keys). Horizon marks are left untouched — this only ever
+    writes the snapshot and the baseline.
+    """
+    if not filing or not filing.get("id"):
+        return
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    values = (
+        filing.get("id"),
+        filing.get("accession_no"),
+        (filing.get("ticker") or "").upper() or None,
+        filing.get("filed_date"),
+        filing.get("triage_verdict"),
+        filing.get("signal_direction"),
+        filing.get("signal_score"),
+        filing.get("forfeited_comp"),
+        filing.get("has_successor"),
+        filing.get("departure_count_24mo"),
+        filing.get("has_market_targets"),
+        baseline_date,
+        baseline_close,
+        baseline_spy,
+        status,
+    )
+
+    if _using_postgres():
+        cursor.execute(f"""
+            INSERT INTO signal_outcomes
+            (filing_id, accession_no, ticker, filed_date, verdict, direction,
+             signal_score, forfeited_comp, has_successor, departure_count_24mo,
+             has_market_targets, baseline_date, baseline_close, baseline_spy, status)
+            VALUES ({', '.join([p] * 15)})
+            ON CONFLICT (filing_id) DO UPDATE
+            SET accession_no = EXCLUDED.accession_no,
+                ticker = EXCLUDED.ticker,
+                filed_date = EXCLUDED.filed_date,
+                verdict = EXCLUDED.verdict,
+                direction = EXCLUDED.direction,
+                signal_score = EXCLUDED.signal_score,
+                forfeited_comp = EXCLUDED.forfeited_comp,
+                has_successor = EXCLUDED.has_successor,
+                departure_count_24mo = EXCLUDED.departure_count_24mo,
+                has_market_targets = EXCLUDED.has_market_targets,
+                baseline_date = EXCLUDED.baseline_date,
+                baseline_close = EXCLUDED.baseline_close,
+                baseline_spy = EXCLUDED.baseline_spy,
+                status = EXCLUDED.status
+        """, values)
+    else:
+        # INSERT OR REPLACE would blank the horizon marks this statement omits,
+        # silently erasing scoring work. Update the snapshot in place instead.
+        cursor.execute(
+            f"SELECT 1 FROM signal_outcomes WHERE filing_id = {p}",
+            (filing.get("id"),),
+        )
+        if cursor.fetchone():
+            cursor.execute(f"""
+                UPDATE signal_outcomes
+                SET accession_no = {p}, ticker = {p}, filed_date = {p},
+                    verdict = {p}, direction = {p}, signal_score = {p},
+                    forfeited_comp = {p}, has_successor = {p},
+                    departure_count_24mo = {p}, has_market_targets = {p},
+                    baseline_date = {p}, baseline_close = {p},
+                    baseline_spy = {p}, status = {p}
+                WHERE filing_id = {p}
+            """, values[1:] + (values[0],))
+        else:
+            cursor.execute(f"""
+                INSERT INTO signal_outcomes
+                (filing_id, accession_no, ticker, filed_date, verdict, direction,
+                 signal_score, forfeited_comp, has_successor, departure_count_24mo,
+                 has_market_targets, baseline_date, baseline_close, baseline_spy, status)
+                VALUES ({', '.join([p] * 15)})
+            """, values)
+
+    conn.commit()
+    conn.close()
+
+
+def get_outcomes_needing_mark(horizon_days, as_of_date, limit=500):
+    """Return priced outcome rows whose `horizon_days` mark is due and unset.
+
+    Due means the horizon has actually elapsed by `as_of_date`. The cutoff is
+    computed here in Python rather than in SQL: dates are stored as TEXT and
+    date arithmetic differs between SQLite and PostgreSQL, so doing it in the
+    query would behave differently in prod than in tests.
+
+    Horizons are anchored on the FILING date, not the baseline trading day —
+    the filing is the event being scored, and anchoring on the baseline would
+    stretch the window whenever a filing landed on a long weekend.
+    """
+    if horizon_days not in OUTCOME_HORIZONS:
+        raise ValueError(f"unsupported horizon: {horizon_days}")
+
+    as_of = datetime.strptime(str(as_of_date)[:10], "%Y-%m-%d").date()
+    cutoff = (as_of - timedelta(days=horizon_days)).isoformat()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    # horizon_days is whitelisted above, so interpolating it here is safe.
+    cursor.execute(f"""
+        SELECT filing_id, ticker, filed_date, baseline_date
+        FROM signal_outcomes
+        WHERE marked_{horizon_days}d_at IS NULL
+          AND baseline_close IS NOT NULL
+          AND baseline_date IS NOT NULL
+          AND status = {p}
+          AND filed_date <= {p}
+        ORDER BY filed_date
+        LIMIT {int(limit)}
+    """, (OUTCOME_OK, cutoff))
+    rows = cursor.fetchall()
+    conn.close()
+
+    columns = ["filing_id", "ticker", "filed_date", "baseline_date"]
+    return [dict(zip(columns, [row[i] for i in range(len(columns))])) for row in rows]
+
+
+def set_outcome_mark(filing_id, horizon_days, close, spy):
+    """Record the stock and SPY closes for one horizon on one filing.
+
+    Only ever fills an empty mark. A horizon that already has a value is
+    history — re-marking it later against a different price would quietly
+    rewrite the scorecard.
+    """
+    if horizon_days not in OUTCOME_HORIZONS:
+        raise ValueError(f"unsupported horizon: {horizon_days}")
+    if close is None or spy is None:
+        return False
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"""
+        UPDATE signal_outcomes
+        SET close_{horizon_days}d = {p},
+            spy_{horizon_days}d = {p},
+            marked_{horizon_days}d_at = CURRENT_TIMESTAMP
+        WHERE filing_id = {p} AND marked_{horizon_days}d_at IS NULL
+    """, (close, spy, filing_id))
+    updated = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return updated > 0
+
+
+def set_outcome_status(filing_id, status):
+    """Flag a row as unpriceable (no data, or delisted) so it stops being
+    retried and can be reported honestly instead of disappearing."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(
+        f"UPDATE signal_outcomes SET status = {p} WHERE filing_id = {p}",
+        (status, filing_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_signal_outcomes(status=None):
+    """Return outcome rows as real dicts, for scoring and display."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    columns = ", ".join(_OUTCOME_COLUMNS)
+    if status:
+        cursor.execute(
+            f"SELECT {columns} FROM signal_outcomes WHERE status = {p} ORDER BY filed_date DESC",
+            (status,),
+        )
+    else:
+        cursor.execute(
+            f"SELECT {columns} FROM signal_outcomes ORDER BY filed_date DESC"
+        )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip(_OUTCOME_COLUMNS, [row[i] for i in range(len(_OUTCOME_COLUMNS))]))
+            for row in rows]
+
+
+def count_signal_outcomes():
+    """Return {'total': n, 'priced': n, 'unpriced': n} for progress display."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute("SELECT COUNT(*) FROM signal_outcomes")
+    total = cursor.fetchone()[0]
+    cursor.execute(f"SELECT COUNT(*) FROM signal_outcomes WHERE status = {p}", (OUTCOME_OK,))
+    priced = cursor.fetchone()[0]
+    conn.close()
+    return {"total": total, "priced": priced, "unpriced": total - priced}
 
 
 # When this file is run directly, create the database

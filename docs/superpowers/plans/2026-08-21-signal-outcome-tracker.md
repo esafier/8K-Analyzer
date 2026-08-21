@@ -60,15 +60,15 @@ the morning it ships, instead of in November. Build for backfill first.
 
 ## Task 1: Schema — `signal_outcomes` table
 
-- [ ] New table keyed on `filing_id`, holding: ticker, accession_no, the verdict
+- [x] New table keyed on `filing_id`, holding: ticker, accession_no, the verdict
       snapshot at ingest (verdict / direction / signal_score), baseline date +
       baseline stock close + baseline SPY close, and per-horizon marks for 7d /
       30d / 90d (stock close, SPY close, marked_at).
-- [ ] Store the **verdict snapshot**, not a live join to `filings`. Prompts change;
+- [x] Store the **verdict snapshot**, not a live join to `filings`. Prompts change;
       a scorecard that silently re-scores history against today's prompt is worthless.
-- [ ] Follow the existing pattern: `_create_signal_outcomes_table(conn)` called from
+- [x] Follow the existing pattern: `_create_signal_outcomes_table(conn)` called from
       `initialize_database()`, additive only, safe under concurrent gunicorn workers.
-- [ ] CLAUDE.md rule applies: return **real dicts**, not `sqlite3.Row`, from any query
+- [x] CLAUDE.md rule applies: return **real dicts**, not `sqlite3.Row`, from any query
       whose results reach `.get()`.
 
 ## Task 2: Baseline capture
@@ -119,6 +119,10 @@ the morning it ships, instead of in November. Build for backfill first.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — Task 1 COMPLETE: `signal_outcomes` table + storage layer, 16 tests,
+  suite 210 green. Two design points worth keeping: horizons anchor on the FILING
+  date (the event), and the cutoff is computed in Python because TEXT-date
+  arithmetic differs between SQLite and Postgres. Starting Task 2.
 - 2026-08-21 — Task 0 COMPLETE: `price_history.py` + `price_history`/`price_history_meta`
   cache tables shipped, 18 tests, verified live against real bars (GEVO/SPY/delisted).
   Suite 194 green. Starting Task 1.
