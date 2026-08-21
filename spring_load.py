@@ -169,16 +169,22 @@ def price_path(ticker, grant_date):
 
     Answers one question only — was this grant timed against news? — and answers
     it honestly, including saying so when there is no usable price data.
+
+    Every leg is anchored to a bar date the stock ACTUALLY traded on, and the
+    benchmark is priced on those same dates. Comparing a stock window to a
+    differently-dated SPY window would let an illiquid ticker score points purely
+    for not having traded on the target date.
     """
     grant = _to_date(grant_date)
     result = {
         "grant_close": None, "run_in": None, "pop": None, "run_out": None,
         "run_out_vs_spy": None, "is_monthly_low": None, "v_shape": False,
-        "has_data": False,
+        "has_data": False, "windows_mature": False,
     }
     if not ticker or not grant:
         return result
 
+    # Padding exists to LOCATE a bar near each boundary, never to move it.
     window_start = grant - timedelta(days=RUN_IN_DAYS + 10)
     window_end = grant + timedelta(days=RUN_OUT_DAYS + 10)
     closes = get_daily_closes(ticker, window_start, window_end)
@@ -193,28 +199,46 @@ def price_path(ticker, grant_date):
     grant_bar = on_or_after[0]
     grant_close = closes[grant_bar]
     result["grant_close"] = grant_close
+    result["grant_bar"] = grant_bar
     result["has_data"] = True
 
-    before = sorted(d for d in closes if d < grant_bar)
-    if before:
-        result["run_in"] = _pct(closes[before[0]], grant_close)
+    # Run-in: the last bar at or before grant - RUN_IN_DAYS, not the earliest bar
+    # fetched. Using the earliest would stretch an advertised 30-day run-in to
+    # roughly 40, and let a decline that lives entirely in the padding trip the
+    # V-shape signal and add two points.
+    run_in_target = (grant - timedelta(days=RUN_IN_DAYS)).isoformat()
+    at_or_before = [d for d in closes if d <= run_in_target]
+    run_in_bar = max(at_or_before) if at_or_before else None
+    if run_in_bar:
+        result["run_in"] = _pct(closes[run_in_bar], grant_close)
+        result["run_in_bar"] = run_in_bar
 
-    def _close_near(target_date):
+    def _bar_at_or_after(target_date):
         later = [d for d in on_or_after if d >= target_date.isoformat()]
-        return closes[later[0]] if later else None
+        return later[0] if later else None
 
-    pop_close = _close_near(grant + timedelta(days=POP_WINDOW_DAYS))
-    result["pop"] = _pct(grant_close, pop_close)
+    pop_bar = _bar_at_or_after(grant + timedelta(days=POP_WINDOW_DAYS))
+    if pop_bar:
+        result["pop"] = _pct(grant_close, closes[pop_bar])
 
-    out_close = _close_near(grant + timedelta(days=RUN_OUT_DAYS))
-    result["run_out"] = _pct(grant_close, out_close)
+    out_bar = _bar_at_or_after(grant + timedelta(days=RUN_OUT_DAYS))
+    if out_bar:
+        result["run_out"] = _pct(grant_close, closes[out_bar])
+        result["run_out_bar"] = out_bar
 
-    # Benchmark the medium window so a market-wide rally is not read as a pop.
-    _, spy_at_grant = get_close_on_or_after(BENCHMARK_TICKER, grant_bar)
-    _, spy_out = get_close_on_or_after(BENCHMARK_TICKER, grant + timedelta(days=RUN_OUT_DAYS))
-    spy_move = _pct(spy_at_grant, spy_out)
-    if result["run_out"] is not None and spy_move is not None:
-        result["run_out_vs_spy"] = result["run_out"] - spy_move
+    # A window that has not elapsed yet is pending, not clean. Recorded so a
+    # filing screened the day it was filed can be recomputed once the tape fills in.
+    result["windows_mature"] = bool(pop_bar and out_bar)
+
+    # Benchmark on the stock's OWN bar dates, both legs, or the excess return
+    # measures the calendar rather than the grant.
+    if out_bar:
+        spy_start_bar, spy_at_grant = get_close_on_or_after(BENCHMARK_TICKER, grant_bar)
+        spy_end_bar, spy_out = get_close_on_or_after(BENCHMARK_TICKER, out_bar)
+        if spy_start_bar == grant_bar and spy_end_bar == out_bar:
+            spy_move = _pct(spy_at_grant, spy_out)
+            if result["run_out"] is not None and spy_move is not None:
+                result["run_out_vs_spy"] = result["run_out"] - spy_move
 
     # Was the strike set on the cheapest close of its calendar month?
     month = grant_bar[:7]
@@ -285,6 +309,9 @@ def score_grant(grant, path, prior_grant_dates=None, service_asymmetry_peers=Non
         if path.get("v_shape"):
             score += 2
             signals.append(("🔴", "V-shape: fell into the grant, rose out of it"))
+        if not path.get("windows_mature"):
+            signals.append(("⚪", "Price windows have not fully elapsed yet — "
+                                  "re-check once the tape fills in"))
         pop = path.get("pop")
         if pop is not None and pop >= MATERIAL_MOVE:
             score += 2
@@ -295,8 +322,11 @@ def score_grant(grant, path, prior_grant_dates=None, service_asymmetry_peers=Non
         if excess is not None and excess >= MATERIAL_MOVE:
             score += 1
             signals.append(("🟠", f"+{excess:.0%} vs SPY over {RUN_OUT_DAYS} days"))
-    else:
+    elif grant.get("grant_date"):
         signals.append(("⚪", "No price data — the entire price path is untested"))
+    else:
+        signals.append(("⚪", "No grant date disclosed — the price path cannot be "
+                              "anchored, so no timing evidence was computed"))
 
     # Structure. Options set a strike, so their timing is worth more.
     if (grant.get("instrument") or "").upper() in ("OPTION", "SAR"):
@@ -382,10 +412,15 @@ def analyze(extraction, ticker, filed_date, prior_grant_dates=None):
         grant = dict(grant)
         grant.setdefault("filing_mentions_catalyst",
                          extraction.get("filing_mentions_catalyst"))
-        grant_date = grant.get("grant_date") or filed_date
+        # NEVER substitute the filing date. The extraction contract returns null
+        # when the filing does not state a grant date, and an 8-K can announce an
+        # earlier award without disclosing when it was made. Scoring the filing
+        # date's monthly low, pop and V-shape would manufacture price-timing
+        # evidence the filing never established.
+        grant_date = grant.get("grant_date")
 
         try:
-            path = price_path(ticker, grant_date)
+            path = price_path(ticker, grant_date) if grant_date else {"has_data": False}
         except Exception as e:
             print(f"[SPRING LOAD] price path failed for {ticker}: {e}")
             path = {"has_data": False}
@@ -423,8 +458,16 @@ def analyze(extraction, ticker, filed_date, prior_grant_dates=None):
         })
 
     max_score = max([r["score"] for r in results], default=0)
+    # Immature if ANY grant's windows are still open — that is what decides
+    # whether a cached analysis is worth recomputing later.
+    all_mature = all(
+        (r["price_path"] or {}).get("windows_mature") or not (r["price_path"] or {}).get("has_data")
+        for r in results
+    ) if results else True
+
     return {
         "has_grant": True,
+        "windows_mature": all_mature,
         "grants": results,
         "max_score": max_score,
         "band": _band(max_score),
@@ -464,9 +507,35 @@ def screen_filing(filing, model=None, force=False):
         cached = get_spring_load_analysis(accession)
         if cached:
             try:
-                return json.loads(cached["analysis_json"])
+                analysis = json.loads(cached["analysis_json"])
             except (ValueError, TypeError):
-                pass  # unreadable cache entry — fall through and re-screen
+                analysis = None
+
+            if analysis is not None:
+                # A filing screened before its +10/+30 windows elapsed has empty
+                # price evidence. Recompute the deterministic half from the stored
+                # facts — free, no LLM — rather than leaving it understated until
+                # someone happens to force a re-extraction.
+                if not cached.get("windows_mature") and cached.get("extraction_json"):
+                    try:
+                        extraction = json.loads(cached["extraction_json"])
+                    except (ValueError, TypeError):
+                        extraction = None
+                    if extraction:
+                        refreshed = analyze(
+                            extraction,
+                            ticker=filing.get("ticker"),
+                            filed_date=filing.get("filed_date"),
+                            prior_grant_dates=get_prior_grant_dates(
+                                filing.get("cik"), exclude_accession=accession),
+                        )
+                        upsert_spring_load_analysis(
+                            accession, filing.get("cik"), filing.get("ticker"),
+                            filing.get("filed_date"), refreshed,
+                            model=cached.get("model"), extraction=extraction,
+                        )
+                        return refreshed
+                return analysis
 
     text = filing.get("raw_text") or ""
     if not text.strip():
@@ -488,7 +557,7 @@ def screen_filing(filing, model=None, force=False):
 
     upsert_spring_load_analysis(
         accession, filing.get("cik"), filing.get("ticker"),
-        filing.get("filed_date"), analysis, model=model,
+        filing.get("filed_date"), analysis, model=model, extraction=extraction,
     )
     return analysis
 

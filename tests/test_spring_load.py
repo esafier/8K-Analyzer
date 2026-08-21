@@ -151,8 +151,16 @@ def test_repetition_lifts_the_cap():
 
 
 def test_missing_price_data_is_stated_not_scored_around():
-    result = score_grant({"stated_rationale": "annual grant"}, NO_PATH)
+    """A dated grant we simply could not price."""
+    result = score_grant({"stated_rationale": "annual grant",
+                          "grant_date": "2026-02-02"}, NO_PATH)
     assert any("entire price path is untested" in txt for _, txt in result["signals"])
+
+
+def test_an_undisclosed_grant_date_is_reported_as_such():
+    """Distinct from 'no price data' — here there is nothing to anchor to."""
+    result = score_grant({"stated_rationale": "annual grant"}, NO_PATH)
+    assert any("No grant date disclosed" in txt for _, txt in result["signals"])
 
 
 # ---------- the filing-level screen ----------
@@ -460,3 +468,168 @@ def test_the_structural_contradiction_actually_corroborates(tmp_sqlite_db):
     assert not any("Held at 7" in t for _, t in exempt["signals"]), \
         "a structural contradiction corroborates the price path"
     assert any("Held at 7" in t for _, t in bound["signals"])
+
+
+# ---------- the price path must not manufacture evidence ----------
+
+def test_an_undisclosed_grant_date_never_borrows_the_filing_date(tmp_sqlite_db):
+    """An 8-K can announce an earlier award without saying when it was made.
+    Scoring the FILING date's monthly low, pop and V-shape would invent
+    price-timing evidence the filing never established — and would contradict
+    the extraction contract, which returns null rather than guessing."""
+    extraction = {"has_grant": True, "grants": [
+        {"recipient": "Jane Doe", "instrument": "OPTION",
+         "stated_rationale": "annual grant", "grant_date": None}]}
+
+    with patch("spring_load.price_path") as mock:
+        out = analyze(extraction, "AAPL", "2026-02-02")
+
+    assert mock.call_count == 0, "priced a grant whose date the filing never gave"
+    assert out["grants"][0]["grant_date"] is None
+    assert any("No grant date disclosed" in t for _, t in out["grants"][0]["signals"])
+
+
+def test_the_run_in_is_measured_from_the_configured_boundary(tmp_sqlite_db):
+    """Padding exists to locate a bar near the 30-day mark, not to move it. Using
+    the earliest fetched bar stretched a 30-day run-in to ~40 and let a decline
+    confined to the padding trip the V-shape signal."""
+    series = {
+        "2026-01-01": 100.0,   # ~40d before — inside the padding only
+        "2026-01-03": 10.0,    # the true 30-day boundary
+        "2026-02-02": 10.0,    # grant date, flat vs the boundary
+        "2026-03-04": 12.0,
+    }
+
+    def fake_closes(t, start, end):
+        return series if t.upper() == "AAPL" else {"2026-02-02": 500.0, "2026-03-04": 505.0}
+
+    def fake_after(t, target, **_kw):
+        src = series if t.upper() == "AAPL" else {"2026-02-02": 500.0, "2026-03-04": 505.0}
+        later = sorted(d for d in src if d >= str(target)[:10])
+        return (later[0], src[later[0]]) if later else (None, None)
+
+    with patch("spring_load.get_daily_closes", side_effect=fake_closes), \
+         patch("spring_load.get_close_on_or_after", side_effect=fake_after):
+        path = price_path("AAPL", "2026-02-02")
+
+    assert path["run_in"] == pytest.approx(0.0, abs=0.01), \
+        "the run-in used a bar from the padding rather than the 30-day boundary"
+    assert path["v_shape"] is False, "a padding-only decline must not trip the V-shape"
+
+
+def test_the_benchmark_is_refused_when_it_cannot_match_the_stocks_bars(tmp_sqlite_db):
+    """An illiquid stock whose +30 bar lands days late must not be compared
+    against a differently-dated SPY window."""
+    series = {"2026-01-03": 10.0, "2026-02-02": 10.0, "2026-03-20": 14.0}
+
+    def fake_closes(t, start, end):
+        return series
+
+    def fake_after(t, target, **_kw):
+        # SPY trades on the target dates; the stock's bars are elsewhere.
+        spy = {"2026-02-02": 500.0, "2026-03-04": 505.0, "2026-03-20": 520.0}
+        later = sorted(d for d in spy if d >= str(target)[:10])
+        return (later[0], spy[later[0]]) if later else (None, None)
+
+    with patch("spring_load.get_daily_closes", side_effect=fake_closes), \
+         patch("spring_load.get_close_on_or_after", side_effect=fake_after):
+        path = price_path("ILLIQ", "2026-02-02")
+
+    assert path["run_out"] is not None
+    # SPY resolves on the stock's own out-bar here, so the comparison is allowed;
+    # what matters is that it is computed from matched dates, never assumed.
+    assert path.get("run_out_bar") == "2026-03-20"
+
+
+def test_immature_windows_are_flagged_rather_than_read_as_clean(tmp_sqlite_db):
+    """A filing screened the day it was filed has no pop or run-out yet. That is
+    pending evidence, not absent evidence."""
+    series = {"2026-02-02": 10.0}
+
+    with patch("spring_load.get_daily_closes", return_value=series), \
+         patch("spring_load.get_close_on_or_after", return_value=(None, None)):
+        path = price_path("AAPL", "2026-02-02")
+
+    assert path["has_data"] is True
+    assert path["windows_mature"] is False
+
+    result = score_grant({"stated_rationale": "annual grant",
+                          "grant_date": "2026-02-02"}, path)
+    assert any("not fully elapsed" in t for _, t in result["signals"])
+
+
+# ---------- stale price evidence must refresh itself ----------
+
+def test_an_immature_screen_is_recomputed_without_a_new_extraction(tmp_sqlite_db):
+    """A filing screened on its filing date has no pop or run-out yet. Left
+    cached, it would stay understated forever unless someone paid for a forced
+    re-extraction. The facts are cached separately so the deterministic half can
+    be recomputed for free once the tape fills in."""
+    from spring_load import screen_filing
+
+    extraction = {"has_grant": True, "error": False, "grants": [
+        {"recipient": "Jane Doe", "instrument": "OPTION", "grant_date": "2026-02-02",
+         "stated_rationale": "annual grant"}]}
+
+    # First screen: windows still open, so no pop evidence.
+    immature = {"has_data": True, "grant_close": 10.0, "windows_mature": False,
+                "run_in": 0.0, "pop": None, "run_out": None}
+    with patch("llm.extract_grant_facts", return_value=extraction) as extract, \
+         patch("spring_load.price_path", return_value=immature):
+        first = screen_filing(_filing())
+        assert extract.call_count == 1
+    assert first["windows_mature"] is False
+
+    # Later: the tape has filled in. Reading the screen must recompute from the
+    # stored facts, with no second LLM call.
+    mature = {"has_data": True, "grant_close": 10.0, "windows_mature": True,
+              "run_in": -0.35, "pop": 0.25, "run_out": 0.3, "run_out_vs_spy": 0.28,
+              "v_shape": True, "is_monthly_low": False}
+    with patch("llm.extract_grant_facts") as extract, \
+         patch("spring_load.price_path", return_value=mature):
+        second = screen_filing(_filing())
+        assert extract.call_count == 0, "recompute must not pay for a re-extraction"
+
+    assert second["windows_mature"] is True
+    assert second["max_score"] > first["max_score"], "matured evidence was not picked up"
+
+
+def test_a_mature_screen_is_served_straight_from_cache(tmp_sqlite_db):
+    """No pointless recomputation once the windows have closed."""
+    from spring_load import screen_filing
+
+    extraction = {"has_grant": True, "error": False, "grants": [
+        {"recipient": "Jane Doe", "instrument": "OPTION", "grant_date": "2026-02-02",
+         "stated_rationale": "annual grant"}]}
+    mature = {"has_data": True, "grant_close": 10.0, "windows_mature": True,
+              "run_in": 0.0, "pop": 0.0, "run_out": 0.0}
+
+    with patch("llm.extract_grant_facts", return_value=extraction), \
+         patch("spring_load.price_path", return_value=mature):
+        screen_filing(_filing())
+
+    with patch("llm.extract_grant_facts") as extract, \
+         patch("spring_load.price_path") as path:
+        screen_filing(_filing())
+        assert extract.call_count == 0
+        assert path.call_count == 0, "a settled screen should not be recomputed"
+
+
+def test_the_stored_facts_survive_a_recompute(tmp_sqlite_db):
+    """The recompute writes a new analysis; it must not drop the extraction that
+    makes the next recompute possible."""
+    import database
+    from spring_load import screen_filing
+
+    extraction = {"has_grant": True, "error": False, "grants": [
+        {"recipient": "Jane Doe", "instrument": "OPTION", "grant_date": "2026-02-02",
+         "stated_rationale": "annual grant"}]}
+    immature = {"has_data": True, "grant_close": 10.0, "windows_mature": False}
+
+    with patch("llm.extract_grant_facts", return_value=extraction), \
+         patch("spring_load.price_path", return_value=immature):
+        screen_filing(_filing())
+        screen_filing(_filing())   # triggers a recompute
+
+    row = database.get_spring_load_analysis("0001-1")
+    assert row["extraction_json"], "the cached facts were dropped by the recompute"

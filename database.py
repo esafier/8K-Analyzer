@@ -2570,6 +2570,8 @@ def _create_spring_load_table(conn):
             band TEXT,
             has_grant INTEGER NOT NULL DEFAULT 0,
             analysis_json TEXT NOT NULL,
+            extraction_json TEXT,
+            windows_mature INTEGER NOT NULL DEFAULT 0,
             model TEXT,
             analyzed_at {ts} DEFAULT CURRENT_TIMESTAMP
         )
@@ -2583,7 +2585,8 @@ def _create_spring_load_table(conn):
 
 
 _SPRING_LOAD_COLUMNS = ["accession_number", "cik", "ticker", "filed_date",
-                        "max_score", "band", "has_grant", "analysis_json", "model"]
+                        "max_score", "band", "has_grant", "analysis_json",
+                        "extraction_json", "windows_mature", "model"]
 
 
 def get_spring_load_analysis(accession_number):
@@ -2605,40 +2608,60 @@ def get_spring_load_analysis(accession_number):
 
 
 def upsert_spring_load_analysis(accession_number, cik, ticker, filed_date,
-                                analysis, model=None):
-    """Store or refresh a screen. `analysis` is the dict from spring_load.analyze."""
+                                analysis, model=None, extraction=None):
+    """Store or refresh a screen.
+
+    `extraction` is the LLM's raw fact JSON, stored alongside the scored
+    analysis. That separation is what lets the deterministic half be recomputed
+    for free once a recent filing's price windows have elapsed — otherwise a
+    filing screened on its filing date would keep its empty price evidence
+    forever, and only a costly re-extraction would fix it.
+    """
     if not accession_number:
         return
     import json as _json
     payload = _json.dumps(analysis)
+    extraction_payload = _json.dumps(extraction) if extraction is not None else None
     max_score = int(analysis.get("max_score") or 0)
     band = analysis.get("band") or ""
     has_grant = 1 if analysis.get("has_grant") else 0
+    mature = 1 if analysis.get("windows_mature", True) else 0
     conn = get_connection()
     cursor = conn.cursor()
     p = _placeholder()
 
     values = (accession_number, cik, ticker, filed_date, max_score, band,
-              has_grant, payload, model)
+              has_grant, payload, extraction_payload, mature, model)
     if _using_postgres():
         cursor.execute(f"""
             INSERT INTO spring_load_analyses
             (accession_number, cik, ticker, filed_date, max_score, band,
-             has_grant, analysis_json, model, analyzed_at)
-            VALUES ({', '.join([p] * 9)}, CURRENT_TIMESTAMP)
+             has_grant, analysis_json, extraction_json, windows_mature, model, analyzed_at)
+            VALUES ({', '.join([p] * 11)}, CURRENT_TIMESTAMP)
             ON CONFLICT (accession_number) DO UPDATE
             SET cik = EXCLUDED.cik, ticker = EXCLUDED.ticker,
                 filed_date = EXCLUDED.filed_date, max_score = EXCLUDED.max_score,
                 band = EXCLUDED.band, has_grant = EXCLUDED.has_grant,
-                analysis_json = EXCLUDED.analysis_json, model = EXCLUDED.model,
-                analyzed_at = CURRENT_TIMESTAMP
+                analysis_json = EXCLUDED.analysis_json,
+                extraction_json = COALESCE(EXCLUDED.extraction_json,
+                                           spring_load_analyses.extraction_json),
+                windows_mature = EXCLUDED.windows_mature,
+                model = EXCLUDED.model, analyzed_at = CURRENT_TIMESTAMP
         """, values)
     else:
+        # Preserve a previously stored extraction when this write does not carry one.
+        if extraction_payload is None:
+            cursor.execute(
+                f"SELECT extraction_json FROM spring_load_analyses WHERE accession_number = {p}",
+                (accession_number,))
+            prior = cursor.fetchone()
+            if prior and prior[0]:
+                values = values[:8] + (prior[0],) + values[9:]
         cursor.execute(f"""
             INSERT OR REPLACE INTO spring_load_analyses
             (accession_number, cik, ticker, filed_date, max_score, band,
-             has_grant, analysis_json, model, analyzed_at)
-            VALUES ({', '.join([p] * 9)}, CURRENT_TIMESTAMP)
+             has_grant, analysis_json, extraction_json, windows_mature, model, analyzed_at)
+            VALUES ({', '.join([p] * 11)}, CURRENT_TIMESTAMP)
         """, values)
 
     conn.commit()
