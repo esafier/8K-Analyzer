@@ -100,6 +100,17 @@ def daily_fetch_job():
         except Exception as e:
             print(f"  [STOCK PRICE] Pre-fetch failed (not critical): {e}")
 
+    # Score signal outcomes: give any newly-ingested filing its baseline price,
+    # then mark every horizon that has elapsed since the last run. Cheap (cached
+    # daily closes, no LLM) and non-critical — a price-source outage must never
+    # fail the fetch job.
+    try:
+        from outcomes import run_outcome_job
+        print("  [OUTCOMES] Scoring signal outcomes...")
+        run_outcome_job()
+    except Exception as e:
+        print(f"  [OUTCOMES] Outcome scoring failed (not critical): {e}")
+
     # Record that a scheduled fetch completed (for front page display)
     update_last_backfill("scheduled")
 

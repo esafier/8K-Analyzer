@@ -73,17 +73,19 @@ the morning it ships, instead of in November. Build for backfill first.
 
 ## Task 2: Baseline capture
 
-- [ ] Capture at ingest for filings with a ticker and a verdict of DEEP_LOOK or
+- [x] Capture at ingest for filings with a ticker and a verdict of DEEP_LOOK or
       MONITOR (PASS is noise — do not spend rows on it, but do record the verdict
       so PASS can be scored later if wanted).
-- [ ] Must be non-fatal: a price-fetch failure never blocks storing a filing.
-- [ ] Backfill entry point for existing rows (uses Task 0's historical source).
+- [x] Must be non-fatal: a price-fetch failure never blocks storing a filing.
+- [x] Backfill entry point for existing rows — `capture_baselines()` walks any
+      filing with a verdict, so the same call serves ingest and retrospective backfill.
+      Still needs a UI button on /backfill (folded into Task 4).
 
 ## Task 3: Marking job
 
-- [ ] Daily pass in `scheduler.py`: find rows past each horizon whose mark is null,
+- [x] Daily pass in `scheduler.py`: find rows past each horizon whose mark is null,
       fetch closes, store. Idempotent — safe to re-run same day.
-- [ ] Never re-mark a horizon that already has a value.
+- [x] Never re-mark a horizon that already has a value.
 
 ## Task 4: Scoring + `/scorecard` page
 
@@ -119,6 +121,10 @@ the morning it ships, instead of in November. Build for backfill first.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — Tasks 2+3 COMPLETE: `outcomes.py` (capture_baselines / mark_due_outcomes
+  / run_outcome_job), wired into the daily scheduler as a non-critical step. 15 tests,
+  suite 225 green. Benchmark is priced on the stock's OWN bar date so excess return
+  compares identical windows. Starting Task 4 (scoring + /scorecard + backfill button).
 - 2026-08-21 — Task 1 COMPLETE: `signal_outcomes` table + storage layer, 16 tests,
   suite 210 green. Two design points worth keeping: horizons anchor on the FILING
   date (the event), and the cutoff is computed in Python because TEXT-date
