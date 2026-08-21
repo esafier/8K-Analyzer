@@ -2233,12 +2233,18 @@ _OUTCOME_COLUMNS = (
 )
 
 
-def get_filings_needing_outcome_baseline(limit=500, verdicts=("DEEP_LOOK", "MONITOR")):
+def get_filings_needing_outcome_baseline(limit=500, verdicts=("DEEP_LOOK", "MONITOR"),
+                                        exclude_ids=None):
     """Return filings that should be scored but have no outcome row yet.
 
     Only filings with a ticker and a real verdict qualify — PASS rows are the
     noise the scanner is meant to discard, and scoring them would triple the
     price fetches for no read on signal quality.
+
+    `exclude_ids` skips filings already attempted in the current run. A filing
+    that fails transiently gets no outcome row, so without this it would be
+    handed back at the front of every batch forever and a backfill could report
+    completion having never reached the older, perfectly priceable rows behind it.
 
     Returns a list of real dicts (see CLAUDE.md — sqlite3.Row has no .get()).
     """
@@ -2248,6 +2254,14 @@ def get_filings_needing_outcome_baseline(limit=500, verdicts=("DEEP_LOOK", "MONI
     cursor = conn.cursor()
     p = _placeholder()
     verdict_placeholders = ", ".join([p] * len(verdicts))
+
+    params = list(verdicts)
+    exclude_clause = ""
+    if exclude_ids:
+        exclude_ids = list(exclude_ids)
+        exclude_clause = f"AND f.id NOT IN ({', '.join([p] * len(exclude_ids))})"
+        params.extend(exclude_ids)
+
     cursor.execute(f"""
         SELECT f.id, f.accession_no, f.ticker, f.filed_date, f.triage_verdict,
                f.signal_direction, f.signal_score, f.forfeited_comp,
@@ -2258,9 +2272,10 @@ def get_filings_needing_outcome_baseline(limit=500, verdicts=("DEEP_LOOK", "MONI
           AND f.ticker IS NOT NULL AND f.ticker <> ''
           AND f.filed_date IS NOT NULL AND f.filed_date <> ''
           AND f.triage_verdict IN ({verdict_placeholders})
+          {exclude_clause}
         ORDER BY f.filed_date DESC
         LIMIT {int(limit)}
-    """, tuple(verdicts))
+    """, tuple(params))
     rows = cursor.fetchall()
     conn.close()
 

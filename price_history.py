@@ -42,9 +42,23 @@ REQUEST_DELAY = 0.4
 # horizon mark for the same filing usually hits cache instead of the network.
 SPAN_PAD_DAYS = 10
 
+# A daily bar for the session in progress is not final — its "close" is just the
+# last trade so far. Anything stored from it would be frozen permanently, since
+# a horizon mark is never revisited. So only bars strictly before the current UTC
+# date are ever cached or returned. Worst case that costs a day of latency on a
+# horizon; the alternative is a wrong number that never gets corrected.
+#
+# UTC is deliberately conservative: the US session for date D closes at 20:00-21:00
+# UTC on D, so waiting for D+1 UTC can never accept a partial bar.
+
 # Sentinel statuses stored in price_history_meta.status
 STATUS_OK = "ok"
 STATUS_NOT_FOUND = "not_found"
+
+
+def latest_complete_date():
+    """The most recent date whose daily bar can be considered final."""
+    return datetime.utcnow().date() - timedelta(days=1)
 
 
 def _to_date(value):
@@ -131,11 +145,14 @@ def fetch_from_yahoo(ticker, start_date, end_date):
     except (KeyError, IndexError, TypeError):
         return None
 
+    cutoff = latest_complete_date().isoformat()
     series = {}
     for ts, close in zip(timestamps, closes):
         if close is None:
             continue  # halted or untraded day — no usable close
         bar_date = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+        if bar_date > cutoff:
+            continue  # session still in progress — not a real close yet
         series[bar_date] = float(close)
 
     return series
@@ -170,30 +187,35 @@ def get_daily_closes(ticker, start_date, end_date):
     if meta and meta.get("status") == STATUS_NOT_FOUND:
         return get_cached_closes(ticker, start_iso, end_iso)
 
+    # Only complete sessions can ever be fetched, so coverage is judged against
+    # the clamped end — otherwise a request reaching into today would look
+    # permanently uncovered and refetch on every single call.
+    complete_through = latest_complete_date().isoformat()
+    effective_end = min(end_iso, complete_through)
+
     covered = (
         meta
         and meta.get("span_start")
         and meta.get("span_end")
         and meta["span_start"] <= start_iso
-        and meta["span_end"] >= end_iso
+        and meta["span_end"] >= effective_end
     )
-    if covered:
+    if covered or start_iso > complete_through:
         return get_cached_closes(ticker, start_iso, end_iso)
 
     # Widen the fetch to cover both the request and anything already recorded,
     # so one call replaces the cached span rather than fragmenting it.
     fetch_start = _to_date(start_iso) - timedelta(days=SPAN_PAD_DAYS)
-    fetch_end = _to_date(end_iso) + timedelta(days=SPAN_PAD_DAYS)
+    fetch_end = _to_date(effective_end) + timedelta(days=SPAN_PAD_DAYS)
     if meta:
         if meta.get("span_start"):
             fetch_start = min(fetch_start, _to_date(meta["span_start"]))
         if meta.get("span_end"):
             fetch_end = max(fetch_end, _to_date(meta["span_end"]))
 
-    # Never ask for bars from the future.
-    today = datetime.utcnow().date()
-    if fetch_end > today:
-        fetch_end = today
+    # Never ask for bars that do not exist yet, or for the session in progress.
+    if fetch_end > latest_complete_date():
+        fetch_end = latest_complete_date()
     if fetch_start > fetch_end:
         return get_cached_closes(ticker, start_iso, end_iso)
 

@@ -213,3 +213,69 @@ def test_cache_is_served_on_the_very_first_not_found_response(tmp_sqlite_db):
         result = price_history.get_daily_closes("GONE", "2026-01-02", "2026-06-01")
 
     assert result == SERIES, "cached bars were dropped on the first not-found response"
+
+
+# ---------- a session in progress is not a close ----------
+
+def test_todays_forming_candle_is_never_cached(tmp_sqlite_db):
+    """Yahoo returns a bar for the session in progress whose 'close' is just the
+    last trade so far. A horizon mark is never revisited, so storing that would
+    freeze an intraday price into the scorecard permanently."""
+    from datetime import datetime, timedelta
+
+    today = datetime.utcnow().date()
+    yesterday = today - timedelta(days=1)
+    payload_series = {
+        (today - timedelta(days=4)).isoformat(): 10.0,
+        yesterday.isoformat(): 11.0,
+        today.isoformat(): 99.0,          # still forming
+    }
+
+    def fake_fetch(ticker, start, end):
+        # Mimic the real parser's cutoff behaviour via the real function's rule.
+        return {d: c for d, c in payload_series.items()
+                if d <= price_history.latest_complete_date().isoformat()}
+
+    with patch("price_history.fetch_from_yahoo", side_effect=fake_fetch):
+        result = price_history.get_daily_closes(
+            "AAPL", (today - timedelta(days=5)).isoformat(), today.isoformat()
+        )
+
+    assert today.isoformat() not in result, "an in-progress session was cached as a close"
+    assert result.get(yesterday.isoformat()) == 11.0
+
+
+def test_parser_drops_bars_from_the_current_session():
+    """The cutoff lives in the parser too, so nothing can reach the cache."""
+    from datetime import datetime, timedelta
+
+    today = datetime.utcnow()
+    yesterday = today - timedelta(days=1)
+    payload = _chart(
+        [int(yesterday.timestamp()), int(today.timestamp())],
+        [11.0, 99.0],
+    )
+    with patch("price_history.requests.get", return_value=_Resp(200, payload)):
+        series = price_history.fetch_from_yahoo("AAPL", "2026-01-01", today.date())
+
+    assert today.strftime("%Y-%m-%d") not in series
+    assert series.get(yesterday.strftime("%Y-%m-%d")) == 11.0
+
+
+def test_a_window_reaching_into_today_still_reports_coverage(tmp_sqlite_db):
+    """Coverage is judged against the last complete session. Judging it against
+    the raw requested end would leave any window touching today permanently
+    'uncovered', refetching on every single call."""
+    from datetime import datetime, timedelta
+
+    today = datetime.utcnow().date()
+    start = (today - timedelta(days=5)).isoformat()
+
+    def fake_fetch(ticker, s, e):
+        return {(today - timedelta(days=2)).isoformat(): 10.0}
+
+    with patch("price_history.fetch_from_yahoo", side_effect=fake_fetch) as mock:
+        price_history.get_daily_closes("AAPL", start, today.isoformat())
+        assert mock.call_count == 1
+        price_history.get_daily_closes("AAPL", start, today.isoformat())
+        assert mock.call_count == 1, "refetched a window that was already covered"

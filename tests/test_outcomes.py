@@ -22,6 +22,11 @@ def _insert(accession="0000-01", ticker="AAPL", filed_date="2026-01-05",
     return database.get_filing_by_accession(accession)["id"]
 
 
+def _no_baselines():
+    """capture_baselines' shape for an empty queue."""
+    return {"considered": 0, "priced": 0, "unpriced": 0, "skipped": 0, "skipped_ids": []}
+
+
 def _closes(mapping):
     """Build a get_close_on_or_after stub from {(ticker, date): (bar, close)}."""
     def stub(ticker, target, **_kw):
@@ -39,7 +44,8 @@ def test_baseline_prices_stock_and_benchmark(tmp_sqlite_db):
         ("SPY", "2026-01-05"): ("2026-01-05", 500.0),
     })
     with patch("outcomes.get_close_on_or_after", side_effect=stub):
-        assert outcomes.capture_baselines() == {"priced": 1, "unpriced": 0, "skipped": 0}
+        stats = outcomes.capture_baselines()
+    assert (stats["priced"], stats["unpriced"], stats["skipped"]) == (1, 0, 0)
 
     out = database.get_signal_outcomes()[0]
     assert (out["baseline_date"], out["baseline_close"], out["baseline_spy"]) == \
@@ -310,7 +316,7 @@ def test_backfill_keeps_marking_until_every_due_row_is_drained(tmp_sqlite_db):
                     for h in database.OUTCOME_HORIZONS}
         return empty
 
-    with patch("outcomes.capture_baselines", return_value={"priced": 0, "unpriced": 0, "skipped": 0}), \
+    with patch("outcomes.capture_baselines", return_value=_no_baselines()), \
          patch("outcomes.mark_due_outcomes", side_effect=fake_mark):
         result = outcomes.run_outcome_backfill(verbose=False)
 
@@ -326,7 +332,7 @@ def test_backfill_marking_respects_the_batch_cap(tmp_sqlite_db):
         return {h: {"marked": 1, "pending": 99, "gave_up": 0}
                 for h in database.OUTCOME_HORIZONS}
 
-    with patch("outcomes.capture_baselines", return_value={"priced": 0, "unpriced": 0, "skipped": 0}), \
+    with patch("outcomes.capture_baselines", return_value=_no_baselines()), \
          patch("outcomes.mark_due_outcomes", side_effect=always_progress):
         result = outcomes.run_outcome_backfill(verbose=False, max_batches=4)
 
@@ -426,3 +432,70 @@ def test_matching_benchmark_bar_is_accepted(tmp_sqlite_db):
     })
     with patch("outcomes.get_close_on_or_after", side_effect=stub):
         assert outcomes.capture_baselines()["priced"] == 1
+
+
+# ---------- failures at the front must not hide the rest of the archive ----------
+
+def test_backfill_steps_past_rows_it_could_not_price(tmp_sqlite_db):
+    """A transiently skipped filing gets no outcome row, so it comes back at the
+    front of the next batch. Without stepping past it, a run of failures at the
+    head would hide every older priceable filing behind it and the backfill
+    would report completion having done almost nothing."""
+    seen = []
+
+    def fake_capture(limit=200, verdicts=None, exclude_ids=None):
+        seen.append(sorted(exclude_ids or []))
+        if len(seen) == 1:
+            return {"considered": 2, "priced": 0, "unpriced": 0,
+                    "skipped": 2, "skipped_ids": [1, 2]}
+        if len(seen) == 2:
+            # Only reachable because batch 1's failures were excluded.
+            return {"considered": 1, "priced": 1, "unpriced": 0,
+                    "skipped": 0, "skipped_ids": []}
+        return _no_baselines()
+
+    with patch("outcomes.capture_baselines", side_effect=fake_capture), \
+         patch("outcomes.mark_due_outcomes", return_value={}):
+        result = outcomes.run_outcome_backfill(verbose=False)
+
+    assert seen[0] == []
+    assert seen[1] == [1, 2], "failed rows were handed back instead of stepped past"
+    assert result["baselines"]["priced"] == 1, "never reached the priceable filing"
+
+
+def test_backfill_stops_when_failures_look_systemic(tmp_sqlite_db):
+    """Hundreds of failures means the price source is down, not that the data is
+    patchy. Walking the whole archive recording nothing helps nobody, and the
+    exclusion list would grow past SQL parameter limits."""
+    counter = {"n": 0}
+
+    def always_skip(limit=200, verdicts=None, exclude_ids=None):
+        counter["n"] += 1
+        base = (counter["n"] - 1) * 100
+        ids = list(range(base, base + 100))
+        return {"considered": 100, "priced": 0, "unpriced": 0,
+                "skipped": 100, "skipped_ids": ids}
+
+    with patch("outcomes.capture_baselines", side_effect=always_skip), \
+         patch("outcomes.mark_due_outcomes", return_value={}):
+        outcomes.run_outcome_backfill(verbose=False, max_batches=100)
+
+    assert counter["n"] <= (outcomes.MAX_SKIPPED_BEFORE_ABORT // 100) + 1
+
+
+def test_skipped_ids_are_reported_so_the_caller_can_advance(tmp_sqlite_db):
+    _insert("0000-01", ticker="AAPL")
+    filing_id = database.get_filing_by_accession("0000-01")["id"]
+
+    # Stock prices, benchmark does not — a skip, not a write-off.
+    stub = _closes({("AAPL", "2026-01-05"): ("2026-01-05", 10.0)})
+    with patch("outcomes.get_close_on_or_after", side_effect=stub):
+        stats = outcomes.capture_baselines()
+
+    assert stats["skipped_ids"] == [filing_id]
+    assert stats["considered"] == 1
+
+    # And excluding it makes the queue look empty.
+    with patch("outcomes.get_close_on_or_after", side_effect=stub):
+        again = outcomes.capture_baselines(exclude_ids=[filing_id])
+    assert again["considered"] == 0

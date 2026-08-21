@@ -121,6 +121,27 @@ the morning it ships, instead of in November. Build for backfill first.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — CODEX ROUND 4 on head 292342d. Three findings, all verified real:
+  7. **P2** — a still-forming daily candle could be cached. Yahoo returns a bar for the
+     session in progress whose "close" is just the last trade so far, and since a horizon
+     mark is never revisited that intraday price would be frozen into the scorecard
+     permanently. Only bars strictly before the current UTC date are cached now
+     (`latest_complete_date()`); coverage is judged against that same cutoff so a window
+     touching today does not refetch forever.
+  8. **P2** — coverage counted "priced at baseline" from the row's lifecycle status, so a
+     filing that priced fine and later went dark dropped out — letting the table report
+     fewer priced rows than scored rows. Now derived from `baseline_close`; "awaiting"
+     still requires status ok, since a delisted row is never re-marked.
+  9. **P2** — the baseline backfill re-read transiently-skipped rows forever. Skipped rows
+     get no outcome row, so they returned at the front of every batch; a run of failures
+     at the head could hide the whole older archive and still report completion. Now
+     carries an exclusion list across batches, and aborts at 500 failures because that
+     many means the source is down rather than the data being patchy.
+  5 more tests, suite 284 green, re-verified live (max cached bar <= last complete session).
+  CONVERGENCE NOTE: rounds ran 4 → 2 → 1 → 3. #8 was a direct consequence of the round-2
+  fix and #9 was the round-1 batching fix left half-applied, so findings are no longer
+  purely pre-existing. Stopping the fix-and-rereview cycle here and handing back to the
+  user rather than grinding further.
 - 2026-08-21 — CODEX BOT RE-REVIEW of head ff86205. Two more findings, both verified real:
   5. **P1** — a per-horizon price failure set a ROW-WIDE status, and `build_scorecard`
      filtered on that status, so one dead horizon erased every other horizon's valid

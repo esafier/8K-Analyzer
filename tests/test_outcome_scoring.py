@@ -246,3 +246,27 @@ def test_scorecard_reads_from_the_database_when_no_rows_passed(tmp_sqlite_db):
     card = build_scorecard(30)
     assert card["overall"]["n"] == 0
     assert card["coverage"]["total_rows"] == 0
+
+
+def test_priced_count_cannot_be_lower_than_the_scored_count(tmp_sqlite_db):
+    """A filing that priced fine and only later went dark is still priced.
+    Deriving the count from the lifecycle status made the table self-contradict:
+    fewer rows 'priced at baseline' than were actually scored."""
+    rows = _many(MIN_SAMPLE) + [
+        _row(filing_id=42, status=database.OUTCOME_DELISTED, base=10.0, close=5.0),
+    ]
+    card = build_scorecard(30, rows=rows)
+
+    assert card["coverage"]["priced"] >= card["coverage"]["scored"]
+    assert card["coverage"]["priced"] == MIN_SAMPLE + 1
+
+
+def test_a_delisted_rows_unmarked_horizons_are_not_called_awaiting(tmp_sqlite_db):
+    """A delisted row is never re-marked, so counting its empty horizons as
+    'awaiting' would promise work that will never happen."""
+    gone = _row(filing_id=42, status=database.OUTCOME_DELISTED,
+                base=10.0, close=5.0, horizon=7)
+    card = build_scorecard(30, rows=[gone])
+
+    assert card["coverage"]["awaiting_horizon"] == 0
+    assert card["coverage"]["delisted"] == 1

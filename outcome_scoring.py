@@ -217,7 +217,16 @@ def build_scorecard(horizon=30, rows=None):
     # excess_return() already returns None for any horizon that is unmarked or
     # unpriceable, so unusable rows fall out on their own.
     scored = _score_rows(rows, horizon)
-    priced = [r for r in rows if r.get("status") == OUTCOME_OK]
+
+    # "Priced" means a baseline was actually captured. Deriving it from the
+    # row's status instead would drop a filing that priced fine and only later
+    # went dark — and since those rows still score at the horizons they traded
+    # through, the table could report fewer priced rows than scored ones.
+    priced = [r for r in rows if r.get("baseline_close") is not None]
+    # Still actively queued for marking: a delisted row is never re-marked, so
+    # counting its unmarked horizons as "awaiting" would promise work that will
+    # never happen.
+    open_for_marking = [r for r in priced if r.get("status") == OUTCOME_OK]
 
     by_signal = {}
     for row, hit, excess in scored:
@@ -227,7 +236,7 @@ def build_scorecard(horizon=30, rows=None):
     # Rows that exist but contribute nothing to this horizon's numbers.
     # "Awaiting" means the horizon is genuinely still open: nothing settled it.
     awaiting = sum(
-        1 for r in priced
+        1 for r in open_for_marking
         if r.get(f"close_{horizon}d") is None
         and r.get(f"marked_{horizon}d_at") is None
         and str(r.get("direction") or "").upper() in DIRECTIONAL

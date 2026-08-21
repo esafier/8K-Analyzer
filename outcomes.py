@@ -45,6 +45,11 @@ BENCHMARK_TICKER = "SPY"
 # stopped trading, which is a real outcome rather than a pending one.
 GIVE_UP_AFTER_DAYS = 30
 
+# If this many filings fail to price in one run, the price source is down rather
+# than the data being patchy. Stop instead of walking the whole archive marking
+# nothing, and keep the exclusion list from growing past SQL parameter limits.
+MAX_SKIPPED_BEFORE_ABORT = 500
+
 # Must match get_close_on_or_after's lookahead, so the coverage check asks
 # about exactly the span the lookup actually searched.
 LOOKAHEAD_DAYS = 10
@@ -101,22 +106,31 @@ def _answer_is_final(ticker, anchor_date):
     return has_coverage(ticker, anchor, anchor + timedelta(days=LOOKAHEAD_DAYS))
 
 
-def capture_baselines(limit=200, verdicts=("DEEP_LOOK", "MONITOR")):
+def capture_baselines(limit=200, verdicts=("DEEP_LOOK", "MONITOR"), exclude_ids=None):
     """Stamp filings that have a verdict but no outcome row with their baseline.
 
     Safe to call repeatedly and safe to interrupt — each filing is committed as
     it is priced, so a run that dies halfway keeps everything it earned.
 
-    Returns {'priced': n, 'unpriced': n, 'skipped': n}.
+    `exclude_ids` lets a caller skip filings it already attempted this run.
+    A skipped filing gets no outcome row, so it would otherwise reappear at the
+    front of the next batch indefinitely.
+
+    Returns {'considered': n, 'priced': n, 'unpriced': n, 'skipped': n,
+             'skipped_ids': [...]}.
     """
-    pending = get_filings_needing_outcome_baseline(limit=limit, verdicts=verdicts)
-    stats = {"priced": 0, "unpriced": 0, "skipped": 0}
+    pending = get_filings_needing_outcome_baseline(
+        limit=limit, verdicts=verdicts, exclude_ids=exclude_ids
+    )
+    stats = {"considered": len(pending), "priced": 0, "unpriced": 0,
+             "skipped": 0, "skipped_ids": []}
 
     for filing in pending:
         ticker = (filing.get("ticker") or "").upper()
         filed_date = filing.get("filed_date")
         if not ticker or not filed_date:
             stats["skipped"] += 1
+            stats["skipped_ids"].append(filing.get("id"))
             continue
 
         try:
@@ -139,6 +153,7 @@ def capture_baselines(limit=200, verdicts=("DEEP_LOOK", "MONITOR")):
                     # network outage silently delete the archive from the
                     # scorecard.
                     stats["skipped"] += 1
+                    stats["skipped_ids"].append(filing.get("id"))
                 continue
 
             # Benchmark on the stock's own bar date — same window, or the
@@ -149,6 +164,7 @@ def capture_baselines(limit=200, verdicts=("DEEP_LOOK", "MONITOR")):
                 # Leave the row uncreated so the next run retries it.
                 print(f"[OUTCOMES] No {BENCHMARK_TICKER} close near {bar_date} — retrying later")
                 stats["skipped"] += 1
+                stats["skipped_ids"].append(filing.get("id"))
                 continue
 
             upsert_signal_outcome(
@@ -164,6 +180,7 @@ def capture_baselines(limit=200, verdicts=("DEEP_LOOK", "MONITOR")):
             # One bad ticker must never take down a backfill of thousands.
             print(f"[OUTCOMES] Baseline failed for {ticker} ({filing.get('accession_no')}): {e}")
             stats["skipped"] += 1
+            stats["skipped_ids"].append(filing.get("id"))
 
     return stats
 
@@ -273,24 +290,38 @@ def run_outcome_backfill(run_id=None, verbose=True, as_of=None, batch_size=200,
     from database import complete_backfill_run, count_signal_outcomes
 
     totals = {"priced": 0, "unpriced": 0, "skipped": 0}
+    # Filings attempted but not recorded this run. Carried between batches so a
+    # run of transient failures at the front of the queue cannot hide every
+    # older, priceable filing behind it.
+    attempted_but_unrecorded = []
     batches = 0
 
     try:
         while batches < max_batches:
-            stats = capture_baselines(limit=batch_size)
+            if len(attempted_but_unrecorded) >= MAX_SKIPPED_BEFORE_ABORT:
+                print(f"[OUTCOMES BACKFILL] {len(attempted_but_unrecorded)} filings could "
+                      f"not be priced — that is a systemic failure, not bad luck. "
+                      f"Stopping; run again once the price source is healthy.", flush=True)
+                break
+
+            stats = capture_baselines(
+                limit=batch_size, exclude_ids=attempted_but_unrecorded
+            )
             batches += 1
             for key in totals:
                 totals[key] += stats[key]
+            attempted_but_unrecorded.extend(
+                i for i in stats["skipped_ids"] if i is not None
+            )
 
             if verbose:
                 print(f"[OUTCOMES BACKFILL] Batch {batches}: "
                       f"priced {stats['priced']}, unpriced {stats['unpriced']}, "
                       f"skipped {stats['skipped']}", flush=True)
 
-            # Nothing priced and nothing recorded means either the queue is
-            # empty or every remaining row is failing for the same reason.
-            # Either way, looping again will not help.
-            if stats["priced"] == 0 and stats["unpriced"] == 0:
+            # The queue is genuinely empty — every remaining candidate has been
+            # recorded or already attempted this run.
+            if stats["considered"] == 0:
                 break
 
         if batches >= max_batches and verbose:
