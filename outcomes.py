@@ -20,6 +20,7 @@
 # status rather than dropped — a scorecard that silently discards its
 # hardest cases flatters itself.
 
+import threading
 from datetime import datetime, timedelta
 
 from database import (
@@ -36,6 +37,14 @@ from database import (
     upsert_signal_outcome,
 )
 from price_history import STATUS_NOT_FOUND, get_close_on_or_after, has_coverage
+
+# Guards against two outcome runs interleaving — a double-clicked backfill
+# button, or a scheduled job landing on top of a manual one. Process-local, so
+# it is belt-and-braces only: the actual safety property is that
+# upsert_price_history_meta refuses to merge disjoint spans, which holds across
+# processes too.
+_run_lock = threading.Lock()
+
 
 # The benchmark every signal is measured against.
 BENCHMARK_TICKER = "SPY"
@@ -261,7 +270,19 @@ def run_outcome_job(as_of=None, baseline_limit=200, mark_limit=200):
     This is what the daily scheduler calls. Ordering matters — a filing
     ingested today gets its baseline in the same run, rather than waiting a
     day for the next one.
+
+    Returns None without doing anything if another outcome run holds the lock.
     """
+    if not _run_lock.acquire(blocking=False):
+        print("[OUTCOMES] Another outcome run is already in progress — skipping this one.")
+        return None
+    try:
+        return _run_outcome_job(as_of, baseline_limit, mark_limit)
+    finally:
+        _run_lock.release()
+
+
+def _run_outcome_job(as_of, baseline_limit, mark_limit):
     captured = capture_baselines(limit=baseline_limit)
     print(f"[OUTCOMES] Baselines — priced {captured['priced']}, "
           f"unpriced {captured['unpriced']}, skipped {captured['skipped']}")
@@ -288,6 +309,16 @@ def run_outcome_backfill(run_id=None, verbose=True, as_of=None, batch_size=200,
     cached thereafter, throttled inside price_history.
     """
     from database import complete_backfill_run, count_signal_outcomes
+
+    if not _run_lock.acquire(blocking=False):
+        print("[OUTCOMES BACKFILL] Another outcome run is already in progress — "
+              "not starting a second one.", flush=True)
+        if run_id:
+            try:
+                complete_backfill_run(run_id, status="failed")
+            except Exception:
+                pass
+        return None
 
     totals = {"priced": 0, "unpriced": 0, "skipped": 0}
     # Filings attempted but not recorded this run. Carried between batches so a
@@ -381,3 +412,6 @@ def run_outcome_backfill(run_id=None, verbose=True, as_of=None, batch_size=200,
             except Exception:
                 pass
         raise
+
+    finally:
+        _run_lock.release()

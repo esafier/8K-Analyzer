@@ -121,6 +121,27 @@ the morning it ships, instead of in November. Build for backfill first.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — CODEX ROUND 7 on head 6632ab5. Two findings, both real, both FIXED —
+  the P1 cleared the "severe and unambiguous data corruption" bar.
+  14. **P1 FIXED** — `upsert_price_history_meta` merged spans unconditionally, so two
+      interleaved runs (double-clicked backfill button, or the scheduled job landing on
+      a manual one) could each fetch a different slice of one ticker and collapse them
+      into a single continuous claim over a gap neither had fetched. A claimed-but-empty
+      span reads downstream as "we looked and there are nothing", so `_answer_is_final()`
+      would permanently write those filings off as unpriceable — silent, irreversible.
+      Two layers: disjoint spans are now REFUSED (keep the newer; older bars stay cached
+      and are simply refetched if asked for again), and a process-local lock stops two
+      outcome runs overlapping at all. The span fix is the real safety property — it
+      holds across processes; the lock is belt-and-braces for the common case.
+      NOTE the normal path is unaffected: a refetch always spans the union of the request
+      and the stored span, so it can never be disjoint. Tested both ways.
+  15. **P2 FIXED** — `count_signal_outcomes()` still derived `priced` from `status = 'ok'`
+      while `build_scorecard()` had been moved to `baseline_close` in round 4. A filing
+      that priced and later went dark was counted unpriced in the backfill log and the
+      scorecard's empty state, disagreeing with the scorecard itself. Same half-applied
+      pattern as round 5's copy bug. Now derived from `baseline_close`; the end-to-end
+      check asserts the two totals agree at every horizon.
+  7 more tests, suite 293 green, re-verified live.
 - 2026-08-21 — CODEX ROUND 6 on head c45e440. Two findings; one REFUTED, one real.
   12. **REFUTED** — "raw quote.close corrupts returns across a split." Tested empirically
       against NVDA's 10-for-1 split (2024-06-10): the series runs 120.89 → 121.79 straight

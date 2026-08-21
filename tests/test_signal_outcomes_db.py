@@ -224,3 +224,14 @@ def test_clearing_filings_keeps_the_price_cache(tmp_sqlite_db):
 
     assert database.get_cached_closes("AAPL", "2026-01-01", "2026-01-31") == {"2026-01-05": 10.0}
     assert database.get_price_history_meta("AAPL") is not None
+
+
+def test_the_priced_count_agrees_with_the_scorecard(tmp_sqlite_db):
+    """count_signal_outcomes feeds the backfill log and the scorecard's empty
+    state. Counting by status would drop a filing that priced fine and only
+    later went dark, disagreeing with what the scorecard itself reports."""
+    filing = _pending()
+    database.upsert_signal_outcome(filing, "2026-01-05", 10.0, 500.0)
+    database.set_outcome_status(filing["id"], database.OUTCOME_DELISTED)
+
+    assert database.count_signal_outcomes() == {"total": 1, "priced": 1, "unpriced": 0}

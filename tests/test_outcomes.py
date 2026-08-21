@@ -499,3 +499,49 @@ def test_skipped_ids_are_reported_so_the_caller_can_advance(tmp_sqlite_db):
     with patch("outcomes.get_close_on_or_after", side_effect=stub):
         again = outcomes.capture_baselines(exclude_ids=[filing_id])
     assert again["considered"] == 0
+
+
+# ---------- two outcome runs must not interleave ----------
+
+def test_a_second_backfill_refuses_to_start_while_one_is_running(tmp_sqlite_db):
+    """Pressing the button twice used to launch two workers that could each
+    fetch a different slice of the same ticker."""
+    started = []
+
+    def slow_capture(**_kw):
+        started.append(1)
+        # Re-entry attempt from "another request" while this run holds the lock.
+        assert outcomes.run_outcome_backfill(verbose=False) is None
+        return _no_baselines()
+
+    with patch("outcomes.capture_baselines", side_effect=slow_capture), \
+         patch("outcomes.mark_due_outcomes", return_value={}):
+        result = outcomes.run_outcome_backfill(verbose=False)
+
+    assert result is not None, "the first run should have completed"
+    assert len(started) == 1, "a second worker ran concurrently"
+
+
+def test_the_lock_is_released_after_a_failed_run(tmp_sqlite_db):
+    """A crash must not wedge the lock and block every future run."""
+    with patch("outcomes.capture_baselines", side_effect=RuntimeError("boom")), \
+         patch("outcomes.mark_due_outcomes", return_value={}):
+        try:
+            outcomes.run_outcome_backfill(verbose=False)
+        except RuntimeError:
+            pass
+
+    with patch("outcomes.capture_baselines", return_value=_no_baselines()), \
+         patch("outcomes.mark_due_outcomes", return_value={}):
+        assert outcomes.run_outcome_backfill(verbose=False) is not None
+
+
+def test_the_scheduled_job_also_refuses_to_overlap(tmp_sqlite_db):
+    """The same hazard exists between the daily job and a manual backfill."""
+    def reentrant(**_kw):
+        assert outcomes.run_outcome_job() is None
+        return _no_baselines()
+
+    with patch("outcomes.capture_baselines", side_effect=reentrant), \
+         patch("outcomes.mark_due_outcomes", return_value={}):
+        assert outcomes.run_outcome_job() is not None

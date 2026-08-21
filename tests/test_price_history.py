@@ -279,3 +279,44 @@ def test_a_window_reaching_into_today_still_reports_coverage(tmp_sqlite_db):
         assert mock.call_count == 1
         price_history.get_daily_closes("AAPL", start, today.isoformat())
         assert mock.call_count == 1, "refetched a window that was already covered"
+
+
+# ---------- coverage must never be claimed over an unfetched gap ----------
+
+def test_disjoint_spans_are_not_merged_into_a_false_claim(tmp_sqlite_db):
+    """Two interleaved runs can each fetch a different slice of the same ticker.
+    Merging Jan-Feb with Jun-Jul would claim Mar-May was fetched, and a
+    claimed-but-empty span reads downstream as 'we looked and there is nothing',
+    which permanently writes filings off as unpriceable."""
+    import database
+
+    database.upsert_price_history_meta("AAPL", "2026-01-01", "2026-02-01")
+    database.upsert_price_history_meta("AAPL", "2026-06-01", "2026-07-01")
+
+    meta = database.get_price_history_meta("AAPL")
+    assert not (meta["span_start"] <= "2026-04-01" <= meta["span_end"]), \
+        "March-May was claimed as covered but never fetched"
+    assert price_history.has_coverage("AAPL", "2026-04-01", "2026-04-10") is False
+
+
+def test_overlapping_spans_still_widen(tmp_sqlite_db):
+    """The normal path must be untouched — a refetch always spans the union of
+    the request and what was stored, so it can never be disjoint."""
+    import database
+
+    database.upsert_price_history_meta("AAPL", "2026-01-01", "2026-03-01")
+    database.upsert_price_history_meta("AAPL", "2026-02-01", "2026-06-01")
+
+    meta = database.get_price_history_meta("AAPL")
+    assert meta["span_start"] == "2026-01-01"
+    assert meta["span_end"] == "2026-06-01"
+
+
+def test_adjacent_spans_still_widen(tmp_sqlite_db):
+    import database
+
+    database.upsert_price_history_meta("AAPL", "2026-01-01", "2026-03-01")
+    database.upsert_price_history_meta("AAPL", "2026-03-01", "2026-05-01")
+
+    meta = database.get_price_history_meta("AAPL")
+    assert (meta["span_start"], meta["span_end"]) == ("2026-01-01", "2026-05-01")

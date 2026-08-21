@@ -2110,9 +2110,22 @@ def upsert_closes(ticker, closes):
 def upsert_price_history_meta(ticker, span_start, span_end, status="ok"):
     """Record which span was fetched for a ticker and how it went.
 
-    Widens the stored span rather than replacing it: if we previously fetched
-    Jan-Mar and now fetch Feb-Jun, the ticker is covered Jan-Jun, and narrowing
-    the record would cause a needless refetch of data we already hold.
+    Widens the stored span when the new one OVERLAPS what is already recorded:
+    if we previously fetched Jan-Mar and now fetch Feb-Jun, the ticker is
+    covered Jan-Jun, and narrowing the record would force a needless refetch of
+    data we already hold.
+
+    Two DISJOINT spans are never merged. Merging Jan-Feb with Jun-Jul would
+    claim coverage of Mar-May, which was never fetched — and a claimed-but-empty
+    span reads downstream as "we looked and there are no bars", which
+    permanently writes filings off as unpriceable. That can happen whenever two
+    runs interleave (a double-clicked backfill button, or a scheduled job
+    overlapping a manual one), so the disjoint case is refused here rather than
+    guarded at every call site. Keeping the newer span is the safe direction:
+    the older bars stay cached, they are simply refetched if asked for again.
+
+    The normal path always widens, because a refetch spans the union of the
+    request and whatever was already stored — so it can never be disjoint.
     """
     if not ticker:
         return
@@ -2121,14 +2134,15 @@ def upsert_price_history_meta(ticker, span_start, span_end, status="ok"):
     if existing:
         prior_start = existing.get("span_start")
         prior_end = existing.get("span_end")
-        if prior_start and span_start:
-            span_start = min(prior_start, span_start)
-        elif prior_start:
-            span_start = prior_start
-        if prior_end and span_end:
-            span_end = max(prior_end, span_end)
-        elif prior_end:
-            span_end = prior_end
+
+        if prior_start and prior_end and span_start and span_end:
+            overlaps = span_start <= prior_end and span_end >= prior_start
+            if overlaps:
+                span_start = min(prior_start, span_start)
+                span_end = max(prior_end, span_end)
+            # else: disjoint — keep the new span exactly as fetched
+        elif prior_start and prior_end and not (span_start and span_end):
+            span_start, span_end = prior_start, prior_end
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -2509,7 +2523,10 @@ def count_signal_outcomes():
     p = _placeholder()
     cursor.execute("SELECT COUNT(*) FROM signal_outcomes")
     total = cursor.fetchone()[0]
-    cursor.execute(f"SELECT COUNT(*) FROM signal_outcomes WHERE status = {p}", (OUTCOME_OK,))
+    # Priced means a baseline was actually captured, matching build_scorecard.
+    # Counting by status instead would drop a filing that priced fine and only
+    # later went dark, making this total disagree with the scorecard's.
+    cursor.execute("SELECT COUNT(*) FROM signal_outcomes WHERE baseline_close IS NOT NULL")
     priced = cursor.fetchone()[0]
     conn.close()
     return {"total": total, "priced": priced, "unpriced": total - priced}
