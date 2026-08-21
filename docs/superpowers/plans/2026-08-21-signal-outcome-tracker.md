@@ -107,6 +107,35 @@ the morning it ships, instead of in November. Build for backfill first.
 
 ---
 
+## Permanent-write inventory (the invariant this feature rests on)
+
+Four separate review findings came from a guard applied in one place and missed in
+another. An earlier sweep reported clean and was **wrong**, because it grepped for
+where guards *exist* rather than where one is *missing*. The durable fix is to keep
+this list: every site that writes a state which stops future work, and what makes
+that write safe. **If you add a permanent write, add it here.**
+
+| Site | Writes | Safe because |
+|---|---|---|
+| `price_history.get_daily_closes` | `meta.status = not_found` | Only when `fetch_from_yahoo` saw a real symbol miss — HTTP 404, or Yahoo's own "may be delisted" wording. Any other error returns `None` and stays retryable. |
+| `price_history.get_daily_closes` | `meta.span_start/end` | Only the span actually fetched. Disjoint spans are never merged, so coverage can't be claimed over a gap. |
+| `outcomes.capture_baselines` | `OUTCOME_DELISTED` | `_ticker_is_gone()` — the price source definitively denied the symbol. |
+| `outcomes.capture_baselines` | `OUTCOME_NO_PRICE` | `_answer_is_final()` — the source answered for this window and had no bars. |
+| `outcomes.mark_due_outcomes` | `OUTCOME_DELISTED` + horizon settled | `_ticker_is_gone()`. |
+| `outcomes.mark_due_outcomes` | horizon settled | Overdue **and** `_answer_is_final()`. |
+| `outcomes.mark_due_outcomes` | `set_outcome_mark` (a price, forever) | Both legs non-None; the DB layer refuses `None` and never overwrites an existing mark. |
+
+Two properties hold the whole thing up, and both were bugs that had to be fixed:
+`has_coverage()` must never report coverage over an unfetched gap (round 7), and
+`not_found` must never be written for a recoverable error (round 8). Every gate above
+reads one of those two, so if either regresses, all seven sites start lying at once.
+
+Retry suppression audited separately: the only bare `return {}` in `get_daily_closes`
+are input validation (empty ticker, inverted range). Every other early return serves
+the cache **without** recording coverage, so a retry can always still happen.
+
+Verified 2026-08-21 at head 56097fd.
+
 ## Guardrails for this run
 
 - All work on `claude/autonomous-improvement-strategy-nfgkcp`. **Never push `main`.**
