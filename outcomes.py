@@ -277,7 +277,30 @@ def run_outcome_backfill(run_id=None, verbose=True, as_of=None, batch_size=200,
             print(f"[OUTCOMES BACKFILL] Stopped at the {max_batches}-batch cap — "
                   f"run again to continue.", flush=True)
 
-        marks = mark_due_outcomes(as_of=as_of, limit=batch_size * 10)
+        # Marking is batched too — get_outcomes_needing_mark applies a LIMIT, so
+        # a single call would silently leave a large archive part-scored and
+        # still print "Done". Keep going until a round makes no progress.
+        marks = {h: {"marked": 0, "pending": 0, "gave_up": 0} for h in OUTCOME_HORIZONS}
+        mark_batches = 0
+        while mark_batches < max_batches:
+            batch = mark_due_outcomes(as_of=as_of, limit=batch_size * 10)
+            mark_batches += 1
+            progressed = False
+            for horizon, stats in batch.items():
+                marks[horizon]["marked"] += stats["marked"]
+                marks[horizon]["gave_up"] += stats["gave_up"]
+                # pending is what is still outstanding right now, not a running
+                # total — take the latest reading instead of summing rounds.
+                marks[horizon]["pending"] = stats["pending"]
+                if stats["marked"] or stats["gave_up"]:
+                    progressed = True
+            if not progressed:
+                break
+
+        if mark_batches >= max_batches and verbose:
+            print(f"[OUTCOMES BACKFILL] Marking stopped at the {max_batches}-batch cap — "
+                  f"run again to continue.", flush=True)
+
         if verbose:
             for horizon, stats in marks.items():
                 print(f"[OUTCOMES BACKFILL] {horizon}d — marked {stats['marked']}, "

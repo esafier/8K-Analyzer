@@ -197,3 +197,19 @@ def test_bars_cached_before_a_delisting_are_still_served(tmp_sqlite_db):
         recovered = price_history.get_daily_closes("GONE", "2026-01-02", "2026-01-06")
         assert mock.call_count == 0, "a dead ticker must not cost a request"
     assert recovered == SERIES, "cached history was discarded when the ticker went dark"
+
+
+def test_cache_is_served_on_the_very_first_not_found_response(tmp_sqlite_db):
+    """A widened fetch can 404 while the requested window is already cached and
+    perfectly good. Returning nothing on that first call would let the caller
+    see 'no price' next to a freshly-written not_found status and write the
+    filing off as delisted — after which it is no longer retryable."""
+    with patch("price_history.fetch_from_yahoo", return_value=SERIES):
+        price_history.get_daily_closes("GONE", "2026-01-02", "2026-01-06")
+
+    # Same call, but the window now reaches past the cached span, forcing a
+    # refetch that comes back 404.
+    with patch("price_history.fetch_from_yahoo", return_value=STATUS_NOT_FOUND):
+        result = price_history.get_daily_closes("GONE", "2026-01-02", "2026-06-01")
+
+    assert result == SERIES, "cached bars were dropped on the first not-found response"

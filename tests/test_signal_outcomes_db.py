@@ -196,3 +196,31 @@ def test_counts_split_priced_from_unpriced(tmp_sqlite_db):
     database.upsert_signal_outcome(b, status=database.OUTCOME_NO_PRICE)
 
     assert database.count_signal_outcomes() == {"total": 2, "priced": 1, "unpriced": 1}
+
+
+# ---------- clearing the database ----------
+
+def test_clearing_filings_also_clears_their_outcomes(tmp_sqlite_db):
+    """signal_outcomes is keyed on filing_id with no cascade. Survivors would
+    show on the scorecard as calls against filings that no longer exist, with
+    dead links, and every clear/repopulate cycle would duplicate the sample."""
+    filing = _pending()
+    database.upsert_signal_outcome(filing, "2026-01-05", 10.0, 500.0)
+    assert len(database.get_signal_outcomes()) == 1
+
+    database.clear_all_filings()
+
+    assert database.get_signal_outcomes() == []
+    assert database.get_filing_count() == 0
+
+
+def test_clearing_filings_keeps_the_price_cache(tmp_sqlite_db):
+    """Price history is keyed by ticker and date, not by filing, so it stays
+    valid across a repopulate — refetching it every time would be waste."""
+    database.upsert_closes("AAPL", {"2026-01-05": 10.0})
+    database.upsert_price_history_meta("AAPL", "2026-01-01", "2026-01-31")
+
+    database.clear_all_filings()
+
+    assert database.get_cached_closes("AAPL", "2026-01-01", "2026-01-31") == {"2026-01-05": 10.0}
+    assert database.get_price_history_meta("AAPL") is not None

@@ -121,6 +121,20 @@ the morning it ships, instead of in November. Build for backfill first.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — CODEX BOT REVIEW on PR #2. All four findings verified as real and fixed:
+  1. **P1** — `clear_all_filings()` left `signal_outcomes` behind (no FK/cascade), so a
+     clear-and-repopulate would strand calls against deleted filings with dead links and
+     duplicate the sample under fresh IDs. Now cleared; the ticker-keyed price cache is
+     deliberately kept.
+  2. **P2** — the FIRST not-found response discarded cached bars, so a widened fetch that
+     404'd could make a perfectly cached filing get written off as delisted. Now serves
+     the cache on that call, not just on later ones.
+  3. **P2** — the backfill marked one batch (LIMIT-capped) then printed "Done", leaving a
+     large archive part-scored. Now loops until a round makes no progress.
+  4. **P2** — outcome scoring sat after the scheduler's early returns, so it never ran on
+     a day with no filings or an EDGAR failure — i.e. every weekend, which is exactly
+     when horizons elapse. Moved into a `finally` around the ingest step.
+  9 regression tests added, suite 269 green, re-verified live end-to-end.
 - 2026-08-21 — ADVERSARIAL REVIEW of the branch diff. Found and fixed:
   1. **Real bug** — a transient price-source failure was recorded as "unpriceable",
      which is permanent and stops the row being retried. One network outage during

@@ -285,3 +285,41 @@ def test_answer_is_final_tracks_real_coverage(tmp_sqlite_db):
     assert outcomes._answer_is_final("AAPL", "2026-01-05") is True
     # A span that stops short of the lookahead window is not a final answer.
     assert outcomes._answer_is_final("AAPL", "2026-01-28") is False
+
+
+# ---------- the backfill must actually finish ----------
+
+def test_backfill_keeps_marking_until_every_due_row_is_drained(tmp_sqlite_db):
+    """get_outcomes_needing_mark applies a LIMIT, so one marking call leaves a
+    large archive part-scored while still printing 'Done'."""
+    calls = {"n": 0}
+    empty = {h: {"marked": 0, "pending": 0, "gave_up": 0} for h in database.OUTCOME_HORIZONS}
+
+    def fake_mark(**_kw):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return {h: {"marked": 5, "pending": 40, "gave_up": 0}
+                    for h in database.OUTCOME_HORIZONS}
+        return empty
+
+    with patch("outcomes.capture_baselines", return_value={"priced": 0, "unpriced": 0, "skipped": 0}), \
+         patch("outcomes.mark_due_outcomes", side_effect=fake_mark):
+        result = outcomes.run_outcome_backfill(verbose=False)
+
+    assert calls["n"] == 3, "stopped marking while rows were still being drained"
+    assert result["marks"][7]["marked"] == 10
+    # pending is a snapshot of what is left, not a sum across rounds
+    assert result["marks"][7]["pending"] == 0
+
+
+def test_backfill_marking_respects_the_batch_cap(tmp_sqlite_db):
+    """A source that always reports progress must not loop forever."""
+    def always_progress(**_kw):
+        return {h: {"marked": 1, "pending": 99, "gave_up": 0}
+                for h in database.OUTCOME_HORIZONS}
+
+    with patch("outcomes.capture_baselines", return_value={"priced": 0, "unpriced": 0, "skipped": 0}), \
+         patch("outcomes.mark_due_outcomes", side_effect=always_progress):
+        result = outcomes.run_outcome_backfill(verbose=False, max_batches=4)
+
+    assert result["marks"][7]["marked"] == 4

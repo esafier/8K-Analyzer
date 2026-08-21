@@ -809,9 +809,21 @@ def get_filing_by_accession(accession_no):
 
 def clear_all_filings():
     """Delete all filings from the database. Used when you want to
-    repopulate everything with an updated prompt."""
+    repopulate everything with an updated prompt.
+
+    Also clears signal_outcomes. Those rows are keyed on filing_id and hold a
+    snapshot of a verdict that no longer exists; left behind they would show on
+    the scorecard as calls against filings that are gone, with dead
+    /filing/<id> links, and every clear-and-repopulate cycle would duplicate
+    the historical sample under fresh filing IDs.
+
+    The price_history cache is deliberately KEPT — it is keyed by ticker and
+    date rather than by filing, so it stays valid across a repopulate and
+    refetching thousands of series every time would be pure waste.
+    """
     conn = get_connection()
     cursor = conn.cursor()
+    cursor.execute("DELETE FROM signal_outcomes")
     cursor.execute("DELETE FROM filings")
     conn.commit()
     conn.close()

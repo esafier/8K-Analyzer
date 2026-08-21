@@ -202,7 +202,12 @@ def get_daily_closes(ticker, start_date, end_date):
 
     if isinstance(fetched, str) and fetched == STATUS_NOT_FOUND:
         upsert_price_history_meta(ticker, None, None, status=STATUS_NOT_FOUND)
-        return {}
+        # Serve the cache on THIS call, not just on later ones. A widened fetch
+        # can 404 while the requested window is already cached and perfectly
+        # good — returning nothing here would let the caller see "no price"
+        # alongside a freshly-written not_found status and write the filing off
+        # as delisted, after which the row is no longer eligible for a retry.
+        return get_cached_closes(ticker, start_iso, end_iso)
 
     if fetched is None:
         # Transient failure. Do NOT record coverage — a retry must be able to
