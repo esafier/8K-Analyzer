@@ -97,7 +97,7 @@ def test_excluded_rows_are_stated_on_the_page(tmp_sqlite_db):
     _scored_filing(3, ticker="NOPRICE", status=database.OUTCOME_NO_PRICE)
     body = client.get("/scorecard").data
     assert b"What these numbers leave out" in body
-    assert b"Stopped trading" in body
+    assert b"Symbol stopped resolving" in body
     assert b"No price data" in body
 
 
@@ -154,3 +154,16 @@ def test_the_page_discloses_the_look_ahead_limitation(tmp_sqlite_db):
     body = client.get("/scorecard").data.decode()
     assert "not tradeable returns" in body
     assert "after the 4pm close" in body
+
+
+def test_the_page_does_not_assert_delisting_it_cannot_verify(tmp_sqlite_db):
+    """The price source returns the same answer for a delisting and a ticker
+    rename, so the page must not claim the company stopped trading."""
+    client = _client(tmp_sqlite_db)
+    _scored_filing(1)
+    body = client.get("/scorecard").data.decode()
+
+    assert "Symbol stopped resolving" in body
+    assert "renamed its ticker" in body
+    assert "upper bound on real delistings" in body
+    assert "Stopped trading at some point" not in body

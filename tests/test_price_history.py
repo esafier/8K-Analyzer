@@ -320,3 +320,43 @@ def test_adjacent_spans_still_widen(tmp_sqlite_db):
 
     meta = database.get_price_history_meta("AAPL")
     assert (meta["span_start"], meta["span_end"]) == ("2026-01-01", "2026-05-01")
+
+
+# ---------- only a genuine symbol miss may be recorded permanently ----------
+
+def test_a_recoverable_error_payload_is_not_treated_as_a_symbol_miss():
+    """A 200 carrying a throttling or internal error is recoverable. Recording
+    it as not_found would permanently blank a live ticker with no retry path —
+    and a long backfill is exactly when such an error is likeliest to arrive."""
+    for code in ("Too Many Requests", "Internal Server Error", "Unauthorized"):
+        payload = {"chart": {"result": None,
+                             "error": {"code": code, "description": code}}}
+        with patch("price_history.requests.get", return_value=_Resp(200, payload)):
+            result = price_history.fetch_from_yahoo("AAPL", "2026-01-01", "2026-01-06")
+        assert result is None, f"{code!r} was treated as a permanent symbol miss"
+
+
+def test_yahoos_real_symbol_miss_wording_is_still_permanent():
+    """Yahoo's actual miss payload, verified live: code 'Not Found',
+    description 'No data found, symbol may be delisted'."""
+    payload = {"chart": {"result": None, "error": {
+        "code": "Not Found", "description": "No data found, symbol may be delisted"}}}
+    with patch("price_history.requests.get", return_value=_Resp(200, payload)):
+        assert price_history.fetch_from_yahoo("DEADCO", "2026-01-01", "2026-01-06") is STATUS_NOT_FOUND
+
+
+def test_a_recoverable_error_leaves_the_ticker_retryable(tmp_sqlite_db):
+    """End to end: the recoverable error must not persist a not_found status."""
+    payload = {"chart": {"result": None,
+                         "error": {"code": "Too Many Requests", "description": "rate limited"}}}
+    with patch("price_history.requests.get", return_value=_Resp(200, payload)):
+        assert price_history.get_daily_closes("AAPL", "2026-01-02", "2026-01-06") == {}
+
+    import database
+    meta = database.get_price_history_meta("AAPL")
+    assert meta is None or meta.get("status") != STATUS_NOT_FOUND, \
+        "a rate-limit response permanently blanked a live ticker"
+
+    with patch("price_history.fetch_from_yahoo", return_value=SERIES) as mock:
+        assert price_history.get_daily_closes("AAPL", "2026-01-02", "2026-01-06") == SERIES
+        assert mock.call_count == 1, "the ticker was not retried"

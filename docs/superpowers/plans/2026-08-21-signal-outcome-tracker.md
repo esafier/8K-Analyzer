@@ -121,6 +121,27 @@ the morning it ships, instead of in November. Build for backfill first.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — CODEX ROUND 8 on head 3a2fdfd. Two findings, both real, both FIXED.
+  16. **P2 FIXED (severe in effect)** — a 200 response carrying ANY `chart.error` was
+      treated as a permanent symbol miss. Probed Yahoo live: a genuine miss is HTTP 404
+      with `code: "Not Found"`, `description: "No data found, symbol may be delisted"` —
+      already handled by the 404 branch. The 200+error branch therefore only ever catches
+      OTHER errors (throttling, auth, internal), and recording those as `not_found`
+      permanently blanks a LIVE ticker with no retry path. A long backfill is exactly when
+      such an error is likeliest, so this could have silently removed many live names.
+      Now matched on Yahoo's actual miss wording; anything else returns None (retryable).
+      This is a genuine gap in my own early "transient failures must not be permanent"
+      fix — the 05:05Z sweep missed it because the pattern appears in a different form.
+  17. **P2 FIXED** — the page asserted "Stopped trading at some point (delisted after the
+      filing)" for any ticker that stopped resolving. The price source cannot distinguish
+      a delisting from a ticker RENAME — Yahoo itself hedges with "may be delisted" — so a
+      company alive under a new symbol was reported as dead, and counted in the
+      delisting-bias narrative. Relabelled to "Symbol stopped resolving (delisted, or the
+      company renamed its ticker)", and the disclosure now says the count is an upper bound
+      on real delistings. Copy only; the internal OUTCOME_DELISTED constant is unchanged
+      (renaming it would be a migration for no behavioural gain). Resolving successor
+      tickers would need a corporate-actions source — noted as possible future work, not done.
+  4 more tests, suite 297 green, re-verified live.
 - 2026-08-21 — CODEX ROUND 7 on head 6632ab5. Two findings, both real, both FIXED —
   the P1 cleared the "severe and unambiguous data corruption" bar.
   14. **P1 FIXED** — `upsert_price_history_meta` merged spans unconditionally, so two

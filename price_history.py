@@ -55,6 +55,14 @@ SPAN_PAD_DAYS = 10
 STATUS_OK = "ok"
 STATUS_NOT_FOUND = "not_found"
 
+# Error codes that genuinely mean "this symbol does not exist". Only these may
+# be recorded permanently. Everything else Yahoo can put in an error block —
+# throttling, auth, an internal fault — is recoverable, and treating it as a
+# symbol miss would permanently blank a live ticker with no retry path. That
+# matters most during a long backfill, which is exactly when a rate-limit or
+# transient fault is likeliest to arrive.
+_SYMBOL_MISS_CODES = {"not found", "notfound", "no data found"}
+
 
 def latest_complete_date():
     """The most recent date whose daily bar can be considered final."""
@@ -83,9 +91,11 @@ def fetch_from_yahoo(ticker, start_date, end_date):
 
     Returns:
         dict {('YYYY-MM-DD'): close}  on success (may be empty for a quiet span)
-        STATUS_NOT_FOUND              if the ticker does not resolve (delisted,
+        STATUS_NOT_FOUND              if the SYMBOL does not resolve (delisted,
                                       renamed, or never real) — a durable answer
-                                      worth caching so it is not retried forever
+                                      worth caching so it is not retried forever.
+                                      Note this says nothing about whether the
+                                      COMPANY still trades under another symbol.
         None                          on a transient failure (network, 5xx, bad
                                       payload) — caller should not cache this
     """
@@ -132,10 +142,18 @@ def fetch_from_yahoo(ticker, start_date, end_date):
     chart = payload.get("chart") or {}
     results = chart.get("result")
     if not results:
-        # An error block with no result is Yahoo's other way of saying
-        # "no such symbol"; treat it the same as a 404 rather than retrying.
-        if chart.get("error"):
+        error = chart.get("error") or {}
+        code = str(error.get("code") or "").strip().lower()
+        description = str(error.get("description") or "").strip().lower()
+
+        # Yahoo's own wording for a real miss is "No data found, symbol may be
+        # delisted". Match on that, not on the mere presence of an error block.
+        if code in _SYMBOL_MISS_CODES or "may be delisted" in description:
             return STATUS_NOT_FOUND
+
+        if error:
+            print(f"[PRICE HISTORY] {ticker}: recoverable error "
+                  f"{error.get('code')!r} — will retry")
         return None
 
     result = results[0]
