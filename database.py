@@ -2572,6 +2572,7 @@ def _create_spring_load_table(conn):
             analysis_json TEXT NOT NULL,
             extraction_json TEXT,
             windows_mature INTEGER NOT NULL DEFAULT 0,
+            cadence_fingerprint TEXT,
             model TEXT,
             analyzed_at {ts} DEFAULT CURRENT_TIMESTAMP
         )
@@ -2586,7 +2587,8 @@ def _create_spring_load_table(conn):
 
 _SPRING_LOAD_COLUMNS = ["accession_number", "cik", "ticker", "filed_date",
                         "max_score", "band", "has_grant", "analysis_json",
-                        "extraction_json", "windows_mature", "model"]
+                        "extraction_json", "windows_mature", "cadence_fingerprint",
+                        "model"]
 
 
 def get_spring_load_analysis(accession_number):
@@ -2608,7 +2610,8 @@ def get_spring_load_analysis(accession_number):
 
 
 def upsert_spring_load_analysis(accession_number, cik, ticker, filed_date,
-                                analysis, model=None, extraction=None):
+                                analysis, model=None, extraction=None,
+                                cadence_fingerprint=None):
     """Store or refresh a screen.
 
     `extraction` is the LLM's raw fact JSON, stored alongside the scored
@@ -2631,13 +2634,15 @@ def upsert_spring_load_analysis(accession_number, cik, ticker, filed_date,
     p = _placeholder()
 
     values = (accession_number, cik, ticker, filed_date, max_score, band,
-              has_grant, payload, extraction_payload, mature, model)
+              has_grant, payload, extraction_payload, mature,
+              cadence_fingerprint, model)
     if _using_postgres():
         cursor.execute(f"""
             INSERT INTO spring_load_analyses
             (accession_number, cik, ticker, filed_date, max_score, band,
-             has_grant, analysis_json, extraction_json, windows_mature, model, analyzed_at)
-            VALUES ({', '.join([p] * 11)}, CURRENT_TIMESTAMP)
+             has_grant, analysis_json, extraction_json, windows_mature,
+             cadence_fingerprint, model, analyzed_at)
+            VALUES ({', '.join([p] * 12)}, CURRENT_TIMESTAMP)
             ON CONFLICT (accession_number) DO UPDATE
             SET cik = EXCLUDED.cik, ticker = EXCLUDED.ticker,
                 filed_date = EXCLUDED.filed_date, max_score = EXCLUDED.max_score,
@@ -2646,6 +2651,7 @@ def upsert_spring_load_analysis(accession_number, cik, ticker, filed_date,
                 extraction_json = COALESCE(EXCLUDED.extraction_json,
                                            spring_load_analyses.extraction_json),
                 windows_mature = EXCLUDED.windows_mature,
+                cadence_fingerprint = EXCLUDED.cadence_fingerprint,
                 model = EXCLUDED.model, analyzed_at = CURRENT_TIMESTAMP
         """, values)
     else:
@@ -2660,8 +2666,9 @@ def upsert_spring_load_analysis(accession_number, cik, ticker, filed_date,
         cursor.execute(f"""
             INSERT OR REPLACE INTO spring_load_analyses
             (accession_number, cik, ticker, filed_date, max_score, band,
-             has_grant, analysis_json, extraction_json, windows_mature, model, analyzed_at)
-            VALUES ({', '.join([p] * 11)}, CURRENT_TIMESTAMP)
+             has_grant, analysis_json, extraction_json, windows_mature,
+             cadence_fingerprint, model, analyzed_at)
+            VALUES ({', '.join([p] * 12)}, CURRENT_TIMESTAMP)
         """, values)
 
     conn.commit()

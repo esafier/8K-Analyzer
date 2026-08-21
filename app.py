@@ -1465,8 +1465,13 @@ def backtest_spring_load_route():
     These are the filings saved by hand because the question was open. Costs one
     cheap LLM extraction per filing, cached by accession, so re-runs are free.
     """
-    from spring_load import backtest_watchlist
+    from spring_load import backtest_in_progress, backtest_watchlist
     from database import create_backfill_run
+
+    if backtest_in_progress():
+        flash("A grant-timing backtest is already running. Starting a second one "
+              "would pay for every extraction twice — watch the logs instead.", "error")
+        return redirect(url_for("watchlist"))
 
     try:
         run_id = create_backfill_run(
@@ -1481,6 +1486,10 @@ def backtest_spring_load_route():
         from database import complete_backfill_run
         try:
             stats = backtest_watchlist(verbose=True)
+            if stats is None:
+                if run_id:
+                    complete_backfill_run(run_id, status="failed")
+                return
             if run_id:
                 complete_backfill_run(
                     run_id, fetched=stats["screened"] + stats["skipped"],

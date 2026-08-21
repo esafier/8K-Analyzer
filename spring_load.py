@@ -18,11 +18,17 @@
 # on a Tuesday.
 
 import json
+import threading
 from datetime import datetime, timedelta
 
 from price_history import get_daily_closes, get_close_on_or_after
 
 BENCHMARK_TICKER = "SPY"
+
+# Serialises grant-timing backtests. Two overlapping workers would each see the
+# same accession as uncached and independently pay for its LLM extraction, so a
+# double-click duplicates every AI call in the watchlist.
+_backtest_lock = threading.Lock()
 
 # Trading-day windows, expressed in calendar days with slack for weekends.
 RUN_IN_DAYS = 30        # how far back to measure the approach to the grant
@@ -505,6 +511,18 @@ def analyze(extraction, ticker, filed_date, prior_grant_dates=None):
 # RUNNERS — one filing, or a backtest across saved filings
 # ============================================================
 
+def cadence_fingerprint(prior_grant_dates):
+    """A stable signature of the cadence baseline a score was computed against.
+
+    The off-cycle signal and the repetition cap both read prior_grant_dates,
+    which GROWS as more filings for the same company are screened. Without this,
+    a filing screened first keeps a score derived from an incomplete baseline
+    forever, and the result depends on the order the watchlist happened to be
+    processed in — which would make a deterministic scorer non-deterministic.
+    """
+    return "|".join(sorted(prior_grant_dates or []))
+
+
 def refresh_if_stale(filing):
     """Recompute a cached screen's deterministic half if its evidence could move.
 
@@ -534,7 +552,18 @@ def refresh_if_stale(filing):
     except (ValueError, TypeError):
         return None
 
-    if cached.get("windows_mature") or not cached.get("extraction_json"):
+    if not cached.get("extraction_json"):
+        return analysis
+
+    prior = get_prior_grant_dates(filing.get("cik"), exclude_accession=accession)
+    fingerprint = cadence_fingerprint(prior)
+
+    # Two independent reasons a cached score can be out of date: its price
+    # windows have since closed, or the company's screened grant history has
+    # grown and changed the cadence baseline underneath it.
+    stale_prices = not cached.get("windows_mature")
+    stale_cadence = (cached.get("cadence_fingerprint") or "") != fingerprint
+    if not (stale_prices or stale_cadence):
         return analysis
 
     try:
@@ -548,13 +577,13 @@ def refresh_if_stale(filing):
         extraction,
         ticker=filing.get("ticker"),
         filed_date=filing.get("filed_date"),
-        prior_grant_dates=get_prior_grant_dates(
-            filing.get("cik"), exclude_accession=accession),
+        prior_grant_dates=prior,
     )
     upsert_spring_load_analysis(
         accession, filing.get("cik"), filing.get("ticker"),
         filing.get("filed_date"), refreshed,
         model=cached.get("model"), extraction=extraction,
+        cadence_fingerprint=fingerprint,
     )
     return refreshed
 
@@ -606,8 +635,17 @@ def screen_filing(filing, model=None, force=False):
     upsert_spring_load_analysis(
         accession, filing.get("cik"), filing.get("ticker"),
         filing.get("filed_date"), analysis, model=model, extraction=extraction,
+        cadence_fingerprint=cadence_fingerprint(prior),
     )
     return analysis
+
+
+def backtest_in_progress():
+    """True while a grant-timing backtest holds the lock."""
+    if _backtest_lock.acquire(blocking=False):
+        _backtest_lock.release()
+        return False
+    return True
 
 
 def backtest_watchlist(model=None, limit=None, force=False, verbose=True):
@@ -620,6 +658,24 @@ def backtest_watchlist(model=None, limit=None, force=False, verbose=True):
     Returns {'screened': n, 'skipped': n, 'flagged': [...]} where flagged lists
     anything scoring 5 or higher, worst first.
     """
+    from database import get_watchlist_filings
+
+    # Two overlapping workers would each see the same accession as uncached and
+    # independently pay for its extraction — a double-click duplicating every AI
+    # call in the watchlist. The cache only makes a run free AFTER the first
+    # worker has finished each filing, so it cannot protect against this itself.
+    if not _backtest_lock.acquire(blocking=False):
+        print("[SPRING LOAD] A backtest is already running — not starting a second.",
+              flush=True)
+        return None
+
+    try:
+        return _backtest_watchlist(model, limit, force, verbose)
+    finally:
+        _backtest_lock.release()
+
+
+def _backtest_watchlist(model, limit, force, verbose):
     from database import get_watchlist_filings
 
     rows = get_watchlist_filings() or []

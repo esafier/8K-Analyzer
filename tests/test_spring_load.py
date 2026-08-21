@@ -736,3 +736,107 @@ def test_opening_the_filing_page_refreshes_stale_price_evidence(tmp_sqlite_db):
     refreshed = database.get_spring_load_analysis("0009-1")
     assert refreshed["max_score"] > stale["max_score"], \
         "the page did not pick up matured price evidence"
+
+
+# ---------- a growing cadence baseline must invalidate a cached score ----------
+
+def test_a_score_is_recomputed_when_the_company_grant_history_grows(tmp_sqlite_db):
+    """The off-cycle signal and the repetition cap both read prior_grant_dates,
+    which grows as more of a company's filings are screened. Without
+    invalidation, whichever filing was screened first keeps a score derived from
+    an incomplete baseline — making a deterministic scorer depend on the order
+    the watchlist happened to be processed in."""
+    import database
+    from spring_load import cadence_fingerprint, refresh_if_stale, screen_filing
+
+    target = {"has_grant": True, "error": False, "grants": [
+        {"recipient": "A", "instrument": "OPTION", "grant_date": "2026-06-23",
+         "stated_rationale": "none stated"}]}
+    mature = {"has_data": True, "grant_close": 10.0, "windows_mature": True,
+              "run_in": 0.0, "pop": 0.0, "run_out": 0.0}
+
+    # Screened first, with no cadence baseline at all.
+    with patch("llm.extract_grant_facts", return_value=target), \
+         patch("spring_load.price_path", return_value=mature):
+        first = screen_filing(_filing(accession="0001-1"))
+    assert database.get_spring_load_analysis("0001-1")["cadence_fingerprint"] == ""
+
+    # A sibling filing for the same CIK is screened later, adding grant history.
+    sibling = {"has_grant": True, "error": False, "grants": [
+        {"recipient": "B", "instrument": "OPTION", "grant_date": "2024-06-20",
+         "stated_rationale": "annual grant"}]}
+    with patch("llm.extract_grant_facts", return_value=sibling), \
+         patch("spring_load.price_path", return_value=mature):
+        screen_filing(_filing(accession="0001-2"))
+
+    prior = database.get_prior_grant_dates("0000001", exclude_accession="0001-1")
+    assert prior, "the sibling should now supply a cadence baseline"
+
+    # Reading the first filing must pick the new baseline up — with no LLM call.
+    with patch("llm.extract_grant_facts") as extract, \
+         patch("spring_load.price_path", return_value=mature):
+        refreshed = refresh_if_stale(_filing(accession="0001-1"))
+        assert extract.call_count == 0
+
+    stored = database.get_spring_load_analysis("0001-1")
+    assert stored["cadence_fingerprint"] == cadence_fingerprint(prior)
+    assert refreshed["max_score"] >= first["max_score"]
+
+
+def test_an_unchanged_cadence_does_not_trigger_recomputation(tmp_sqlite_db):
+    from spring_load import refresh_if_stale, screen_filing
+
+    extraction = {"has_grant": True, "error": False, "grants": [
+        {"recipient": "A", "instrument": "OPTION", "grant_date": "2026-06-23",
+         "stated_rationale": "annual grant"}]}
+    mature = {"has_data": True, "grant_close": 10.0, "windows_mature": True,
+              "run_in": 0.0, "pop": 0.0, "run_out": 0.0}
+
+    with patch("llm.extract_grant_facts", return_value=extraction), \
+         patch("spring_load.price_path", return_value=mature):
+        screen_filing(_filing())
+
+    with patch("spring_load.price_path") as path:
+        refresh_if_stale(_filing())
+        assert path.call_count == 0, "a settled screen was needlessly recomputed"
+
+
+# ---------- overlapping backtests must not double-charge ----------
+
+def test_a_second_backtest_refuses_rather_than_duplicating_ai_calls(tmp_sqlite_db):
+    """The cache only makes a run free after the first worker finishes each
+    filing, so it cannot protect against two workers racing through the same
+    uncached accessions."""
+    from spring_load import backtest_watchlist
+
+    seen = {}
+
+    def during(*_a, **_kw):
+        seen["second"] = backtest_watchlist(verbose=False)
+        return []
+
+    with patch("database.get_watchlist_filings", side_effect=during):
+        first = backtest_watchlist(verbose=False)
+
+    assert first is not None, "the first run should complete"
+    assert seen["second"] is None, "a second overlapping backtest was allowed"
+
+
+def test_the_backtest_lock_is_released_after_a_failure(tmp_sqlite_db):
+    from spring_load import backtest_in_progress, backtest_watchlist
+
+    with patch("database.get_watchlist_filings", side_effect=RuntimeError("boom")):
+        try:
+            backtest_watchlist(verbose=False)
+        except RuntimeError:
+            pass
+
+    assert backtest_in_progress() is False, "a crashed backtest wedged the lock"
+
+
+def test_the_route_refuses_a_second_backtest(tmp_sqlite_db):
+    client = _client(tmp_sqlite_db)
+    with patch("spring_load.backtest_in_progress", return_value=True):
+        resp = client.post("/backtest-spring-load", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"already running" in resp.data
