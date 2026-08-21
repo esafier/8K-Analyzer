@@ -45,15 +45,15 @@ backfilled across the ~4,118 filings already in Postgres and be genuinely useful
 the morning it ships, instead of in November. Build for backfill first.
 
 - [x] Confirm a free keyless historical source exists
-- [ ] `price_history.py` with one entry point `get_daily_closes(ticker, start, end)`,
+- [x] `price_history.py` with one entry point `get_daily_closes(ticker, start, end)`,
       so the source can be swapped when Yahoo breaks — it is an **unofficial
       endpoint with no stability guarantee**, and this abstraction is the whole
       insurance policy. Everything downstream depends only on this signature.
-- [ ] Cache fetched series in a `price_history` table — 4,118 filings must not mean
+- [x] Cache fetched series in a `price_history` table — 4,118 filings must not mean
       4,118 network calls. Fetch each ticker's full span once, slice locally.
-- [ ] Throttle politely (sequential, small sleep). This is someone else's free
+- [x] Throttle politely (sequential, small sleep). This is someone else's free
       endpoint; do not hammer it.
-- [ ] **Delisting is signal, not an error.** A bearish call on a company that later
+- [x] **Delisting is signal, not an error.** (recorded as `status='not_found'`; scoring treatment still open — see Task 4) A bearish call on a company that later
       went dark is the strongest possible hit. Record 404-after-baseline distinctly
       rather than dropping the row — but do NOT auto-score it as a win without the
       user's input; surface it as its own bucket on the page.
@@ -119,6 +119,9 @@ the morning it ships, instead of in November. Build for backfill first.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — Task 0 COMPLETE: `price_history.py` + `price_history`/`price_history_meta`
+  cache tables shipped, 18 tests, verified live against real bars (GEVO/SPY/delisted).
+  Suite 194 green. Starting Task 1.
 - 2026-08-21 — Task 0 resolved: Stooq is PoW-gated; Yahoo chart endpoint works
   keylessly incl. micro-caps. Feature is now **retrospective** — backfill the
   existing ~4,118 filings rather than waiting 90 days. Starting Task 1.

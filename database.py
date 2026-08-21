@@ -280,6 +280,9 @@ def initialize_database():
     # Create departure_extractions table for caching 5.02 LLM extractions
     _create_departure_extractions_table(conn)
 
+    # Create price_history tables for cached daily closes (outcome scoring)
+    _create_price_history_table(conn)
+
     # Log which database we're using and how many filings are stored
     # This helps us debug data loss issues on Render
     cursor.execute("SELECT COUNT(*) FROM filings")
@@ -1950,6 +1953,186 @@ def upsert_departure_extraction(accession_number, cik, filed_date, extractions, 
             (accession_number, cik, filed_date, extractions_json, has_error, extracted_at)
             VALUES ({p}, {p}, {p}, {p}, {p}, CURRENT_TIMESTAMP)
         """, (accession_number, cik, filed_date, extractions_json, err_int))
+
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# PRICE HISTORY CACHE (daily closes for outcome scoring)
+# ============================================================
+
+def _create_price_history_table(conn):
+    """Create the price_history tables — cached daily closes plus per-ticker
+    fetch metadata.
+
+    Two tables, because a missing (ticker, date) row is ambiguous on its own:
+    it could mean "market was closed that day" or "we never fetched that span".
+    price_history_meta records which span was actually fetched and how it went,
+    so the cache can answer "do I already have this range?" without guessing.
+    """
+    cursor = conn.cursor()
+
+    if _using_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS price_history (
+                ticker TEXT NOT NULL,
+                bar_date TEXT NOT NULL,
+                close REAL,
+                PRIMARY KEY (ticker, bar_date)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS price_history_meta (
+                ticker TEXT PRIMARY KEY,
+                span_start TEXT,
+                span_end TEXT,
+                status TEXT NOT NULL DEFAULT 'ok',
+                fetched_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS price_history (
+                ticker TEXT NOT NULL,
+                bar_date TEXT NOT NULL,
+                close REAL,
+                PRIMARY KEY (ticker, bar_date)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS price_history_meta (
+                ticker TEXT PRIMARY KEY,
+                span_start TEXT,
+                span_end TEXT,
+                status TEXT NOT NULL DEFAULT 'ok',
+                fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_price_history_ticker_date "
+        "ON price_history(ticker, bar_date)"
+    )
+
+    conn.commit()
+    print("[STARTUP] Price history tables ready")
+
+
+def get_cached_closes(ticker, start_date, end_date):
+    """Return cached daily closes for a ticker within [start_date, end_date].
+
+    Dates are ISO strings ('YYYY-MM-DD') and compare correctly as text.
+    Returns {bar_date: close} with NULL closes omitted — a null close is a bar
+    we could not price, which is the same as not having it for scoring purposes.
+    """
+    if not ticker:
+        return {}
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"""
+        SELECT bar_date, close FROM price_history
+        WHERE ticker = {p} AND bar_date >= {p} AND bar_date <= {p}
+        ORDER BY bar_date
+    """, (ticker.upper(), start_date, end_date))
+    rows = cursor.fetchall()
+    conn.close()
+    # Index positionally — works identically for pg8000 tuples and sqlite3.Row.
+    return {row[0]: row[1] for row in rows if row[1] is not None}
+
+
+def get_price_history_meta(ticker):
+    """Return the fetch metadata for a ticker as a real dict, or None if never
+    fetched. Real dict (not sqlite3.Row) so callers can use .get() — see CLAUDE.md."""
+    if not ticker:
+        return None
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"""
+        SELECT ticker, span_start, span_end, status FROM price_history_meta
+        WHERE ticker = {p}
+    """, (ticker.upper(),))
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    columns = ["ticker", "span_start", "span_end", "status"]
+    return dict(zip(columns, [row[i] for i in range(len(columns))]))
+
+
+def upsert_closes(ticker, closes):
+    """Insert or update cached daily closes. `closes` is {bar_date: close}.
+    Batched — a full price series is hundreds of rows and this runs across
+    thousands of tickers during backfill."""
+    if not ticker or not closes:
+        return
+    ticker = ticker.upper()
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    if _using_postgres():
+        params = [(ticker, d, c, c) for d, c in closes.items()]
+        cursor.executemany(f"""
+            INSERT INTO price_history (ticker, bar_date, close)
+            VALUES ({p}, {p}, {p})
+            ON CONFLICT (ticker, bar_date) DO UPDATE SET close = {p}
+        """, params)
+    else:
+        params = [(ticker, d, c) for d, c in closes.items()]
+        cursor.executemany(f"""
+            INSERT OR REPLACE INTO price_history (ticker, bar_date, close)
+            VALUES ({p}, {p}, {p})
+        """, params)
+
+    conn.commit()
+    conn.close()
+
+
+def upsert_price_history_meta(ticker, span_start, span_end, status="ok"):
+    """Record which span was fetched for a ticker and how it went.
+
+    Widens the stored span rather than replacing it: if we previously fetched
+    Jan-Mar and now fetch Feb-Jun, the ticker is covered Jan-Jun, and narrowing
+    the record would cause a needless refetch of data we already hold.
+    """
+    if not ticker:
+        return
+    ticker = ticker.upper()
+    existing = get_price_history_meta(ticker)
+    if existing:
+        prior_start = existing.get("span_start")
+        prior_end = existing.get("span_end")
+        if prior_start and span_start:
+            span_start = min(prior_start, span_start)
+        elif prior_start:
+            span_start = prior_start
+        if prior_end and span_end:
+            span_end = max(prior_end, span_end)
+        elif prior_end:
+            span_end = prior_end
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    if _using_postgres():
+        cursor.execute(f"""
+            INSERT INTO price_history_meta (ticker, span_start, span_end, status, fetched_at)
+            VALUES ({p}, {p}, {p}, {p}, CURRENT_TIMESTAMP)
+            ON CONFLICT (ticker) DO UPDATE
+            SET span_start = {p}, span_end = {p}, status = {p},
+                fetched_at = CURRENT_TIMESTAMP
+        """, (ticker, span_start, span_end, status,
+              span_start, span_end, status))
+    else:
+        cursor.execute(f"""
+            INSERT OR REPLACE INTO price_history_meta
+            (ticker, span_start, span_end, status, fetched_at)
+            VALUES ({p}, {p}, {p}, {p}, CURRENT_TIMESTAMP)
+        """, (ticker, span_start, span_end, status))
 
     conn.commit()
     conn.close()
