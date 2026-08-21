@@ -203,3 +203,74 @@ def run_outcome_job(as_of=None, baseline_limit=200, mark_limit=200):
                   f"pending {stats['pending']}, gave up {stats['gave_up']}")
 
     return {"baselines": captured, "marks": marked}
+
+
+def run_outcome_backfill(run_id=None, verbose=True, as_of=None, batch_size=200,
+                         max_batches=200):
+    """Walk the whole archive: price every scored filing, then mark every
+    horizon that has already elapsed.
+
+    This is what makes the scorecard useful immediately instead of in 90 days —
+    the filings already in the database are mostly old enough that their 7/30/90
+    day horizons are in the past and can be scored right now.
+
+    Costs no LLM spend. Network cost is one price request per ticker per span,
+    cached thereafter, throttled inside price_history.
+    """
+    from database import complete_backfill_run, count_signal_outcomes
+
+    totals = {"priced": 0, "unpriced": 0, "skipped": 0}
+    batches = 0
+
+    try:
+        while batches < max_batches:
+            stats = capture_baselines(limit=batch_size)
+            batches += 1
+            for key in totals:
+                totals[key] += stats[key]
+
+            if verbose:
+                print(f"[OUTCOMES BACKFILL] Batch {batches}: "
+                      f"priced {stats['priced']}, unpriced {stats['unpriced']}, "
+                      f"skipped {stats['skipped']}", flush=True)
+
+            # Nothing priced and nothing recorded means either the queue is
+            # empty or every remaining row is failing for the same reason.
+            # Either way, looping again will not help.
+            if stats["priced"] == 0 and stats["unpriced"] == 0:
+                break
+
+        if batches >= max_batches and verbose:
+            print(f"[OUTCOMES BACKFILL] Stopped at the {max_batches}-batch cap — "
+                  f"run again to continue.", flush=True)
+
+        marks = mark_due_outcomes(as_of=as_of, limit=batch_size * 10)
+        if verbose:
+            for horizon, stats in marks.items():
+                print(f"[OUTCOMES BACKFILL] {horizon}d — marked {stats['marked']}, "
+                      f"pending {stats['pending']}, gave up {stats['gave_up']}", flush=True)
+
+        counts = count_signal_outcomes()
+        if verbose:
+            print(f"[OUTCOMES BACKFILL] Done — {counts['priced']} priced, "
+                  f"{counts['unpriced']} unpriceable, {counts['total']} total", flush=True)
+
+        if run_id:
+            complete_backfill_run(
+                run_id,
+                fetched=totals["priced"] + totals["unpriced"],
+                filtered=totals["priced"],
+                new=sum(m["marked"] for m in marks.values()),
+                skipped=totals["skipped"],
+            )
+
+        return {"baselines": totals, "marks": marks, "counts": counts}
+
+    except Exception as e:
+        print(f"[OUTCOMES BACKFILL] Failed: {e}", flush=True)
+        if run_id:
+            try:
+                complete_backfill_run(run_id, status="failed")
+            except Exception:
+                pass
+        raise

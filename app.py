@@ -1322,6 +1322,77 @@ def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
           f"{fetch_failed} fetch-failed, {llm_failed} llm-failed ---", flush=True)
 
 
+@app.route("/scorecard")
+def scorecard():
+    """Did the verdicts work? Direction-aware hit rates and excess return vs SPY
+    at 7 / 30 / 90 days, broken out by verdict, direction, score and signal type.
+
+    Reads only stored outcomes — no network, no LLM. The page is deliberately
+    blunt about what it is not counting; a scorecard that hides its gaps is
+    worse than no scorecard.
+    """
+    from database import OUTCOME_HORIZONS, count_signal_outcomes
+    from outcome_scoring import build_scorecard, best_and_worst
+
+    try:
+        horizon = int(request.args.get("horizon", 30))
+    except (TypeError, ValueError):
+        horizon = 30
+    if horizon not in OUTCOME_HORIZONS:
+        horizon = 30
+
+    card = build_scorecard(horizon)
+    extremes = best_and_worst(horizon)
+    counts = count_signal_outcomes()
+
+    return render_template(
+        "scorecard.html",
+        card=card,
+        best=extremes["best"],
+        worst=extremes["worst"],
+        counts=counts,
+    )
+
+
+@app.route("/backfill-outcomes", methods=["POST"])
+def backfill_outcomes_route():
+    """Price every scored filing already in the database and mark every horizon
+    that has already elapsed.
+
+    This is what makes the scorecard useful today rather than in 90 days: most
+    filings in the archive are old enough that their 7/30/90 day windows are
+    already in the past. No LLM spend — just cached daily closes.
+    """
+    from outcomes import run_outcome_backfill
+    from database import create_backfill_run
+
+    try:
+        run_id = create_backfill_run(
+            backfill_type="signal_outcomes",
+            date_start=None,
+            date_end=None,
+            model=None,
+        )
+    except Exception as e:
+        print(f"[OUTCOMES BACKFILL] WARN: could not create backfill_run row: {e}", flush=True)
+        run_id = None
+
+    def _worker():
+        try:
+            run_outcome_backfill(run_id=run_id, verbose=True)
+        except Exception as e:
+            print(f"[OUTCOMES BACKFILL] Worker died: {e}", flush=True)
+
+    thread = threading.Thread(target=_worker)
+    thread.daemon = True
+    thread.start()
+
+    flash("Outcome backfill started. Prices are fetched one ticker at a time, so a "
+          "few thousand filings takes a while — watch the logs, then open the Scorecard.",
+          "success")
+    return redirect(url_for("backfill"))
+
+
 @app.route("/clear-market-cap-cache", methods=["POST"])
 def clear_market_cap_cache():
     """Flush failed (NULL) market cap entries so they get retried."""

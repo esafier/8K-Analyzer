@@ -79,7 +79,7 @@ the morning it ships, instead of in November. Build for backfill first.
 - [x] Must be non-fatal: a price-fetch failure never blocks storing a filing.
 - [x] Backfill entry point for existing rows — `capture_baselines()` walks any
       filing with a verdict, so the same call serves ingest and retrospective backfill.
-      Still needs a UI button on /backfill (folded into Task 4).
+      UI button shipped on /backfill as 'Backfill Outcome Prices'.
 
 ## Task 3: Marking job
 
@@ -89,21 +89,21 @@ the morning it ships, instead of in November. Build for backfill first.
 
 ## Task 4: Scoring + `/scorecard` page
 
-- [ ] Direction-aware: a BEARISH call **hits when the stock lags SPY**; BULLISH hits
+- [x] Direction-aware: a BEARISH call **hits when the stock lags SPY**; BULLISH hits
       when it leads. Excess return = stock % change − SPY % change over the horizon.
-- [ ] Break out hit rate and median excess return by: verdict, direction, signal
+- [x] Break out hit rate and median excess return by: verdict, direction, signal
       score bucket, and signal type (forfeits comp / no successor / departure
       cluster / market-based hurdle).
-- [ ] **Always show n.** A 100% hit rate on n=3 is not a signal, and the page must
+- [x] **Always show n.** A 100% hit rate on n=3 is not a signal, and the page must
       not let it look like one. Suppress or grey out cells below a minimum n.
-- [ ] Be honest about survivorship and horizon truncation on the page itself.
+- [x] Be honest about survivorship and horizon truncation on the page itself.
 
 ## Task 5: Tests
 
-- [ ] Unit tests, all mocked, no network — matching the existing suite's style.
-- [ ] Cover: direction-aware hit logic (both directions), the null-mark idempotency,
+- [x] Unit tests, all mocked, no network — matching the existing suite's style.
+- [x] Cover: direction-aware hit logic (both directions), the null-mark idempotency,
       small-n suppression, missing-price handling, and the SQLite/Postgres dict rule.
-- [ ] Full suite green (baseline 176) before every commit.
+- [x] Full suite green (baseline 176) before every commit.
 
 ---
 
@@ -121,6 +121,10 @@ the morning it ships, instead of in November. Build for backfill first.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — Tasks 4+5 COMPLETE: `outcome_scoring.py`, `/scorecard` page, nav link,
+  and the retrospective backfill button. 31 tests (22 scoring + 9 route). Suite 256 green.
+  The page states what it excludes; delisted names are counted but deliberately NOT
+  scored as bearish wins. Next: adversarial review of the branch diff, then PR.
 - 2026-08-21 — Tasks 2+3 COMPLETE: `outcomes.py` (capture_baselines / mark_due_outcomes
   / run_outcome_job), wired into the daily scheduler as a non-critical step. 15 tests,
   suite 225 green. Benchmark is priced on the stock's OWN bar date so excess return
