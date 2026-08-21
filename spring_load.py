@@ -30,6 +30,12 @@ BENCHMARK_TICKER = "SPY"
 # double-click duplicates every AI call in the watchlist.
 _backtest_lock = threading.Lock()
 
+# How far past the grant date we will look for the anchoring bar. Matches
+# get_close_on_or_after's lookahead. Beyond this the "price at grant" is really
+# the price at an unrelated reopening, and every downstream signal — monthly low,
+# pop, run-out, V-shape — would be computed around that instead.
+MAX_ANCHOR_LOOKAHEAD_DAYS = 10
+
 # Trading-day windows, expressed in calendar days with slack for weekends.
 RUN_IN_DAYS = 30        # how far back to measure the approach to the grant
 POP_WINDOW_DAYS = 10    # calendar days covering roughly +1..+5 trading days
@@ -203,6 +209,13 @@ def price_path(ticker, grant_date):
         return result
 
     grant_bar = on_or_after[0]
+    # A halted name that resumes weeks later must not have that reopening treated
+    # as its grant price. Without this bound the fetch span itself (grant + 40d)
+    # became the lookahead, and a day-25 reopen would anchor the whole analysis.
+    if (_to_date(grant_bar) - grant).days > MAX_ANCHOR_LOOKAHEAD_DAYS:
+        result["anchor_too_far"] = True
+        return result
+
     grant_close = closes[grant_bar]
     result["grant_close"] = grant_close
     result["grant_bar"] = grant_bar
@@ -340,6 +353,10 @@ def score_grant(grant, path, prior_grant_dates=None, service_asymmetry_peers=Non
         if excess is not None and excess >= MATERIAL_MOVE:
             score += 1
             signals.append(("🟠", f"+{excess:.0%} vs SPY over {RUN_OUT_DAYS} days"))
+    elif path.get("anchor_too_far"):
+        signals.append(("⚪", f"The stock did not trade within "
+                              f"{MAX_ANCHOR_LOOKAHEAD_DAYS} days of the grant date — "
+                              f"no price at grant to anchor the analysis to"))
     elif grant.get("grant_date"):
         signals.append(("⚪", "No price data — the entire price path is untested"))
     else:

@@ -223,10 +223,12 @@ def build_scorecard(horizon=30, rows=None):
     # went dark — and since those rows still score at the horizons they traded
     # through, the table could report fewer priced rows than scored ones.
     priced = [r for r in rows if r.get("baseline_close") is not None]
-    # Still actively queued for marking: a delisted row is never re-marked, so
-    # counting its unmarked horizons as "awaiting" would promise work that will
-    # never happen.
-    open_for_marking = [r for r in priced if r.get("status") == OUTCOME_OK]
+    # "Awaiting" must mirror what get_outcomes_needing_mark actually selects.
+    # That query no longer gates on status — a delisted row keeps resolving
+    # horizons it has cached bars for — so filtering by status here would report
+    # rows as settled while they are still actively queued, understating the
+    # remaining coverage gap.
+    open_for_marking = priced
 
     by_signal = {}
     for row, hit, excess in scored:

@@ -840,3 +840,40 @@ def test_the_route_refuses_a_second_backtest(tmp_sqlite_db):
         resp = client.post("/backtest-spring-load", follow_redirects=True)
     assert resp.status_code == 200
     assert b"already running" in resp.data
+
+
+def test_a_reopening_weeks_later_is_not_treated_as_the_grant_price(tmp_sqlite_db):
+    """A halted name resuming on day 25 must not have that reopening anchor the
+    analysis. Without a bound, the fetch span itself became the lookahead and
+    every downstream signal — monthly low, pop, run-out, V-shape — was computed
+    around an unrelated session."""
+    series = {"2026-01-03": 10.0, "2026-02-27": 14.0, "2026-03-10": 15.0}
+
+    with patch("spring_load.get_daily_closes", return_value=series), \
+         patch("spring_load.get_close_on_or_after", return_value=(None, None)):
+        path = price_path("HALTED", "2026-02-02")
+
+    assert path["has_data"] is False, "an unrelated reopening anchored the analysis"
+    assert path.get("anchor_too_far") is True
+    assert path["grant_close"] is None
+
+    result = score_grant({"stated_rationale": "annual grant",
+                          "grant_date": "2026-02-02"}, path)
+    assert any("did not trade within" in t for _, t in result["signals"])
+
+
+def test_a_normal_weekend_gap_still_anchors_fine(tmp_sqlite_db):
+    """The bound must not reject an ordinary grant dated on a Saturday."""
+    series = {"2026-01-03": 10.0, "2026-02-02": 10.0, "2026-03-04": 11.0}
+
+    def after(t, target, **_kw):
+        src = {"2026-02-02": 500.0, "2026-03-04": 505.0}
+        later = sorted(d for d in src if d >= str(target)[:10])
+        return (later[0], src[later[0]]) if later else (None, None)
+
+    with patch("spring_load.get_daily_closes", return_value=series), \
+         patch("spring_load.get_close_on_or_after", side_effect=after):
+        path = price_path("AAPL", "2026-01-31")   # a Saturday
+
+    assert path["has_data"] is True
+    assert path["grant_bar"] == "2026-02-02"

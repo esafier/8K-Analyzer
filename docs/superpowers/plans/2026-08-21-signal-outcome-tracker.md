@@ -161,6 +161,8 @@ window that matters. Silent, and it doubles a real bill.
 | A transient failure is never recorded as a permanent verdict | `price_history` (404 vs error), `outcomes._answer_is_final`, `spring_load` maturity |
 | A window is measured strictly inside its advertised bounds | `spring_load` run-in anchor, pop window |
 | Padding locates a bar near a boundary; it never becomes the boundary | `spring_load.price_path` |
+| A price anchor is bounded by an explicit lookahead, never by the fetch span | `price_history.get_close_on_or_after`, `spring_load.price_path` (grant anchor) |
+| A view that reports queue state must mirror the query that feeds it | `outcome_scoring` coverage vs `get_outcomes_needing_mark` |
 
 Each of these was a bug at a second site after being fixed at the first.
 

@@ -261,12 +261,19 @@ def test_priced_count_cannot_be_lower_than_the_scored_count(tmp_sqlite_db):
     assert card["coverage"]["priced"] == MIN_SAMPLE + 1
 
 
-def test_a_delisted_rows_unmarked_horizons_are_not_called_awaiting(tmp_sqlite_db):
-    """A delisted row is never re-marked, so counting its empty horizons as
-    'awaiting' would promise work that will never happen."""
+def test_awaiting_mirrors_what_the_marking_queue_actually_selects(tmp_sqlite_db):
+    """This assertion used to be the opposite, and was right at the time: while
+    the marking queue gated on status, a delisted row genuinely never came back,
+    so calling it 'awaiting' promised work that would never happen.
+
+    The queue no longer gates on status — a delisted row keeps resolving
+    horizons it has cached bars for — so the coverage view has to follow. A row
+    the queue will still pick up must be reported as waiting, or the table
+    understates the remaining gap."""
     gone = _row(filing_id=42, status=database.OUTCOME_DELISTED,
                 base=10.0, close=5.0, horizon=7)
     card = build_scorecard(30, rows=[gone])
 
-    assert card["coverage"]["awaiting_horizon"] == 0
+    assert card["coverage"]["awaiting_horizon"] == 1, \
+        "a row the queue will still mark was reported as settled"
     assert card["coverage"]["delisted"] == 1
