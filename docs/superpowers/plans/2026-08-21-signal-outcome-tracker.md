@@ -130,6 +130,52 @@ Two properties hold the whole thing up, and both were bugs that had to be fixed:
 `not_found` must never be written for a recoverable error (round 8). Every gate above
 reads one of those two, so if either regresses, all seven sites start lying at once.
 
+## Two more hazard classes (added after they bit three more times)
+
+The write inventory above only covers sites that write a permanent state. Three
+later findings came from classes it does not cover, all with the same shape:
+**a rule established once, then not carried to the next thing built.** Check
+these lists the same way — by asking where a rule is MISSING, not where it exists.
+
+### Paid background workers — every one needs an active-run guard
+
+A second worker started by a double-click or retry sees the same items as
+uncached and pays for all of them again. A cache does not protect against this:
+it only helps *after* the first worker finishes each item, which is exactly the
+window that matters. Silent, and it doubles a real bill.
+
+| Worker | Guard |
+|---|---|
+| `outcomes.run_outcome_job` / `run_outcome_backfill` | `_run_lock`, non-blocking; also blocks `/clear-database` |
+| `spring_load.backtest_watchlist` | `_backtest_lock`, non-blocking; route refuses too |
+| `spring_load.screen_filing` | none needed — one filing, bounded, cached on completion |
+
+**Adding a paid worker means adding a row here.**
+
+### Measurement rules — established once, must hold at every site
+
+| Rule | Sites it must hold at |
+|---|---|
+| Benchmark priced on the stock's EXACT bar date, else refuse the comparison | `outcomes._benchmark_close_on`, `spring_load.price_path` |
+| Only completed trading sessions are ever priced | `price_history.latest_complete_date` (parser, coverage check, fetch window) |
+| A transient failure is never recorded as a permanent verdict | `price_history` (404 vs error), `outcomes._answer_is_final`, `spring_load` maturity |
+| A window is measured strictly inside its advertised bounds | `spring_load` run-in anchor, pop window |
+| Padding locates a bar near a boundary; it never becomes the boundary | `spring_load.price_path` |
+
+Each of these was a bug at a second site after being fixed at the first.
+
+### Cached derived values — each must name what invalidates it
+
+| Cache | Invalidated by |
+|---|---|
+| `spring_load_analyses.analysis_json` | price windows maturing; `cadence_fingerprint` changing |
+| `price_history` bars + span | nothing (immutable once complete); disjoint spans never merged |
+| `signal_outcomes` verdict snapshot | nothing, by design — prompts change and history must not |
+
+A cached value whose invalidation condition is unwritten is a stale value waiting
+to happen. `windows_mature` and `cadence_fingerprint` both exist because that was
+learned the expensive way.
+
 Retry suppression audited separately: the only bare `return {}` in `get_daily_closes`
 are input validation (empty ticker, inverted range). Every other early return serves
 the cache **without** recording coverage, so a retry can always still happen.
