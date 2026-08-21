@@ -235,3 +235,24 @@ def test_the_priced_count_agrees_with_the_scorecard(tmp_sqlite_db):
     database.set_outcome_status(filing["id"], database.OUTCOME_DELISTED)
 
     assert database.count_signal_outcomes() == {"total": 1, "priced": 1, "unpriced": 0}
+
+
+def test_a_delisted_row_keeps_resolving_horizons_it_has_bars_for(tmp_sqlite_db):
+    """The page claims a name is scored at every horizon it actually traded
+    through. Gating the marking queue on status broke that claim: a symbol that
+    went dark before the backfill ran would have its later horizons dropped even
+    when the price cache still held real bars for them."""
+    filing = _pending(filed_date="2026-01-05")
+    database.upsert_signal_outcome(filing, "2026-01-05", 10.0, 500.0)
+    database.set_outcome_status(filing["id"], database.OUTCOME_DELISTED)
+
+    due = database.get_outcomes_needing_mark(30, "2026-06-01")
+    assert len(due) == 1, "a delisted row with a baseline must still be markable"
+    assert due[0]["filing_id"] == filing["id"]
+
+
+def test_a_row_with_no_baseline_is_still_never_marked(tmp_sqlite_db):
+    """Removing the status gate must not let unpriced rows into the queue."""
+    filing = _pending(filed_date="2026-01-05")
+    database.upsert_signal_outcome(filing, status=database.OUTCOME_NO_PRICE)
+    assert database.get_outcomes_needing_mark(30, "2026-06-01") == []

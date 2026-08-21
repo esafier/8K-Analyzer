@@ -2399,6 +2399,15 @@ def get_outcomes_needing_mark(horizon_days, as_of_date, limit=500):
     Horizons are anchored on the FILING date, not the baseline trading day —
     the filing is the event being scored, and anchoring on the baseline would
     stretch the window whenever a filing landed on a long weekend.
+
+    Eligibility is "has a baseline and this horizon is unmarked", NOT "status is
+    ok". A row flagged delisted can still have real cached bars for a horizon it
+    traded through — the price cache keeps everything from before the symbol went
+    dark — and gating on status would silently discard them, contradicting the
+    scorecard's own claim that a name is scored at every horizon it traded. The
+    status is a reporting label, not a queue gate. Rows terminate per-horizon
+    instead: a horizon with no bars is stamped by give_up_on_horizon and drops
+    out on its own, so nothing retries forever.
     """
     if horizon_days not in OUTCOME_HORIZONS:
         raise ValueError(f"unsupported horizon: {horizon_days}")
@@ -2417,11 +2426,10 @@ def get_outcomes_needing_mark(horizon_days, as_of_date, limit=500):
         WHERE marked_{horizon_days}d_at IS NULL
           AND baseline_close IS NOT NULL
           AND baseline_date IS NOT NULL
-          AND status = {p}
           AND filed_date <= {p}
         ORDER BY filed_date
         LIMIT {int(limit)}
-    """, (OUTCOME_OK, cutoff))
+    """, (cutoff,))
     rows = cursor.fetchall()
     conn.close()
 

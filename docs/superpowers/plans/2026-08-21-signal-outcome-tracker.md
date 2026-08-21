@@ -150,6 +150,22 @@ Verified 2026-08-21 at head 56097fd.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — CODEX ROUND 10 on head 6bd6901. Two findings, both real, both FIXED.
+  19. **P2 FIXED** — `get_outcomes_needing_mark` gated on `status = 'ok'`, so flagging a
+      row delisted stopped EVERY later horizon being queried. A name that went dark
+      before the backfill ran would lose horizons it actually traded through, even
+      though the price cache still held real bars for them (kept deliberately since R8).
+      That directly contradicted the page's own claim. The status is a reporting label,
+      not a queue gate: eligibility is now "has a baseline and this horizon is unmarked".
+      Rows still terminate per-horizon via `give_up_on_horizon`, so nothing retries
+      forever, and rows with no baseline are still excluded by `baseline_close IS NOT NULL`.
+      Same family as R2/R5/R7: a fix applied in one place and not carried to the gate.
+  20. **P2 FIXED** — `/clear-database` could commit while the outcome worker was mid-run,
+      after which the worker's pending `upsert_signal_outcome` calls would land for
+      filings that no longer exist — recreating exactly the orphaned rows with dead
+      links that the R1 fix removed. The clear now REFUSES while a run holds the lock
+      (`outcome_run_in_progress()`), rather than blocking: a backfill can run an hour,
+      and a hung request is a worse answer than a clear message.
 - 2026-08-21 — CODEX ROUND 9 on head 4aa8379. One finding, real, FIXED — and it corrects
   my own round-6 refutation.
   18. **P2 FIXED (severe in effect)** — Yahoo applies split adjustment RETROACTIVELY at

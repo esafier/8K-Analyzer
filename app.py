@@ -903,8 +903,23 @@ def mark_as_sent():
 
 @app.route("/clear-database", methods=["POST"])
 def clear_database():
-    """Wipe all filings so you can re-backfill with an updated prompt."""
+    """Wipe all filings so you can re-backfill with an updated prompt.
+
+    Refuses while an outcome run is in flight. That worker selects filings up
+    front and writes their outcome rows over several minutes; clearing beneath it
+    would let those writes land after the delete, recreating exactly the orphaned
+    scorecard rows with dead /filing/<id> links that clearing exists to remove.
+    Refusing is better than blocking here — a backfill can run for an hour, and a
+    hung request is a worse answer than a clear message.
+    """
     from database import clear_all_filings
+    from outcomes import outcome_run_in_progress
+
+    if outcome_run_in_progress():
+        flash("An outcome run is in progress — clearing now would leave orphaned "
+              "scorecard rows behind it. Wait for it to finish, then clear.", "error")
+        return redirect(url_for("backfill"))
+
     clear_all_filings()
     flash("Database cleared. Run a backfill to repopulate with the current prompt.", "success")
     return redirect(url_for("backfill"))

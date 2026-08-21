@@ -72,6 +72,18 @@ REBASE_TOLERANCE = 0.005
 LOOKAHEAD_DAYS = 10
 
 
+def outcome_run_in_progress():
+    """True while an outcome run holds the lock.
+
+    Exposed so callers that would invalidate the run's assumptions — clearing
+    the filings table out from under it, for one — can refuse rather than race.
+    """
+    if _run_lock.acquire(blocking=False):
+        _run_lock.release()
+        return False
+    return True
+
+
 def _today():
     """Isolated so tests can pin 'now' without patching datetime globally."""
     return datetime.utcnow().date()

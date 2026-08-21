@@ -639,3 +639,52 @@ def test_rebase_factor_is_neutral_without_a_cached_baseline_bar(tmp_sqlite_db):
     assert outcomes._rebase_factor("AAPL", "2026-01-05", 10.0) == 1.0
     assert outcomes._rebase_factor("AAPL", None, 10.0) == 1.0
     assert outcomes._rebase_factor("AAPL", "2026-01-05", None) == 1.0
+
+
+# ---------- a clear must not race the outcome worker ----------
+
+def test_the_lock_state_is_visible_to_callers(tmp_sqlite_db):
+    assert outcomes.outcome_run_in_progress() is False
+
+    seen = {}
+
+    def check(**_kw):
+        seen["during"] = outcomes.outcome_run_in_progress()
+        return _no_baselines()
+
+    with patch("outcomes.capture_baselines", side_effect=check), \
+         patch("outcomes.mark_due_outcomes", return_value={}):
+        outcomes.run_outcome_backfill(verbose=False)
+
+    assert seen["during"] is True, "a run in flight must be visible"
+    assert outcomes.outcome_run_in_progress() is False, "the lock must be released"
+
+
+def test_clearing_the_database_is_refused_during_an_outcome_run(tmp_sqlite_db):
+    """Clearing beneath the worker would let its pending writes land after the
+    delete, recreating the orphaned rows that clearing exists to remove."""
+    from app import app
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    _insert("0000-01")
+    assert database.get_filing_count() == 1
+
+    with patch("outcomes.outcome_run_in_progress", return_value=True):
+        resp = client.post("/clear-database", follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert b"outcome run is in progress" in resp.data
+    assert database.get_filing_count() == 1, "the clear should have been refused"
+
+
+def test_clearing_works_when_no_run_is_in_flight(tmp_sqlite_db):
+    from app import app
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    _insert("0000-01")
+    resp = client.post("/clear-database", follow_redirects=True)
+
+    assert b"Database cleared" in resp.data
+    assert database.get_filing_count() == 0
