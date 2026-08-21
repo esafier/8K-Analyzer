@@ -288,4 +288,16 @@ def best_and_worst(horizon=30, rows=None, limit=10):
         })
 
     entries.sort(key=lambda e: e["signed_excess"], reverse=True)
-    return {"best": entries[:limit], "worst": list(reversed(entries[-limit:]))}
+
+    # Split at the midpoint so the two tables can never share a row — printing
+    # one filing as both a best and a worst call would imply two results where
+    # there is one. Both tables still populate on a short list; they just meet
+    # in the middle instead of overlapping.
+    half = len(entries) // 2
+    n_best = min(limit, len(entries) - half)
+    n_worst = min(limit, half)
+
+    return {
+        "best": entries[:n_best],
+        "worst": list(reversed(entries[len(entries) - n_worst:])) if n_worst else [],
+    }

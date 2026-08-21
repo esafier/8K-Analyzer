@@ -164,8 +164,11 @@ def get_daily_closes(ticker, start_date, end_date):
 
     # A ticker Yahoo has already denied stays denied — don't spend a request
     # per filing rediscovering that a 2019 shell company no longer trades.
+    # Still serve whatever was cached before it went dark: a company delisted
+    # last month traded perfectly normally the month before, and those bars are
+    # exactly what scoring its filings needs.
     if meta and meta.get("status") == STATUS_NOT_FOUND:
-        return {}
+        return get_cached_closes(ticker, start_iso, end_iso)
 
     covered = (
         meta
@@ -197,7 +200,7 @@ def get_daily_closes(ticker, start_date, end_date):
     time.sleep(REQUEST_DELAY)
     fetched = fetch_from_yahoo(ticker, fetch_start, fetch_end)
 
-    if fetched is STATUS_NOT_FOUND:
+    if isinstance(fetched, str) and fetched == STATUS_NOT_FOUND:
         upsert_price_history_meta(ticker, None, None, status=STATUS_NOT_FOUND)
         return {}
 
@@ -213,6 +216,27 @@ def get_daily_closes(ticker, start_date, end_date):
     )
 
     return get_cached_closes(ticker, start_iso, end_iso)
+
+
+def has_coverage(ticker, start_date, end_date):
+    """True if this span was actually fetched successfully for this ticker.
+
+    This is the difference between "we looked and the market had no bars" and
+    "we never got an answer" — and callers must not conflate them. A network
+    outage makes get_daily_closes return {} for every ticker; without this
+    check, a caller would read that as a permanent verdict and write thousands
+    of rows off as unpriceable.
+    """
+    if not ticker:
+        return False
+    meta = get_price_history_meta(ticker)
+    if not meta or meta.get("status") != STATUS_OK:
+        return False
+    span_start = meta.get("span_start")
+    span_end = meta.get("span_end")
+    if not span_start or not span_end:
+        return False
+    return span_start <= _iso(start_date) and span_end >= _iso(end_date)
 
 
 def get_close_on_or_after(ticker, target_date, max_lookahead_days=10):

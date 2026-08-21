@@ -181,3 +181,19 @@ def test_fetch_malformed_indicators_is_transient():
     payload = {"chart": {"result": [{"timestamp": [1767312000], "indicators": {}}]}}
     with patch("price_history.requests.get", return_value=_Resp(200, payload)):
         assert price_history.fetch_from_yahoo("AAPL", "2026-01-01", "2026-01-06") is None
+
+
+def test_bars_cached_before_a_delisting_are_still_served(tmp_sqlite_db):
+    """A company that went dark last month traded normally the month before,
+    and those bars are exactly what scoring its filings needs."""
+    with patch("price_history.fetch_from_yahoo", return_value=SERIES):
+        price_history.get_daily_closes("GONE", "2026-01-02", "2026-01-06")
+
+    with patch("price_history.fetch_from_yahoo", return_value=STATUS_NOT_FOUND):
+        # A later lookup past the cached span discovers the ticker is dead.
+        price_history.get_daily_closes("GONE", "2026-06-01", "2026-06-10")
+
+    with patch("price_history.fetch_from_yahoo") as mock:
+        recovered = price_history.get_daily_closes("GONE", "2026-01-02", "2026-01-06")
+        assert mock.call_count == 0, "a dead ticker must not cost a request"
+    assert recovered == SERIES, "cached history was discarded when the ticker went dark"

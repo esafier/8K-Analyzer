@@ -1331,7 +1331,7 @@ def scorecard():
     blunt about what it is not counting; a scorecard that hides its gaps is
     worse than no scorecard.
     """
-    from database import OUTCOME_HORIZONS, count_signal_outcomes
+    from database import OUTCOME_HORIZONS, count_signal_outcomes, get_signal_outcomes
     from outcome_scoring import build_scorecard, best_and_worst
 
     try:
@@ -1341,8 +1341,11 @@ def scorecard():
     if horizon not in OUTCOME_HORIZONS:
         horizon = 30
 
-    card = build_scorecard(horizon)
-    extremes = best_and_worst(horizon)
+    # Read the table once and share it — the archive runs to thousands of rows
+    # and both views want all of them.
+    rows = get_signal_outcomes()
+    card = build_scorecard(horizon, rows=rows)
+    extremes = best_and_worst(horizon, rows=rows)
     counts = count_signal_outcomes()
 
     return render_template(

@@ -34,7 +34,7 @@ from database import (
     set_outcome_status,
     upsert_signal_outcome,
 )
-from price_history import STATUS_NOT_FOUND, get_close_on_or_after
+from price_history import STATUS_NOT_FOUND, get_close_on_or_after, has_coverage
 
 # The benchmark every signal is measured against.
 BENCHMARK_TICKER = "SPY"
@@ -43,6 +43,10 @@ BENCHMARK_TICKER = "SPY"
 # ticker always prints a close within days; a month of silence means the name
 # stopped trading, which is a real outcome rather than a pending one.
 GIVE_UP_AFTER_DAYS = 30
+
+# Must match get_close_on_or_after's lookahead, so the coverage check asks
+# about exactly the span the lookup actually searched.
+LOOKAHEAD_DAYS = 10
 
 
 def _today():
@@ -64,6 +68,21 @@ def _ticker_is_gone(ticker):
     """True if the price source has already ruled this symbol non-existent."""
     meta = get_price_history_meta(ticker)
     return bool(meta and meta.get("status") == STATUS_NOT_FOUND)
+
+
+def _answer_is_final(ticker, anchor_date):
+    """Did the price source actually answer for this window, or did we just
+    fail to reach it?
+
+    Everything that permanently writes a filing off depends on this. A network
+    outage returns no price for every ticker alike; treating that as a verdict
+    would burn thousands of rows in a single bad run, and they would never be
+    retried because the status stops them being picked up again.
+    """
+    anchor = _to_date(anchor_date)
+    if not anchor:
+        return False
+    return has_coverage(ticker, anchor, anchor + timedelta(days=LOOKAHEAD_DAYS))
 
 
 def capture_baselines(limit=200, verdicts=("DEEP_LOOK", "MONITOR")):
@@ -88,12 +107,22 @@ def capture_baselines(limit=200, verdicts=("DEEP_LOOK", "MONITOR")):
             bar_date, close = get_close_on_or_after(ticker, filed_date)
 
             if close is None:
-                # No price for this name at this time. Record why, so the row
-                # shows up as an honest gap instead of quietly leaving the
-                # denominator.
-                status = OUTCOME_DELISTED if _ticker_is_gone(ticker) else OUTCOME_NO_PRICE
-                upsert_signal_outcome(filing, status=status)
-                stats["unpriced"] += 1
+                if _ticker_is_gone(ticker):
+                    # A definitive answer: the symbol does not exist.
+                    upsert_signal_outcome(filing, status=OUTCOME_DELISTED)
+                    stats["unpriced"] += 1
+                elif _answer_is_final(ticker, filed_date):
+                    # We reached the source and it has no bars here. Record it,
+                    # so the row is an honest gap rather than quietly leaving
+                    # the denominator.
+                    upsert_signal_outcome(filing, status=OUTCOME_NO_PRICE)
+                    stats["unpriced"] += 1
+                else:
+                    # We never got an answer. Leave the row uncreated so the
+                    # next run retries it — writing it off here would let one
+                    # network outage silently delete the archive from the
+                    # scorecard.
+                    stats["skipped"] += 1
                 continue
 
             # Benchmark on the stock's own bar date — same window, or the
@@ -158,11 +187,15 @@ def mark_due_outcomes(as_of=None, limit=200):
                         # judgment call, so it is flagged, not scored.
                         set_outcome_status(row["filing_id"], OUTCOME_DELISTED)
                         stats["gave_up"] += 1
-                    elif days_overdue > GIVE_UP_AFTER_DAYS:
+                    elif days_overdue > GIVE_UP_AFTER_DAYS and _answer_is_final(ticker, target):
+                        # Long overdue AND the source actually answered — the
+                        # name has stopped printing closes. Giving up on a
+                        # request that merely failed would be permanent.
                         set_outcome_status(row["filing_id"], OUTCOME_NO_PRICE)
                         stats["gave_up"] += 1
                     else:
-                        # Recent enough that the bar may simply not exist yet.
+                        # Recent enough that the bar may not exist yet, or we
+                        # never reached the source. Either way, retry later.
                         stats["pending"] += 1
                     continue
 

@@ -121,6 +121,17 @@ the morning it ships, instead of in November. Build for backfill first.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — ADVERSARIAL REVIEW of the branch diff. Found and fixed:
+  1. **Real bug** — a transient price-source failure was recorded as "unpriceable",
+     which is permanent and stops the row being retried. One network outage during
+     a backfill would have silently deleted the archive from the scorecard. Now
+     nothing is written off unless the source actually answered (`_answer_is_final`).
+  2. Bars cached before a ticker went dark were being discarded once it 404'd —
+     a company delisted last month traded normally the month before.
+  3. best/worst could print the same filing in both tables on a short list.
+  4. `/scorecard` read the outcome table twice per page load.
+  Verified end-to-end against live market data: 5 real tickers, delisted name
+  correctly flagged, all horizons marked, page renders. Suite 260 green.
 - 2026-08-21 — Tasks 4+5 COMPLETE: `outcome_scoring.py`, `/scorecard` page, nav link,
   and the retrospective backfill button. 31 tests (22 scoring + 9 route). Suite 256 green.
   The page states what it excludes; delisted names are counted but deliberately NOT

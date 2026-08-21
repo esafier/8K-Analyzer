@@ -67,9 +67,11 @@ def test_benchmark_is_priced_on_the_stocks_own_bar_date(tmp_sqlite_db):
 
 
 def test_unpriceable_filing_is_recorded_not_dropped(tmp_sqlite_db):
-    """A filing we cannot price still belongs in the denominator."""
+    """A filing the source answered about but has no bars for still belongs in
+    the denominator."""
     _insert()
-    with patch("outcomes.get_close_on_or_after", side_effect=_closes({})):
+    with patch("outcomes.get_close_on_or_after", side_effect=_closes({})), \
+         patch("outcomes._answer_is_final", return_value=True):
         assert outcomes.capture_baselines()["unpriced"] == 1
 
     out = database.get_signal_outcomes()[0]
@@ -188,10 +190,12 @@ def test_recent_missing_bar_stays_pending_for_retry(tmp_sqlite_db):
 
 
 def test_long_silence_stops_being_retried(tmp_sqlite_db):
-    """A month past the horizon with no close means the name stopped trading."""
+    """A month past the horizon with no close, from a source that answered,
+    means the name stopped trading."""
     _priced_filing(tmp_sqlite_db)
     with patch("outcomes.get_close_on_or_after", side_effect=_closes({})), \
-         patch("outcomes._ticker_is_gone", return_value=False):
+         patch("outcomes._ticker_is_gone", return_value=False), \
+         patch("outcomes._answer_is_final", return_value=True):
         result = outcomes.mark_due_outcomes(as_of=date(2026, 3, 1))
 
     assert result[7]["gave_up"] == 1
@@ -239,3 +243,45 @@ def test_full_job_captures_then_marks_in_one_pass(tmp_sqlite_db):
 
     assert result["baselines"]["priced"] == 1
     assert result["marks"][7]["marked"] == 1
+
+
+# ---------- an unreachable price source must not burn the archive ----------
+
+def test_unreachable_source_does_not_write_filings_off(tmp_sqlite_db):
+    """The bug this guard exists for: a network outage returns no price for
+    every ticker alike. Recording that as 'unpriceable' would delete the
+    archive from the scorecard in one bad run, and the status would stop those
+    rows from ever being picked up again."""
+    _insert()
+    with patch("outcomes.get_close_on_or_after", side_effect=_closes({})), \
+         patch("outcomes._ticker_is_gone", return_value=False), \
+         patch("outcomes._answer_is_final", return_value=False):
+        stats = outcomes.capture_baselines()
+
+    assert stats["unpriced"] == 0
+    assert stats["skipped"] == 1
+    assert database.get_signal_outcomes() == [], "filing was written off on a transient failure"
+    assert len(database.get_filings_needing_outcome_baseline()) == 1, "row is no longer retryable"
+
+
+def test_unreachable_source_does_not_give_up_on_a_horizon(tmp_sqlite_db):
+    """Same guard on the marking side — being long overdue is not enough to
+    give up if we never actually reached the source."""
+    _priced_filing(tmp_sqlite_db)
+    with patch("outcomes.get_close_on_or_after", side_effect=_closes({})), \
+         patch("outcomes._ticker_is_gone", return_value=False), \
+         patch("outcomes._answer_is_final", return_value=False):
+        result = outcomes.mark_due_outcomes(as_of=date(2026, 3, 1))
+
+    assert result[7]["gave_up"] == 0
+    assert result[7]["pending"] == 1
+    assert database.get_signal_outcomes()[0]["status"] == database.OUTCOME_OK
+
+
+def test_answer_is_final_tracks_real_coverage(tmp_sqlite_db):
+    """The helper must read actual fetch coverage, not just any stored row."""
+    assert outcomes._answer_is_final("AAPL", "2026-01-05") is False
+    database.upsert_price_history_meta("AAPL", "2026-01-01", "2026-01-31", status="ok")
+    assert outcomes._answer_is_final("AAPL", "2026-01-05") is True
+    # A span that stops short of the lookahead window is not a final answer.
+    assert outcomes._answer_is_final("AAPL", "2026-01-28") is False

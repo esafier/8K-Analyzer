@@ -4,8 +4,10 @@
 previous session. If you are a fresh session, read this top-to-bottom before
 acting. It records state that lives in Render + past conversation, NOT in code.
 
-**Last updated:** 2026-07-07
-**Working branch:** `claude/project-improvement-review-ne5ryf` (all work below is here; `main` is the untouched original)
+**Last updated:** 2026-08-21
+**Working branch:** `claude/autonomous-improvement-strategy-nfgkcp` — the signal
+outcome tracker (see §5). The earlier branch `claude/project-improvement-review-ne5ryf`
+holds the work described in §2 and is what Render is still serving (see §3).
 
 ---
 
@@ -105,17 +107,54 @@ manual dashboard action only (confirmed this session).
 
 ---
 
-## 5. DEFERRED WORK — signal outcome tracker (scoped, not started)
+## 5. SIGNAL OUTCOME TRACKER — BUILT (branch `claude/autonomous-improvement-strategy-nfgkcp`)
 
-User wants this eventually but paused it. Plan: record each DEEP_LOOK/MONITOR
-filing's stock price at ingest, re-mark at 7/30/90 days vs SPY, and a `/scorecard`
-page showing hit rates by signal type (direction-aware: bearish "hits" when the
-stock lags SPY). New `signal_outcomes` table; daily marking job in the scheduler;
-prospective-only (API serves current prices, not historical, so it scores from
-deploy day forward). ~4 commits. Zero LLM cost. Full plan is in this session's
-history if resumed.
+No longer deferred. Answers the question the scanner could not: *do its verdicts
+predict anything?* Full plan and run log in
+`docs/superpowers/plans/2026-08-21-signal-outcome-tracker.md`.
 
----
+**The assumption that changed.** This was scoped as prospective-only ("scores from
+deploy day forward") because API Ninjas serves current prices only. That was wrong.
+Yahoo's keyless chart endpoint returns daily closes for arbitrary historical windows
+and covers the micro-caps this scanner surfaces, so the scorecard is **retrospective**:
+the ~4,118 filings already in Postgres can be scored now rather than in 90 days.
+
+**What shipped**
+- `price_history.py` — the only module that knows where prices come from. Cached in
+  `price_history` / `price_history_meta`. Yahoo's endpoint is unofficial; when it
+  breaks, replace `fetch_from_yahoo()` and keep the two public signatures.
+- `signal_outcomes` table — one row per scored filing, holding a **snapshot** of what
+  the scanner claimed (prompts change; re-scoring history against today's prompt
+  measures nothing) plus baseline and 7/30/90-day marks for the stock and SPY.
+- `outcomes.py` — baseline capture + horizon marking. Runs daily inside the existing
+  scheduler job as a non-critical step. Zero LLM cost.
+- `outcome_scoring.py` + `/scorecard` — direction-aware hit rates and median excess
+  return vs SPY, broken out by verdict, direction, score bucket and signal type,
+  plus best/worst individual calls.
+- **Backfill button** on `/backfill` ("Backfill Outcome Prices") — this is the one to
+  press first. It prices the whole archive and marks every elapsed horizon.
+
+**Method decisions worth not re-litigating**
+- SPY is priced on the stock's OWN bar date, so excess return compares identical windows.
+- Horizons anchor on the filing date (the event), not the baseline trading day.
+- BEARISH hits when the stock lags SPY; BULLISH when it leads. NEUTRAL/MIXED are
+  counted but never scored — grading them would grade a prediction nobody made.
+- Hit rates are **withheld entirely** below 10 scored calls. A caveated number still
+  reads as a number.
+- Delisted names are counted and shown but NOT auto-scored as bearish wins. Scoring
+  them would hand the bearish signal its best outcomes for free. **This is the one
+  open judgment call — the user may want them scored.**
+- A transient price-source failure never writes a filing off as unpriceable. This was
+  a real bug caught in review: one network outage would otherwise have silently
+  deleted the archive from the scorecard, permanently.
+
+**Not done / next**
+- Nothing has been run against the live Postgres archive yet — the backfill button
+  has never been pressed. Expect it to take a while (one price request per ticker,
+  throttled, then cached).
+- The scorecard has no significance testing. With a few thousand filings that may be
+  worth adding; right now it just refuses to show thin rates.
+- Prompt-quality loop (the second half of the overnight brief) not started.
 
 ## 6. Env / test notes
 
