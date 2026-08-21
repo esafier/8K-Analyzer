@@ -234,3 +234,87 @@ the same mark.
   slightly wider Feb–Jul window.
 - 6 watchlist and 19 control filings had no usable price data (delisted or
   renamed) and are excluded from both denominators.
+
+---
+
+# Third measurement: the score is a bad forecaster and a good librarian
+
+**Added:** 2026-08-21, same session
+**Method:** read-only Render queries, no prices involved
+**Sample:** 1,084 scored filings; 543 of them read; 37 saved to the watchlist
+
+## The question the first two measurements got wrong
+
+Both earlier measurements graded the signal against SPY. That assumes the
+product's job is to predict returns. It may not be. With ~700 filings a week
+and one reader, the job might be *routing attention* — and the watchlist is a
+record of where that attention landed.
+
+That makes it labelled data the project already owns.
+
+## Save rate rises sharply with score
+
+| signal_score | filings | saved | save rate |
+|---|---|---|---|
+| 8 | 36 | 5 | 13.9% |
+| 7 | 31 | 3 | 9.7% |
+| 6 | 81 | 10 | 12.3% |
+| 5 | 470 | 13 | 2.8% |
+| 4 | 265 | 5 | 1.9% |
+| 3 | 22 | 0 | 0% |
+| 2 | 168 | 0 | 0% |
+| 1 | 11 | 1 | 9.1% (n=11, noise) |
+
+The obvious objection is ordering: if the app surfaces high scores first, the
+reader saves them because they saw them. It doesn't — `get_filings` defaults to
+`sort="date"`, newest first; `sort="signal"` exists but is not the default.
+
+The stronger control is to condition on filings actually read (`read_at IS NOT
+NULL`), which removes the "never saw it" path entirely:
+
+| among filings READ | n | saved | save rate | 95% CI |
+|---|---|---|---|---|
+| score ≥ 6 | 80 | 18 | **22.5%** | [14.7%, 32.8%] |
+| score ≤ 5 | 463 | 19 | **4.1%** | [2.6%, 6.3%] |
+
+Two-proportion z = **+6.03**. A 5.5× lift with intervals nowhere near touching.
+This is the only result in this document that separates.
+
+## As an attention router
+
+| read if score ≥ | filings | % of all | saves caught | recall | precision |
+|---|---|---|---|---|---|
+| 8 | 36 | 3.3% | 5/37 | 13.5% | 13.9% |
+| 7 | 67 | 6.2% | 8/37 | 21.6% | 11.9% |
+| **6** | **148** | **13.7%** | **18/37** | **48.6%** | **12.2%** |
+| 5 | 618 | 57.0% | 31/37 | 83.8% | 5.0% |
+| 4 | 883 | 81.5% | 36/37 | 97.3% | 4.1% |
+
+Base rate is 3.4%. Reading only score ≥ 6 means reading one filing in seven and
+still catching about half of everything that would have been saved.
+
+## The caveat that matters most
+
+**This result is partly circular.** The reader decides whether to save after
+reading a summary written by the same model that assigned the score. A high
+score and a compelling summary come from one process, so "the score predicts
+what gets saved" may partly mean "the model persuades the reader," not "the
+model finds what is worth saving."
+
+Returns cannot arbitrate this, because measurements one and two showed returns
+are flat across every score band. So the honest statement is narrow and still
+useful:
+
+> The score reliably predicts where this reader's attention goes. Whether that
+> attention is well directed is a separate question this data cannot answer.
+
+Breaking the circularity would need saves made without the model's summary in
+view — a blind-read comparison the app does not currently support.
+
+## What this changes
+
+The first two measurements say: stop grading this thing on returns, and stop
+trying to make it more decisive about direction (v4). The third says the score
+is already doing real work at a different job. Optimising for triage is
+measurable *weekly* against saves, with no waiting for price windows to mature
+and no benchmark arithmetic at all.
