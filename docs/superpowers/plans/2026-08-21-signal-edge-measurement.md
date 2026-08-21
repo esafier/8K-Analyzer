@@ -149,3 +149,88 @@ afternoon of read-only queries once the machinery existed.
 3. Score the spring-load screen the same way once it has produced calls.
 4. Get more BEARISH samples; n=53 is too thin to rule out a real effect of the
    size that would matter.
+
+---
+
+# Second measurement: does the price path alone find spring-loading?
+
+**Added:** 2026-08-21, same session
+**Tool:** `screen_grant_timing.py`, no LLM, no API key
+**Sample:** 197 saved (watchlist) filings, 2026-02-02 → 2026-07-01, vs a
+200-filing control of same-period 5.02 filings that were *not* saved
+
+## Why this was worth running without a key
+
+The spring-load screen has two halves. One reads the filing with an LLM to find
+the grant, the recipient, the strike and the hurdles. The other is arithmetic on
+the tape: down into the grant, sharp move out of it, strike struck on the
+month's cheapest close. The arithmetic half needs nothing but prices, so it can
+sweep every saved filing for free.
+
+The hope was a cheap shortlist — the filings worth spending LLM calls on.
+
+## It produced a shortlist, and the shortlist is worthless
+
+Seven of 190 scored watchlist filings reached 4+ of 6 points, led by KD at 6/6
+(−61.1% run-in, +28.3% pop, month's cheapest close, +22.1% vs SPY over 30 days).
+That reads like a smoking gun.
+
+Then the control:
+
+| threshold | saved filings | control (not saved) |
+|---|---|---|
+| ≥3 points | 18/190 = 9.5% [6.1, 14.5] | 22/186 = 11.8% [7.9, 17.3] |
+| ≥4 points | 7/190 = 3.7% [1.8, 7.4] | 13/186 = 7.0% [4.1, 11.6] |
+| ≥5 points | 2/190 = 1.1% [0.3, 3.8] | 5/186 = 2.7% [1.2, 6.1] |
+
+Two-proportion z on ≥4 points: **−1.43**. Mean points 0.96 vs 0.94.
+
+A random 5.02 filing is *more* likely to show the classic spring-load price
+shape than one you flagged as interesting, and the difference is not
+significant either way. The control's own 6/6 is TNDM; its 5/6 list includes
+SMCI and AXON.
+
+**The price path on its own is a volatility measure, not evidence of grant
+timing.** Down-then-up over 60 days is what any volatile microcap does several
+times a year.
+
+## What this means for the spring-load screen
+
+It does *not* invalidate `spring_load.py`. It localises where that module's
+discrimination actually lives: entirely in the LLM extraction half — whether a
+grant exists at all, whether it was off-cycle, whether it lacks a service
+condition its peers in the same filing carry, whether the hurdles imply an
+implausible CAGR. The price path is confirmatory, exactly as `price_path`'s
+docstring claims, and it cannot be promoted to primary evidence to save an API
+call.
+
+Concretely: running the spring-load screen without the LLM half is not a cheap
+approximation of it. It is a different, useless thing.
+
+## The check is now part of the tool
+
+`screen_grant_timing.py --control` screens a same-period sample of unsaved
+filings and prints both distributions with confidence intervals and the
+two-proportion z. When the sets are indistinguishable it says so in plain
+language rather than leaving a suggestive ranking to speak for itself.
+
+This exists because the ranking without it is a trap: 6/6 reads as damning, and
+the number alone gives the reader no way to know that 7% of random filings hit
+the same mark.
+
+## Caveats
+
+- **Anchor is the filing date, not the grant date.** Item 5.02 is due within
+  four business days of the event, so the anchor sits 0–4 business days late.
+  That biases the pop *downward*, so it under-counts rather than over-counts —
+  but it also means a genuinely well-timed grant could be missed, which weakens
+  the null result slightly. The LLM extraction supplies the true grant date and
+  would tighten both arms.
+- **The watchlist is not a random sample of anything.** It is what one reader
+  found interesting, so "saved" encodes no ground truth about spring-loading.
+  The comparison establishes that the price screen adds nothing to that
+  selection, not that the selection was wrong.
+- **Same six-week-plus regime problem** as the first measurement, over a
+  slightly wider Feb–Jul window.
+- 6 watchlist and 19 control filings had no usable price data (delisted or
+  renamed) and are excluded from both denominators.
