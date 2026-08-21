@@ -324,7 +324,8 @@ def test_filing_page_renders_a_stored_screen_with_hurdles(tmp_sqlite_db):
     assert "18%/yr" in body, "the CAGR conversion is the point of the hurdle table"
     assert "+125%" in body
     assert "could not test" in body
-    assert "Re-run screen" in body
+    assert "Re-extract (costs an AI call)" in body
+    assert "refreshes itself on this page for free" in body
 
 
 def test_the_page_never_claims_more_than_the_screen_can_see(tmp_sqlite_db):
@@ -633,3 +634,105 @@ def test_the_stored_facts_survive_a_recompute(tmp_sqlite_db):
 
     row = database.get_spring_load_analysis("0001-1")
     assert row["extraction_json"], "the cached facts were dropped by the recompute"
+
+
+# ---------- the pop must be measured inside its advertised window ----------
+
+def _path_with(series, grant="2026-02-02"):
+    spy = {"2026-02-02": 500.0, "2026-03-04": 505.0}
+
+    def closes(t, start, end):
+        return series if t.upper() != "SPY" else spy
+
+    def after(t, target, **_kw):
+        src = series if t.upper() != "SPY" else spy
+        later = sorted(d for d in src if d >= str(target)[:10])
+        return (later[0], src[later[0]]) if later else (None, None)
+
+    with patch("spring_load.get_daily_closes", side_effect=closes), \
+         patch("spring_load.get_close_on_or_after", side_effect=after):
+        return price_path("AAPL", grant)
+
+
+def test_a_spike_inside_the_window_is_caught(tmp_sqlite_db):
+    """A stock that jumps 20% on day 3 and gives it back by day 10 is exactly
+    the pattern the pop signal exists to catch. Reading the level at day 10
+    missed it entirely."""
+    series = {"2026-01-03": 10.0, "2026-02-02": 10.0,
+              "2026-02-05": 12.0,   # +20% on day 3
+              "2026-02-12": 10.1,   # given back by day 10
+              "2026-03-04": 10.2}
+    path = _path_with(series)
+    assert path["pop"] == pytest.approx(0.20, abs=0.01)
+    assert path["pop_bar"] == "2026-02-05"
+
+
+def test_a_bar_outside_the_window_is_not_reported_as_a_pop(tmp_sqlite_db):
+    """An illiquid stock whose next trade is day 25 must not be described as
+    rising 'within 10 days' and handed two points for it."""
+    series = {"2026-01-03": 10.0, "2026-02-02": 10.0,
+              "2026-02-27": 14.0,   # day 25 — well outside the pop window
+              "2026-03-10": 14.0}
+    path = _path_with(series)
+    assert path["pop"] is None, "a bar outside the window was counted as a pop"
+    assert path["pop_window_covered"] is False
+
+    result = score_grant({"stated_rationale": "annual grant",
+                          "grant_date": "2026-02-02"}, path)
+    assert not any("within" in t and "days of the grant" in t for _, t in result["signals"])
+
+
+# ---------- a failed fetch is not a settled result ----------
+
+def test_a_transient_price_failure_stays_refreshable(tmp_sqlite_db):
+    """Freezing a Yahoo outage into the record as a permanent 'No price data' is
+    the same transient-vs-permanent confusion fixed repeatedly in the outcome
+    tracker. Only an undateable grant is genuinely settled without prices."""
+    extraction = {"has_grant": True, "grants": [
+        {"recipient": "A", "instrument": "OPTION", "grant_date": "2026-02-02",
+         "stated_rationale": "annual grant"}]}
+    with patch("spring_load.price_path", return_value={"has_data": False}):
+        out = analyze(extraction, "AAPL", "2026-02-02")
+    assert out["windows_mature"] is False, "a failed fetch was recorded as settled"
+
+
+def test_an_undated_grant_is_settled_because_nothing_can_change_it(tmp_sqlite_db):
+    extraction = {"has_grant": True, "grants": [
+        {"recipient": "A", "instrument": "OPTION", "grant_date": None,
+         "stated_rationale": "annual grant"}]}
+    out = analyze(extraction, "AAPL", "2026-02-02")
+    assert out["windows_mature"] is True, "an undateable grant will never gain evidence"
+
+
+# ---------- the page people actually visit must refresh ----------
+
+def test_opening_the_filing_page_refreshes_stale_price_evidence(tmp_sqlite_db):
+    """The refresh lived inside screen_filing, which the detail route never
+    called — so the fix did not fire on the path users hit most."""
+    import database
+    client = _client(tmp_sqlite_db)
+    filing_id = _insert_filing()
+
+    extraction = {"has_grant": True, "error": False, "grants": [
+        {"recipient": "Jane Doe", "instrument": "OPTION", "grant_date": "2026-02-02",
+         "stated_rationale": "annual grant"}]}
+    immature = {"has_data": True, "grant_close": 10.0, "windows_mature": False,
+                "run_in": 0.0, "pop": None, "run_out": None}
+    with patch("spring_load.price_path", return_value=immature):
+        stale = spring_load.analyze(extraction, "PROP", "2026-02-02")
+    database.upsert_spring_load_analysis("0009-1", "0000009", "PROP", "2026-02-02",
+                                         stale, extraction=extraction)
+    assert stale["max_score"] < 6
+
+    mature = {"has_data": True, "grant_close": 10.0, "windows_mature": True,
+              "run_in": -0.35, "pop": 0.25, "run_out": 0.3, "run_out_vs_spy": 0.28,
+              "v_shape": True, "is_monthly_low": True}
+    with patch("spring_load.price_path", return_value=mature), \
+         patch("llm.extract_grant_facts") as extract:
+        resp = client.get(f"/filing/{filing_id}")
+        assert extract.call_count == 0, "the page must never pay for a re-extraction"
+
+    assert resp.status_code == 200
+    refreshed = database.get_spring_load_analysis("0009-1")
+    assert refreshed["max_score"] > stale["max_score"], \
+        "the page did not pick up matured price evidence"

@@ -469,13 +469,14 @@ def _render_filing_detail(filing_id, departures=None):
 
     # Any cached grant-timing screen for this filing. Read-only — running the
     # screen is an explicit action, never a side effect of opening the page.
+    # Refresh, don't just read. A filing screened before its price windows closed
+    # would otherwise stay understated forever on the page people actually visit —
+    # and the only button offered would charge for a re-extraction to fix it.
+    # This path never calls the LLM; it re-scores stored facts against the tape.
     spring_load_analysis = None
     try:
-        from database import get_spring_load_analysis
-        cached = get_spring_load_analysis(filing.get("accession_no"))
-        if cached:
-            import json as _json
-            spring_load_analysis = _json.loads(cached["analysis_json"])
+        from spring_load import refresh_if_stale
+        spring_load_analysis = refresh_if_stale(filing)
     except Exception as e:
         print(f"[SPRING LOAD] Could not load cached screen: {e}", flush=True)
 

@@ -217,9 +217,17 @@ def price_path(ticker, grant_date):
         later = [d for d in on_or_after if d >= target_date.isoformat()]
         return later[0] if later else None
 
-    pop_bar = _bar_at_or_after(grant + timedelta(days=POP_WINDOW_DAYS))
-    if pop_bar:
-        result["pop"] = _pct(grant_close, closes[pop_bar])
+    # The pop is the BEST move inside the window, not the level at its far edge.
+    # Taking the first bar at-or-after day 10 missed a stock that jumped 20% on
+    # day 3 and gave it back by day 10 — and, worse, let an illiquid stock whose
+    # next bar was day 25 be reported as rising "within 10 days".
+    pop_end = (grant + timedelta(days=POP_WINDOW_DAYS)).isoformat()
+    in_window = [d for d in on_or_after if grant_bar < d <= pop_end]
+    if in_window:
+        peak_bar = max(in_window, key=lambda d: closes[d])
+        result["pop"] = _pct(grant_close, closes[peak_bar])
+        result["pop_bar"] = peak_bar
+    result["pop_window_covered"] = bool(in_window)
 
     out_bar = _bar_at_or_after(grant + timedelta(days=RUN_OUT_DAYS))
     if out_bar:
@@ -227,8 +235,12 @@ def price_path(ticker, grant_date):
         result["run_out_bar"] = out_bar
 
     # A window that has not elapsed yet is pending, not clean. Recorded so a
-    # filing screened the day it was filed can be recomputed once the tape fills in.
-    result["windows_mature"] = bool(pop_bar and out_bar)
+    # filing screened the day it was filed can be recomputed once the tape fills
+    # in. The pop window counts as settled once the tape reaches past its end,
+    # even if the stock did not trade inside it — that is a real absence of
+    # movement, not a missing observation.
+    pop_settled = bool(in_window) or any(d > pop_end for d in on_or_after)
+    result["windows_mature"] = bool(pop_settled and out_bar)
 
     # Benchmark on the stock's OWN bar dates, both legs, or the excess return
     # measures the calendar rather than the grant.
@@ -458,12 +470,23 @@ def analyze(extraction, ticker, filed_date, prior_grant_dates=None):
         })
 
     max_score = max([r["score"] for r in results], default=0)
-    # Immature if ANY grant's windows are still open — that is what decides
+    # Immature if ANY grant's evidence could still change — that is what decides
     # whether a cached analysis is worth recomputing later.
-    all_mature = all(
-        (r["price_path"] or {}).get("windows_mature") or not (r["price_path"] or {}).get("has_data")
-        for r in results
-    ) if results else True
+    #
+    # A failed fetch is NOT settled. Treating "has_data is False" as final would
+    # freeze a transient Yahoo outage into the record as a permanent "No price
+    # data", exactly the transient-vs-permanent confusion fixed three times over
+    # in the outcome tracker. The only genuinely settled no-price case is a grant
+    # the filing never dated: nothing will ever anchor it, so nothing will change.
+    def _settled(result_row):
+        path = result_row.get("price_path") or {}
+        if not result_row.get("grant_date"):
+            return True                      # undateable — permanently unanchored
+        if not path.get("has_data"):
+            return False                     # we could not reach the tape — retry
+        return bool(path.get("windows_mature"))
+
+    all_mature = all(_settled(r) for r in results) if results else True
 
     return {
         "has_grant": True,
@@ -481,6 +504,60 @@ def analyze(extraction, ticker, filed_date, prior_grant_dates=None):
 # ============================================================
 # RUNNERS — one filing, or a backtest across saved filings
 # ============================================================
+
+def refresh_if_stale(filing):
+    """Recompute a cached screen's deterministic half if its evidence could move.
+
+    Never calls the LLM — it re-scores the stored facts against the current price
+    tape. Safe to call on every read, which is the point: a filing screened the
+    day it arrived should catch up on its own once the windows close, without
+    anyone paying to re-extract it.
+
+    Returns the freshest analysis available, or None if nothing is cached.
+    """
+    from database import (
+        get_prior_grant_dates,
+        get_spring_load_analysis,
+        upsert_spring_load_analysis,
+    )
+
+    accession = filing.get("accession_no")
+    if not accession:
+        return None
+
+    cached = get_spring_load_analysis(accession)
+    if not cached:
+        return None
+
+    try:
+        analysis = json.loads(cached["analysis_json"])
+    except (ValueError, TypeError):
+        return None
+
+    if cached.get("windows_mature") or not cached.get("extraction_json"):
+        return analysis
+
+    try:
+        extraction = json.loads(cached["extraction_json"])
+    except (ValueError, TypeError):
+        return analysis
+    if not extraction:
+        return analysis
+
+    refreshed = analyze(
+        extraction,
+        ticker=filing.get("ticker"),
+        filed_date=filing.get("filed_date"),
+        prior_grant_dates=get_prior_grant_dates(
+            filing.get("cik"), exclude_accession=accession),
+    )
+    upsert_spring_load_analysis(
+        accession, filing.get("cik"), filing.get("ticker"),
+        filing.get("filed_date"), refreshed,
+        model=cached.get("model"), extraction=extraction,
+    )
+    return refreshed
+
 
 def screen_filing(filing, model=None, force=False):
     """Screen one filing and cache the result.
@@ -504,38 +581,9 @@ def screen_filing(filing, model=None, force=False):
         return None
 
     if not force:
-        cached = get_spring_load_analysis(accession)
-        if cached:
-            try:
-                analysis = json.loads(cached["analysis_json"])
-            except (ValueError, TypeError):
-                analysis = None
-
-            if analysis is not None:
-                # A filing screened before its +10/+30 windows elapsed has empty
-                # price evidence. Recompute the deterministic half from the stored
-                # facts — free, no LLM — rather than leaving it understated until
-                # someone happens to force a re-extraction.
-                if not cached.get("windows_mature") and cached.get("extraction_json"):
-                    try:
-                        extraction = json.loads(cached["extraction_json"])
-                    except (ValueError, TypeError):
-                        extraction = None
-                    if extraction:
-                        refreshed = analyze(
-                            extraction,
-                            ticker=filing.get("ticker"),
-                            filed_date=filing.get("filed_date"),
-                            prior_grant_dates=get_prior_grant_dates(
-                                filing.get("cik"), exclude_accession=accession),
-                        )
-                        upsert_spring_load_analysis(
-                            accession, filing.get("cik"), filing.get("ticker"),
-                            filing.get("filed_date"), refreshed,
-                            model=cached.get("model"), extraction=extraction,
-                        )
-                        return refreshed
-                return analysis
+        refreshed = refresh_if_stale(filing)
+        if refreshed is not None:
+            return refreshed
 
     text = filing.get("raw_text") or ""
     if not text.strip():

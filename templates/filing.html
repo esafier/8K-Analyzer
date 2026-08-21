@@ -270,8 +270,14 @@
                     <form method="POST" action="/spring-load/{{ filing.id }}" class="mt-2">
                         {% if spring_load %}<input type="hidden" name="force" value="1">{% endif %}
                         <button type="submit" class="btn btn-sm btn-outline-primary">
-                            {{ "Re-run screen" if spring_load else "Run screen" }}
+                            {{ "Re-extract (costs an AI call)" if spring_load else "Run screen" }}
                         </button>
+                        {% if spring_load %}
+                        <div class="text-muted small mt-1" style="max-width: 22rem;">
+                            Price evidence already refreshes itself on this page for free.
+                            Only re-extract if the filing text or the prompt changed.
+                        </div>
+                        {% endif %}
                     </form>
                 </div>
 
