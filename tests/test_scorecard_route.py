@@ -142,3 +142,15 @@ def test_the_page_states_the_bias_direction_correctly(tmp_sqlite_db):
     assert "against</em> the bearish signal" in body
     # And it must not claim delisted names are excluded outright.
     assert "excluded from the rates" not in body
+
+
+def test_the_page_discloses_the_look_ahead_limitation(tmp_sqlite_db):
+    """The baseline is the filing-date close, which for an after-hours 8-K
+    predates the news being public. The measured move then includes an overnight
+    reaction nobody could have traded. A page whose whole purpose is honesty
+    about what its numbers mean has to say so."""
+    client = _client(tmp_sqlite_db)
+    _scored_filing(1)
+    body = client.get("/scorecard").data.decode()
+    assert "not tradeable returns" in body
+    assert "after the 4pm close" in body

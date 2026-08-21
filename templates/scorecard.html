@@ -114,7 +114,15 @@
             adding anything. Rates are withheld entirely below {{ card.min_sample }} scored
             calls rather than shown with a caveat. Horizons are calendar days from the
             filing date, and each window is compared against SPY over exactly the same
-            dates. Nothing here is survivorship-adjusted, and the bias runs
+            dates.
+            <strong class="text-danger">These are not tradeable returns.</strong>
+            The baseline is the closing price on the filing date, and an 8-K that
+            drops after the 4pm close is not public at that price — so for those
+            filings the measured move includes the overnight reaction, which nobody
+            could have traded on. That inflates apparent performance, and 5.02
+            departure filings land after hours often. Treat these numbers as a read
+            on whether the <em>signal</em> detects something real, not as a backtest.
+            Nothing here is survivorship-adjusted either, and that bias runs
             <em>against</em> the bearish signal: a name that stopped trading is scored at
             every horizon it actually traded through, but its later horizons are dropped —
             and those dropped outcomes are disproportionately the ones where the bearish

@@ -121,6 +121,33 @@ the morning it ships, instead of in November. Build for backfill first.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — CODEX ROUND 6 on head c45e440. Two findings; one REFUTED, one real.
+  12. **REFUTED** — "raw quote.close corrupts returns across a split." Tested empirically
+      against NVDA's 10-for-1 split (2024-06-10): the series runs 120.89 → 121.79 straight
+      through with no discontinuity. Yahoo's `quote.close` is ALREADY split-adjusted;
+      only `adjclose` adds dividend adjustment (0.17% on NVDA over ~2y). No change made.
+      There IS a smaller, different issue the finding did not state: dividends are
+      unadjusted, so a big ex-div inside a 90-day window reads as a small mechanical
+      drop. Immaterial for the non-dividend micro-caps this scanner mostly surfaces.
+      FIRST BOT FINDING THAT DID NOT HOLD UP — relevant to the convergence judgment.
+  13. **REAL, SURFACED — the most important methodological issue on the PR.** The baseline
+      is the close on `filed_date`. An 8-K filed after the 4pm close was not public at
+      that price, so for those filings the measured move includes the overnight reaction
+      — untradeable, and it INFLATES apparent performance. 5.02 departure filings land
+      after hours often, so the affected share is probably large.
+      NOT silently fixed: the choice is a real tradeoff and it is the user's to make.
+        - Conservative: baseline = close on the first trading day AFTER filed_date.
+          Always tradeable; gives up genuine same-day alpha on filings made during hours.
+          One-line change. RECOMMENDED.
+        - Precise: use EDGAR's acceptance timestamp to pick D or D+1 per filing. Needs
+          data we do not store — `filed_date` comes from full-text search `file_date`,
+          a date with no time — so it means a fetcher change plus a backfill.
+      NOTE the bot's own proposed fix (anchor on the verdict/ingest timestamp) is WRONG
+      for this codebase: in a retrospective backfill the verdict timestamp is "now", which
+      would make the whole historical scorecard unscoreable.
+      WHAT WAS DONE: the page now states plainly that these are not tradeable returns and
+      why. Shipping a scorecard that silently includes untradeable overnight moves would
+      contradict the one thing the page exists to do. Copy only; no scoring change.
 - 2026-08-21 — CODEX ROUND 5 on head f708084. Two findings, both verified real. Posture
   had already switched to surface-don't-fix, so these were split:
   10. **FIXED** — the header caveat still said delisted names are "excluded from the rates
