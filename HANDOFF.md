@@ -4,8 +4,10 @@
 previous session. If you are a fresh session, read this top-to-bottom before
 acting. It records state that lives in Render + past conversation, NOT in code.
 
-**Last updated:** 2026-07-07
-**Working branch:** `claude/project-improvement-review-ne5ryf` (all work below is here; `main` is the untouched original)
+**Last updated:** 2026-08-21
+**Working branch:** `claude/autonomous-improvement-strategy-nfgkcp` — the signal
+outcome tracker (see §5). The earlier branch `claude/project-improvement-review-ne5ryf`
+holds the work described in §2 and is what Render is still serving (see §3).
 
 ---
 
@@ -83,6 +85,54 @@ All committed + pushed to `origin/claude/project-improvement-review-ne5ryf`, 151
 - URL: https://eightk-analyzer.onrender.com
 - All schema changes are **additive** → rolling back to `main` loses no data.
 
+### ⚠️ NOTHING SCHEDULED EVER RUNS IN PRODUCTION (discovered 2026-08-21)
+
+`render.yaml` defines one service: `gunicorn app:app`. The Render account was
+checked directly and contains **exactly one service, the web app** — no cron job,
+no background worker. `app.py` never imports `scheduler`, and `scheduler.py`'s
+loop sits under `if __name__ == "__main__"`.
+
+**So `daily_fetch_job()` has never run automatically.** This is pre-existing and
+affects the whole pipeline, not just outcome scoring: the 7am fetch, market-cap
+prefetch, earnings prefetch and departure enrichment are all dead code in prod.
+Everything that has ever populated the database came from manual runs on
+`/backfill`. (§4 note about "the 7am job's LLM calls" assumes a job that does not
+exist.)
+
+The same applies to the new outcome scoring: the **"Backfill Outcome Prices"
+button works and is the supported path**, but nothing marks new horizons on its
+own. Pressing the button again picks up whatever has come due.
+
+To actually automate it, add a Render Cron Job. **Not done — Render cron jobs are
+billable and this is the user's call:**
+
+```yaml
+  - type: cron
+    name: 8k-analyzer-daily
+    runtime: python
+    schedule: "0 11 * * *"        # 7am ET
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scheduler.py --now
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: 8k-analyzer-db
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: API_NINJAS_KEY
+        sync: false
+```
+
+`scheduler.py --now` runs one pass and exits, which is the right shape for cron.
+
+### ⚠️ RENDER IS SERVING `main`, NOT THE TRIAL BRANCH (corrected 2026-08-21)
+
+The Render API reports `branch: main` with `autoDeploy: yes` on commit. The note
+above saying the service points at `claude/project-improvement-review-ne5ryf` is
+**stale**. Consequence: **merging anything to `main` deploys it immediately.**
+Treat a merge as a deploy.
+
 ### Rollback (if the user wants the original back)
 Render dashboard → service Settings → Build & Deploy → **Branch** → set back to
 `main` → Save (auto-redeploys the original). Or Deploys tab → any prior deploy →
@@ -105,17 +155,85 @@ manual dashboard action only (confirmed this session).
 
 ---
 
-## 5. DEFERRED WORK — signal outcome tracker (scoped, not started)
+## 5. SIGNAL OUTCOME TRACKER — BUILT (branch `claude/autonomous-improvement-strategy-nfgkcp`)
 
-User wants this eventually but paused it. Plan: record each DEEP_LOOK/MONITOR
-filing's stock price at ingest, re-mark at 7/30/90 days vs SPY, and a `/scorecard`
-page showing hit rates by signal type (direction-aware: bearish "hits" when the
-stock lags SPY). New `signal_outcomes` table; daily marking job in the scheduler;
-prospective-only (API serves current prices, not historical, so it scores from
-deploy day forward). ~4 commits. Zero LLM cost. Full plan is in this session's
-history if resumed.
+No longer deferred. Answers the question the scanner could not: *do its verdicts
+predict anything?* Full plan and run log in
+`docs/superpowers/plans/2026-08-21-signal-outcome-tracker.md`.
 
----
+**The assumption that changed.** This was scoped as prospective-only ("scores from
+deploy day forward") because API Ninjas serves current prices only. That was wrong.
+Yahoo's keyless chart endpoint returns daily closes for arbitrary historical windows
+and covers the micro-caps this scanner surfaces, so the scorecard is **retrospective**:
+the ~4,118 filings already in Postgres can be scored now rather than in 90 days.
+
+**What shipped**
+- `price_history.py` — the only module that knows where prices come from. Cached in
+  `price_history` / `price_history_meta`. Yahoo's endpoint is unofficial; when it
+  breaks, replace `fetch_from_yahoo()` and keep the two public signatures.
+- `signal_outcomes` table — one row per scored filing, holding a **snapshot** of what
+  the scanner claimed (prompts change; re-scoring history against today's prompt
+  measures nothing) plus baseline and 7/30/90-day marks for the stock and SPY.
+- `outcomes.py` — baseline capture + horizon marking. Runs daily inside the existing
+  scheduler job as a non-critical step. Zero LLM cost.
+- `outcome_scoring.py` + `/scorecard` — direction-aware hit rates and median excess
+  return vs SPY, broken out by verdict, direction, score bucket and signal type,
+  plus best/worst individual calls.
+- **Backfill button** on `/backfill` ("Backfill Outcome Prices") — this is the one to
+  press first. It prices the whole archive and marks every elapsed horizon.
+
+**Method decisions worth not re-litigating**
+- SPY is priced on the stock's OWN bar date, so excess return compares identical windows.
+- Horizons anchor on the filing date (the event), not the baseline trading day.
+- BEARISH hits when the stock lags SPY; BULLISH when it leads. NEUTRAL/MIXED are
+  counted but never scored — grading them would grade a prediction nobody made.
+- Hit rates are **withheld entirely** below 10 scored calls. A caveated number still
+  reads as a number.
+- Delisted names are counted and shown but NOT auto-scored as bearish wins. Scoring
+  them would hand the bearish signal its best outcomes for free. **This is the one
+  open judgment call — the user may want them scored.**
+- A transient price-source failure never writes a filing off as unpriceable. This was
+  a real bug caught in review: one network outage would otherwise have silently
+  deleted the archive from the scorecard, permanently.
+
+**Not done / next**
+- Nothing has been run against the live Postgres archive yet — the backfill button
+  has never been pressed. Expect it to take a while (one price request per ticker,
+  throttled, then cached).
+- The scorecard has no significance testing. With a few thousand filings that may be
+  worth adding; right now it just refuses to show thin rates.
+- Prompt-quality loop (the second half of the overnight brief) not started.
+
+## 6. GRANT-TIMING SCREEN (spring-load), added 2026-08-21
+
+A triage-grade port of the `spring-load-detector` skill into the app. **Not** the
+full forensic pass — it sees one 8-K plus the price tape, and every result lists
+what it could not test. A high score means "run the real skill on this one".
+
+- `prompts/prompt_spring_load.txt` — extraction ONLY. The prompt forbids judgment,
+  price analysis and scoring, because all of that is deterministic Python.
+- `spring_load.py` — the screen. Price path (run-in, +1..+5 pop, +30d vs SPY,
+  monthly-low, V-shape) via the `price_history` layer built for the outcome
+  tracker; price hurdles converted to **required CAGR**; cross-recipient service-
+  condition asymmetry; scoring with the skill's bands.
+- `spring_load_analyses` table — cached by accession (immutable filing text), so
+  a clear-and-repopulate keeps the work and re-runs are free.
+- **Run on one filing:** button on the filing detail page (`POST /spring-load/<id>`).
+- **Backtest saved filings:** button on `/watchlist` (`POST /backtest-spring-load`).
+
+**Deliberate ceiling: this screen never scores above 8.** The 9-10 band needs Form
+4 history, the proxy's 402(x) narrative, or committee composition — none of which
+it can see. Underneath that, the skill's single-observation rule holds: without
+repetition or a self-contradiction in the paperwork, a lone grant is held at 7 on
+price evidence alone.
+
+Real result on PROP (2026-06-23, the filing v3 called MIXED): stock fell 35% into
+the grant, rose 20% within ten days, +22% vs SPY over 30 days; hurdles at $4.50/
+$6.50 are +586%/+891% from the $0.66 grant price, needing 47-58%/yr. The incoming
+CEO's tranche carries **no service condition** while the CFO's has three-year
+ratable vesting — CEO 8/10, CFO 7/10.
+
+Costs one cheap extraction per filing. Everything else is arithmetic.
 
 ## 6. Env / test notes
 

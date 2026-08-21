@@ -467,6 +467,19 @@ def _render_filing_detail(filing_id, departures=None):
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
+    # Any cached grant-timing screen for this filing. Read-only — running the
+    # screen is an explicit action, never a side effect of opening the page.
+    # Refresh, don't just read. A filing screened before its price windows closed
+    # would otherwise stay understated forever on the page people actually visit —
+    # and the only button offered would charge for a re-extraction to fix it.
+    # This path never calls the LLM; it re-scores stored facts against the tape.
+    spring_load_analysis = None
+    try:
+        from spring_load import refresh_if_stale
+        spring_load_analysis = refresh_if_stale(filing)
+    except Exception as e:
+        print(f"[SPRING LOAD] Could not load cached screen: {e}", flush=True)
+
     return render_template(
         "filing.html",
         filing=filing,
@@ -479,6 +492,7 @@ def _render_filing_detail(filing_id, departures=None):
         stock_price=stock_price,
         target_pcts=target_pcts,
         departures=departures,
+        spring_load=spring_load_analysis,
     )
 
 
@@ -890,8 +904,23 @@ def mark_as_sent():
 
 @app.route("/clear-database", methods=["POST"])
 def clear_database():
-    """Wipe all filings so you can re-backfill with an updated prompt."""
+    """Wipe all filings so you can re-backfill with an updated prompt.
+
+    Refuses while an outcome run is in flight. That worker selects filings up
+    front and writes their outcome rows over several minutes; clearing beneath it
+    would let those writes land after the delete, recreating exactly the orphaned
+    scorecard rows with dead /filing/<id> links that clearing exists to remove.
+    Refusing is better than blocking here — a backfill can run for an hour, and a
+    hung request is a worse answer than a clear message.
+    """
     from database import clear_all_filings
+    from outcomes import outcome_run_in_progress
+
+    if outcome_run_in_progress():
+        flash("An outcome run is in progress — clearing now would leave orphaned "
+              "scorecard rows behind it. Wait for it to finish, then clear.", "error")
+        return redirect(url_for("backfill"))
+
     clear_all_filings()
     flash("Database cleared. Run a backfill to repopulate with the current prompt.", "success")
     return redirect(url_for("backfill"))
@@ -1320,6 +1349,168 @@ def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
 
     print(f"--- Retry complete: {fetched} fetched, {updated} updated, "
           f"{fetch_failed} fetch-failed, {llm_failed} llm-failed ---", flush=True)
+
+
+@app.route("/scorecard")
+def scorecard():
+    """Did the verdicts work? Direction-aware hit rates and excess return vs SPY
+    at 7 / 30 / 90 days, broken out by verdict, direction, score and signal type.
+
+    Reads only stored outcomes — no network, no LLM. The page is deliberately
+    blunt about what it is not counting; a scorecard that hides its gaps is
+    worse than no scorecard.
+    """
+    from database import OUTCOME_HORIZONS, count_signal_outcomes, get_signal_outcomes
+    from outcome_scoring import build_scorecard, best_and_worst
+
+    try:
+        horizon = int(request.args.get("horizon", 30))
+    except (TypeError, ValueError):
+        horizon = 30
+    if horizon not in OUTCOME_HORIZONS:
+        horizon = 30
+
+    # Read the table once and share it — the archive runs to thousands of rows
+    # and both views want all of them.
+    rows = get_signal_outcomes()
+    card = build_scorecard(horizon, rows=rows)
+    extremes = best_and_worst(horizon, rows=rows)
+    counts = count_signal_outcomes()
+
+    return render_template(
+        "scorecard.html",
+        card=card,
+        best=extremes["best"],
+        worst=extremes["worst"],
+        counts=counts,
+    )
+
+
+@app.route("/backfill-outcomes", methods=["POST"])
+def backfill_outcomes_route():
+    """Price every scored filing already in the database and mark every horizon
+    that has already elapsed.
+
+    This is what makes the scorecard useful today rather than in 90 days: most
+    filings in the archive are old enough that their 7/30/90 day windows are
+    already in the past. No LLM spend — just cached daily closes.
+    """
+    from outcomes import run_outcome_backfill
+    from database import create_backfill_run
+
+    try:
+        run_id = create_backfill_run(
+            backfill_type="signal_outcomes",
+            date_start=None,
+            date_end=None,
+            model=None,
+        )
+    except Exception as e:
+        print(f"[OUTCOMES BACKFILL] WARN: could not create backfill_run row: {e}", flush=True)
+        run_id = None
+
+    def _worker():
+        try:
+            run_outcome_backfill(run_id=run_id, verbose=True)
+        except Exception as e:
+            print(f"[OUTCOMES BACKFILL] Worker died: {e}", flush=True)
+
+    thread = threading.Thread(target=_worker)
+    thread.daemon = True
+    thread.start()
+
+    flash("Outcome backfill started. Prices are fetched one ticker at a time, so a "
+          "few thousand filings takes a while — watch the logs, then open the Scorecard.",
+          "success")
+    return redirect(url_for("backfill"))
+
+
+@app.route("/spring-load/<int:filing_id>", methods=["POST"])
+def spring_load_screen(filing_id):
+    """Run the grant-timing screen on one filing, on demand.
+
+    Triage-grade: it sees this 8-K plus the price tape, not Form 4 history or
+    the proxy. A high score means "worth a forensic hour", not a finding.
+    """
+    from spring_load import screen_filing
+
+    filing = get_filing_by_id(filing_id)
+    if not filing:
+        flash("Filing not found", "error")
+        return redirect(url_for("index"))
+    filing = dict(filing)  # sqlite3.Row has no .get() — see CLAUDE.md
+
+    try:
+        analysis = screen_filing(filing, force=request.form.get("force") == "1")
+    except Exception as e:
+        print(f"[SPRING LOAD] Screen failed for filing {filing_id}: {e}", flush=True)
+        flash("Grant-timing screen failed — see the logs.", "error")
+        return redirect(url_for("filing_detail", filing_id=filing_id))
+
+    if analysis is None:
+        flash("Could not screen this filing — no stored text, or the extraction failed. "
+              "Try 'Retry Missing Summaries' on the backfill page first.", "error")
+    elif not analysis.get("has_grant"):
+        flash("No equity grant disclosed in this filing — nothing to screen.", "success")
+    else:
+        flash(f"Grant-timing screen: {analysis['max_score']}/10 — {analysis['band']}.", "success")
+
+    return redirect(url_for("filing_detail", filing_id=filing_id))
+
+
+@app.route("/backtest-spring-load", methods=["POST"])
+def backtest_spring_load_route():
+    """Screen every filing on the watchlist for grant-timing opportunism.
+
+    These are the filings saved by hand because the question was open. Costs one
+    cheap LLM extraction per filing, cached by accession, so re-runs are free.
+    """
+    from spring_load import backtest_in_progress, backtest_watchlist
+    from database import create_backfill_run
+
+    if backtest_in_progress():
+        flash("A grant-timing backtest is already running. Starting a second one "
+              "would pay for every extraction twice — watch the logs instead.", "error")
+        return redirect(url_for("watchlist"))
+
+    try:
+        run_id = create_backfill_run(
+            backfill_type="spring_load_backtest", date_start=None,
+            date_end=None, model=None,
+        )
+    except Exception as e:
+        print(f"[SPRING LOAD] WARN: could not create backfill_run row: {e}", flush=True)
+        run_id = None
+
+    def _worker():
+        from database import complete_backfill_run
+        try:
+            stats = backtest_watchlist(verbose=True)
+            if stats is None:
+                if run_id:
+                    complete_backfill_run(run_id, status="failed")
+                return
+            if run_id:
+                complete_backfill_run(
+                    run_id, fetched=stats["screened"] + stats["skipped"],
+                    filtered=stats["screened"], new=len(stats["flagged"]),
+                    skipped=stats["skipped"],
+                )
+        except Exception as e:
+            print(f"[SPRING LOAD] Backtest worker died: {e}", flush=True)
+            if run_id:
+                try:
+                    complete_backfill_run(run_id, status="failed")
+                except Exception:
+                    pass
+
+    thread = threading.Thread(target=_worker)
+    thread.daemon = True
+    thread.start()
+
+    flash("Grant-timing backtest started over your watchlist. Watch the logs; "
+          "results appear on each filing's detail page.", "success")
+    return redirect(url_for("watchlist"))
 
 
 @app.route("/clear-market-cap-cache", methods=["POST"])

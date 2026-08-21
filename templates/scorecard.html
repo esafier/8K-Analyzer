@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block content %}
+
+{% macro pct(value, digits=1) %}{% if value is none %}—{% else %}{{ "%+.*f"|format(digits, value * 100) }}%{% endif %}{% endmacro %}
+
+{% macro rate_cell(cell) %}
+    {% if cell.hit_rate is none %}
+        <span class="text-muted" title="Fewer than {{ card.min_sample }} scored calls — too thin to state a rate">—</span>
+    {% else %}
+        <strong>{{ "%.0f"|format(cell.hit_rate * 100) }}%</strong>
+    {% endif %}
+{% endmacro %}
+
+{% macro table(title, cells, note='') %}
+<div class="card mb-4">
+    <div class="card-body">
+        <h5 class="card-title mb-1">{{ title }}</h5>
+        {% if note %}<p class="text-muted small mb-3">{{ note }}</p>{% endif %}
+        {% if cells %}
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>{{ title }}</th>
+                        <th class="text-end">Scored calls (n)</th>
+                        <th class="text-end">Hits</th>
+                        <th class="text-end">Hit rate</th>
+                        <th class="text-end">Median excess vs SPY</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for cell in cells %}
+                    <tr>
+                        <td>{{ cell.label }}</td>
+                        <td class="text-end">{{ cell.n }}</td>
+                        <td class="text-end">{{ cell.hits }}</td>
+                        <td class="text-end">{{ rate_cell(cell) }}</td>
+                        <td class="text-end">{{ pct(cell.median_excess) }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-muted mb-0">Nothing scored yet.</p>
+        {% endif %}
+    </div>
+</div>
+{% endmacro %}
+
+<div class="d-flex justify-content-between align-items-start flex-wrap mb-3">
+    <div>
+        <h2 class="mb-1">Signal Scorecard</h2>
+        <p class="text-muted mb-0">
+            Did the verdicts predict anything? A <strong>BEARISH</strong> call hits when the
+            stock <em>lags</em> SPY; a <strong>BULLISH</strong> call hits when it <em>leads</em>.
+            Excess return is the stock's move minus SPY's over the same window.
+        </p>
+    </div>
+    <div class="btn-group mt-2" role="group">
+        {% for h in card.horizons %}
+        <a href="{{ url_for('scorecard', horizon=h) }}"
+           class="btn btn-sm {{ 'btn-primary' if h == card.horizon else 'btn-outline-secondary' }}">{{ h }} days</a>
+        {% endfor %}
+    </div>
+</div>
+
+{% if card.overall.n == 0 %}
+<div class="alert alert-secondary">
+    <h5 class="alert-heading">No outcomes scored yet</h5>
+    <p class="mb-2">
+        {% if counts.total == 0 %}
+        No filings have been priced. Run the outcome backfill from the
+        <a href="/backfill">Backfill</a> page — it prices every filing already in the
+        database and marks every horizon that has already passed, so this page has
+        real numbers immediately rather than in 90 days. No AI cost.
+        {% else %}
+        {{ counts.priced }} filings are priced, but none have reached the {{ card.horizon }}-day
+        horizon yet with a directional verdict. Try a shorter horizon, or run the
+        outcome backfill from the <a href="/backfill">Backfill</a> page.
+        {% endif %}
+    </p>
+    <p class="mb-0 small text-muted">
+        Only DEEP_LOOK and MONITOR filings with a ticker are scored — PASS is the noise
+        the scanner exists to discard.
+    </p>
+</div>
+{% else %}
+
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row text-center">
+            <div class="col-6 col-md-3 mb-2">
+                <div class="text-muted small text-uppercase">Scored calls</div>
+                <div class="fs-3">{{ card.overall.n }}</div>
+            </div>
+            <div class="col-6 col-md-3 mb-2">
+                <div class="text-muted small text-uppercase">Hit rate</div>
+                <div class="fs-3">{{ rate_cell(card.overall) }}</div>
+            </div>
+            <div class="col-6 col-md-3 mb-2">
+                <div class="text-muted small text-uppercase">Median excess</div>
+                <div class="fs-3">{{ pct(card.overall.median_excess) }}</div>
+            </div>
+            <div class="col-6 col-md-3 mb-2">
+                <div class="text-muted small text-uppercase">Horizon</div>
+                <div class="fs-3">{{ card.horizon }}d</div>
+            </div>
+        </div>
+        <hr>
+        <p class="mb-0 small text-muted">
+            <strong>Read this before trusting the numbers above.</strong>
+            A coin flip scores ~50%, so a hit rate near 50% means the signal is not
+            adding anything. Rates are withheld entirely below {{ card.min_sample }} scored
+            calls rather than shown with a caveat. Horizons are calendar days from the
+            filing date, and each window is compared against SPY over exactly the same
+            dates.
+            <strong class="text-danger">These are not tradeable returns.</strong>
+            The baseline is the closing price on the filing date, and an 8-K that
+            drops after the 4pm close is not public at that price — so for those
+            filings the measured move includes the overnight reaction, which nobody
+            could have traded on. That inflates apparent performance, and 5.02
+            departure filings land after hours often. Treat these numbers as a read
+            on whether the <em>signal</em> detects something real, not as a backtest.
+            Nothing here is survivorship-adjusted either, and that bias runs
+            <em>against</em> the bearish signal: a name whose symbol stopped resolving is scored at
+            every horizon it actually traded through, but its later horizons are dropped —
+            and those dropped outcomes are disproportionately the ones where the bearish
+            case was coming true. Read a bearish hit rate here as a floor, not a ceiling.
+        </p>
+    </div>
+</div>
+
+{{ table("Verdict", card.by_verdict, "Does the triage tier actually separate good calls from bad ones?") }}
+{{ table("Direction", card.by_direction, "Bearish and bullish calls are scored on opposite tests, so compare each against 50%, not against each other.") }}
+{{ table("Signal score", card.by_score, "If higher scores do not show a better hit rate, the score is not earning its place on the dashboard.") }}
+{{ table("Signal type", card.by_signal, "A filing can carry several of these at once, so these rows overlap and will not sum to the total.") }}
+
+<div class="row">
+    <div class="col-lg-6">
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">Best calls</h5>
+                <p class="text-muted small">Ranked by how far the stock moved the way the verdict said it would.</p>
+                <div class="table-responsive">
+                    <table class="table table-sm mb-0">
+                        <thead class="table-light">
+                            <tr><th>Ticker</th><th>Filed</th><th>Call</th><th class="text-end">Excess</th></tr>
+                        </thead>
+                        <tbody>
+                        {% for e in best %}
+                            <tr>
+                                <td><a href="/filing/{{ e.filing_id }}">{{ e.ticker }}</a></td>
+                                <td class="small text-muted">{{ e.filed_date }}</td>
+                                <td class="small">{{ e.direction }} · {{ e.verdict }}</td>
+                                <td class="text-end">{{ pct(e.excess) }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">Worst calls</h5>
+                <p class="text-muted small">The ones to actually go and read — this is where the prompt is getting it wrong.</p>
+                <div class="table-responsive">
+                    <table class="table table-sm mb-0">
+                        <thead class="table-light">
+                            <tr><th>Ticker</th><th>Filed</th><th>Call</th><th class="text-end">Excess</th></tr>
+                        </thead>
+                        <tbody>
+                        {% for e in worst %}
+                            <tr>
+                                <td><a href="/filing/{{ e.filing_id }}">{{ e.ticker }}</a></td>
+                                <td class="small text-muted">{{ e.filed_date }}</td>
+                                <td class="small">{{ e.direction }} · {{ e.verdict }}</td>
+                                <td class="text-end">{{ pct(e.excess) }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="card mb-4">
+    <div class="card-body">
+        <h5 class="card-title">What these numbers leave out</h5>
+        <div class="table-responsive">
+            <table class="table table-sm mb-0">
+                <tbody>
+                    <tr><td>Filings with an outcome row</td><td class="text-end">{{ card.coverage.total_rows }}</td></tr>
+                    <tr><td>Priced at baseline</td><td class="text-end">{{ card.coverage.priced }}</td></tr>
+                    <tr><td>Scored at {{ card.horizon }} days</td><td class="text-end">{{ card.coverage.scored }}</td></tr>
+                    <tr>
+                        <td>Waiting for the {{ card.horizon }}-day horizon</td>
+                        <td class="text-end">{{ card.coverage.awaiting_horizon }}</td>
+                    </tr>
+                    <tr>
+                        <td>Non-directional verdicts <span class="text-muted small">(NEUTRAL / MIXED — no claim to score)</span></td>
+                        <td class="text-end">{{ card.coverage.non_directional }}</td>
+                    </tr>
+                    <tr>
+                        <td>No price data <span class="text-muted small">(never resolved to a tradable series)</span></td>
+                        <td class="text-end">{{ card.coverage.no_price }}</td>
+                    </tr>
+                    <tr>
+                        <td>Settled with no price at {{ card.horizon }} days <span class="text-muted small">(halted, or the symbol went dark before this horizon)</span></td>
+                        <td class="text-end">{{ card.coverage.unpriceable_horizon }}</td>
+                    </tr>
+                    <tr>
+                        <td>Symbol stopped resolving <span class="text-muted small">(delisted, or the company renamed its ticker)</span></td>
+                        <td class="text-end">{{ card.coverage.delisted }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        <p class="text-muted small mt-3 mb-0">
+            A name whose symbol later stopped resolving is still scored at every horizon
+            it actually traded through — that price history is real. What is <em>not</em>
+            done is inventing a return for the disappearance itself and counting it as a
+            bearish win; that would hand the bearish signal its best outcomes for free.
+            Horizons after the symbol goes dark are left unscored and counted above.
+            Note the price source cannot tell a delisting from a ticker rename, so a
+            company still alive under a new symbol lands in that same bucket — read the
+            count as an upper bound on real delistings.
+        </p>
+    </div>
+</div>
+
+{% endblock %}

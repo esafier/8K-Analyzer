@@ -15,9 +15,11 @@ from summarizer import extract_summary
 from database import initialize_database, insert_filing, update_last_backfill, create_backfill_run, complete_backfill_run
 
 
-def daily_fetch_job():
+def _ingest_new_filings():
     """Fetch yesterday's 8-K filings, filter them, and store matches.
-    This is the function that runs on schedule."""
+
+    Returns early on an EDGAR failure or a day with no filings — which is why
+    outcome scoring does NOT live in here (see daily_fetch_job)."""
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -102,6 +104,35 @@ def daily_fetch_job():
 
     # Record that a scheduled fetch completed (for front page display)
     update_last_backfill("scheduled")
+
+
+def score_signal_outcomes():
+    """Give any newly-ingested filing its baseline price, then mark every
+    horizon that has elapsed since the last run.
+
+    Cheap (cached daily closes, no LLM) and non-critical — a price-source
+    outage must never fail the scheduled job.
+    """
+    try:
+        from outcomes import run_outcome_job
+        print("  [OUTCOMES] Scoring signal outcomes...")
+        run_outcome_job()
+    except Exception as e:
+        print(f"  [OUTCOMES] Outcome scoring failed (not critical): {e}")
+
+
+def daily_fetch_job():
+    """The scheduled job: ingest new filings, then score outcomes.
+
+    Outcome scoring runs in a `finally` because it is independent of ingest.
+    Horizons elapse on weekends and on days EDGAR fails — and a weekend is
+    precisely a day with no filings, so tying this to a successful ingest
+    would skip it exactly when there is scoring work waiting.
+    """
+    try:
+        _ingest_new_filings()
+    finally:
+        score_signal_outcomes()
 
 
 if __name__ == "__main__":

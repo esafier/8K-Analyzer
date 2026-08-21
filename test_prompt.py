@@ -15,11 +15,11 @@
 #   4. Update ACTIVE_PROMPT in config.py to the winner
 
 import argparse
-import sqlite3
 import json
 import os
 import time
-from config import DATABASE_PATH, PROMPTS_DIR, ACTIVE_PROMPT, LLM_MODEL
+import database
+from config import PROMPTS_DIR, ACTIVE_PROMPT, LLM_MODEL
 from llm import classify_and_summarize
 
 # Pricing per 1M tokens for each model (update when prices change)
@@ -39,19 +39,35 @@ def get_cost_rates(model_name):
 
 def get_test_filings(count=None):
     """Pull filings from the database to use as test cases.
-    Returns most recent filings first (they're the ones you remember best)."""
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    Returns most recent filings first (they're the ones you remember best).
 
-    query = "SELECT * FROM filings WHERE raw_text IS NOT NULL AND raw_text != '' ORDER BY filed_date DESC"
-    if count:
-        query += f" LIMIT {count}"
+    Uses the shared connection from database.py so this reads whichever database
+    the app is pointed at — local SQLite, or the Render PostgreSQL archive when
+    DATABASE_URL is set. Rows are converted to real dicts so both bracket access
+    and .get() work regardless of backend (see CLAUDE.md)."""
+    conn = database.get_connection()
+    try:
+        cursor = conn.cursor()
 
-    cursor.execute(query)
-    filings = cursor.fetchall()
-    conn.close()
-    return filings
+        query = ("SELECT * FROM filings "
+                 "WHERE raw_text IS NOT NULL AND raw_text != '' "
+                 "ORDER BY filed_date DESC")
+        if count:
+            query += " LIMIT " + str(int(count))
+
+        cursor.execute(query)
+        columns = [desc[0] for desc in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def describe_database():
+    """One line naming which database we are about to read, so a test run is
+    never ambiguous about whether it hit the local file or the live archive."""
+    if database._using_postgres():
+        return "PostgreSQL (DATABASE_URL is set)"
+    return f"SQLite ({database.DATABASE_PATH})"
 
 
 def run_prompt_on_filings(filings, prompt_file, model=None):
@@ -205,6 +221,7 @@ def print_compare_results(results_a, results_b, prompt_a, prompt_b, tokens_a, to
 
 def list_prompts():
     """Show all available prompt files in the prompts/ folder."""
+    print(f"Database:       {describe_database()}")
     print(f"Prompts folder: {PROMPTS_DIR}")
     print(f"Active prompt:  {ACTIVE_PROMPT}")
     print()
@@ -238,6 +255,7 @@ def main():
     count = None if args.all else args.count
 
     # Load test filings from the database
+    print(f"Reading from: {describe_database()}")
     filings = get_test_filings(count)
     if not filings:
         print("No filings with text found in the database. Run the fetcher first.")

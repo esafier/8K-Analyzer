@@ -32,6 +32,19 @@
     </div>
 </div>
 
+<hr class="my-5">
+<h2 class="mb-3">Signal Scorecard Data</h2>
+<p class="text-muted">
+    Price every scored filing already in the database and mark every 7 / 30 / 90 day
+    horizon that has already passed. This is what gives the
+    <a href="/scorecard">Scorecard</a> real numbers today instead of in three months.
+    No AI cost — just daily closing prices, fetched one ticker at a time and cached,
+    so a few thousand filings takes a while. Safe to re-run; it picks up where it left off.
+</p>
+<form method="POST" action="/backfill-outcomes">
+    <button type="submit" class="btn btn-outline-primary">Backfill Outcome Prices</button>
+</form>
+
 {% if recent_runs %}
 <hr class="my-5">
 <h2 class="mb-4">Recent Backfill Runs</h2>
