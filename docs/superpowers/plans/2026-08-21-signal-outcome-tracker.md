@@ -121,6 +121,23 @@ the morning it ships, instead of in November. Build for backfill first.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — CODEX ROUND 5 on head f708084. Two findings, both verified real. Posture
+  had already switched to surface-don't-fix, so these were split:
+  10. **FIXED** — the header caveat still said delisted names are "excluded from the rates
+      ... which flatters bearish calls". Both halves were wrong after the round-2
+      per-horizon fix: they ARE scored at horizons they traded through, and dropping only
+      the LATER horizons removes disproportionately bearish-successful outcomes, so the
+      bias runs AGAINST the bearish signal. This was my own round-2 fix left half-applied
+      (I updated the bottom card and missed the header), producing an actively false
+      statement on the deliverable. Fixed + pinned with a test; zero logic risk.
+  11. **SURFACED, NOT FIXED** — the backfill makes ~3 requests per ticker-filing, not 1.
+      SPAN_PAD_DAYS=10 means the baseline fetch covers filed±20, which absorbs the 7d
+      lookup but not 30d or 90d, so each of those triggers a widened refetch. Roughly
+      triples backfill wall-clock (~27min → ~80min at 4,118 filings) and rate-limit
+      exposure, and makes the PR's "one request per ticker" claim untrue. Clean fix
+      exists (prewarm filed-pad → filed+90+pad once per filing before the baseline
+      lookup, ~5 lines) but it is a prefetch-strategy change with a real tradeoff, so it
+      is the user's call. NOT a correctness issue.
 - 2026-08-21 — CODEX ROUND 4 on head 292342d. Three findings, all verified real:
   7. **P2** — a still-forming daily candle could be cached. Yahoo returns a bar for the
      session in progress whose "close" is just the last trade so far, and since a horizon

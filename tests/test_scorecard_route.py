@@ -127,3 +127,18 @@ def test_best_and_worst_link_to_the_filings(tmp_sqlite_db):
 def test_nav_exposes_the_scorecard(tmp_sqlite_db):
     body = _client(tmp_sqlite_db).get("/").data
     assert b'href="/scorecard"' in body
+
+
+def test_the_page_states_the_bias_direction_correctly(tmp_sqlite_db):
+    """A delisted name is scored at the horizons it traded through; only its
+    later horizons drop out, and those skew bearish-successful. So the omission
+    understates bearish performance. The page said the opposite for a while —
+    a leftover from before horizons were settled individually."""
+    client = _client(tmp_sqlite_db)
+    _scored_filing(1)
+    body = client.get("/scorecard").data.decode()
+
+    assert "flatters bearish" not in body, "page states the bias backwards"
+    assert "against</em> the bearish signal" in body
+    # And it must not claim delisted names are excluded outright.
+    assert "excluded from the rates" not in body

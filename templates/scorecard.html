@@ -114,9 +114,11 @@
             adding anything. Rates are withheld entirely below {{ card.min_sample }} scored
             calls rather than shown with a caveat. Horizons are calendar days from the
             filing date, and each window is compared against SPY over exactly the same
-            dates. Nothing here is survivorship-adjusted: names that stopped trading are
-            excluded from the rates and counted separately below, which flatters bearish
-            calls, since a delisting is usually the bearish case coming true.
+            dates. Nothing here is survivorship-adjusted, and the bias runs
+            <em>against</em> the bearish signal: a name that stopped trading is scored at
+            every horizon it actually traded through, but its later horizons are dropped —
+            and those dropped outcomes are disproportionately the ones where the bearish
+            case was coming true. Read a bearish hit rate here as a floor, not a ceiling.
         </p>
     </div>
 </div>
