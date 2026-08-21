@@ -28,6 +28,7 @@ from database import (
     OUTCOME_HORIZONS,
     OUTCOME_NO_PRICE,
     OUTCOME_OK,
+    get_cached_closes,
     get_filings_needing_outcome_baseline,
     get_outcomes_needing_mark,
     give_up_on_horizon,
@@ -58,6 +59,13 @@ GIVE_UP_AFTER_DAYS = 30
 # than the data being patchy. Stop instead of walking the whole archive marking
 # nothing, and keep the exclusion list from growing past SQL parameter limits.
 MAX_SKIPPED_BEFORE_ABORT = 500
+
+# A corporate action re-bases a whole price series retroactively: after a
+# 10-for-1 split, every historical bar comes back divided by ten. Anything
+# below this much disagreement between a stored baseline and the same date
+# re-read today is noise; anything above it is a re-basing. Real splits move
+# prices by 2x or more, so the threshold is not close to either case.
+REBASE_TOLERANCE = 0.005
 
 # Must match get_close_on_or_after's lookahead, so the coverage check asks
 # about exactly the span the lookup actually searched.
@@ -92,6 +100,45 @@ def _benchmark_close_on(bar_date):
     if spy_close is None or spy_date != bar_date:
         return None
     return spy_close
+
+
+def _rebase_factor(ticker, baseline_date, stored_baseline):
+    """How much a stored baseline disagrees with the same date re-read today.
+
+    Yahoo applies split adjustments RETROACTIVELY at fetch time. A baseline
+    captured before a 10-for-1 split is stored at, say, 1150; after the split
+    the same historical bar comes back as 115. Comparing a horizon close
+    fetched today against that stored 1150 reads as a ~90% collapse that never
+    happened — and since a mark is never revisited, it would sit in the
+    scorecard forever. Reverse splits, which are routine among the distressed
+    micro-caps this scanner surfaces, distort it the other way and even harder.
+
+    Returns a multiplier to bring a freshly-fetched price onto the stored
+    baseline's basis. Rescaling the INCOMING value, rather than rewriting the
+    baseline, is what keeps marks already recorded at shorter horizons valid —
+    they were computed against that same stored basis.
+
+    Returns 1.0 when nothing has changed or when the check cannot be made;
+    a return is basis-invariant as long as both legs share one basis, so the
+    safe default is to leave the numbers alone.
+    """
+    if not stored_baseline or not baseline_date:
+        return 1.0
+
+    bar_date = str(baseline_date)[:10]
+    cached = get_cached_closes(ticker, bar_date, bar_date)
+    current = cached.get(bar_date)
+    if not current or current <= 0:
+        return 1.0
+
+    factor = float(stored_baseline) / float(current)
+    if abs(factor - 1.0) < REBASE_TOLERANCE:
+        return 1.0
+
+    print(f"[OUTCOMES] {ticker}: price series re-based since baseline "
+          f"({stored_baseline:.4f} -> {current:.4f} on {bar_date}); "
+          f"scaling this horizon by {factor:.4f} to keep the legs comparable")
+    return factor
 
 
 def _ticker_is_gone(ticker):
@@ -249,6 +296,15 @@ def mark_due_outcomes(as_of=None, limit=200):
                 if spy_close is None:
                     stats["pending"] += 1
                     continue
+
+                # A split between the baseline and now re-bases the whole
+                # series. Put the freshly-fetched closes back onto the stored
+                # baseline's basis before recording them, or the excess return
+                # measures the corporate action instead of the signal.
+                close *= _rebase_factor(ticker, row.get("baseline_date"),
+                                        row.get("baseline_close"))
+                spy_close *= _rebase_factor(BENCHMARK_TICKER, row.get("baseline_date"),
+                                            row.get("baseline_spy"))
 
                 if set_outcome_mark(row["filing_id"], horizon, close, spy_close):
                     stats["marked"] += 1

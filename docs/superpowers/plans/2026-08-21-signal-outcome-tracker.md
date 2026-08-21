@@ -123,7 +123,7 @@ that write safe. **If you add a permanent write, add it here.**
 | `outcomes.capture_baselines` | `OUTCOME_NO_PRICE` | `_answer_is_final()` — the source answered for this window and had no bars. |
 | `outcomes.mark_due_outcomes` | `OUTCOME_DELISTED` + horizon settled | `_ticker_is_gone()`. |
 | `outcomes.mark_due_outcomes` | horizon settled | Overdue **and** `_answer_is_final()`. |
-| `outcomes.mark_due_outcomes` | `set_outcome_mark` (a price, forever) | Both legs non-None; the DB layer refuses `None` and never overwrites an existing mark. |
+| `outcomes.mark_due_outcomes` | `set_outcome_mark` (a price, forever) | Both legs non-None; the DB layer refuses `None` and never overwrites an existing mark; and both are rescaled onto the stored baseline's basis first, so a split between capture and marking cannot be frozen in as a return. |
 
 Two properties hold the whole thing up, and both were bugs that had to be fixed:
 `has_coverage()` must never report coverage over an unfetched gap (round 7), and
@@ -150,6 +150,28 @@ Verified 2026-08-21 at head 56097fd.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — CODEX ROUND 9 on head 4aa8379. One finding, real, FIXED — and it corrects
+  my own round-6 refutation.
+  18. **P2 FIXED (severe in effect)** — Yahoo applies split adjustment RETROACTIVELY at
+      fetch time. Confirmed live: NVDA traded ~$1,150 on 2024-06-03, and the API now
+      returns $115.00 for that date. So a baseline PERSISTED before a split and a horizon
+      FETCHED after it sit on different scales: a 10-for-1 split reads as a ~90% collapse,
+      and a 1-for-10 reverse split as a ~+800% moonshot. Reverse splits are routine among
+      the distressed micro-caps this scanner surfaces, so this would have hit real rows and
+      dominated the scorecard permanently (marks are never revisited).
+      My round-6 refutation missed it because the NVDA window I tested lay ENTIRELY after
+      the split — both endpoints off one basis, so no mismatch could appear. The finding
+      was right about the hazard even though its stated mechanism (raw unadjusted closes)
+      was wrong.
+      FIX: a return is basis-invariant as long as both legs share a basis, so the incoming
+      close is rescaled onto the STORED baseline's basis via `_rebase_factor()`. Rescaling
+      the incoming value rather than rewriting the baseline is what keeps marks already
+      recorded at shorter horizons valid — rewriting would silently invalidate them.
+      Detected by re-reading the baseline date from the cache (the widening refetch has
+      already refreshed it) and comparing; >0.5% disagreement is a re-basing, and real
+      splits are 2x or more, so the threshold is nowhere near ordinary noise.
+      6 more tests incl. forward split, reverse split, and earlier-marks-stay-valid.
+      Suite 302 green; live end-to-end asserts no implausible returns.
 - 2026-08-21 — CODEX ROUND 8 on head 3a2fdfd. Two findings, both real, both FIXED.
   16. **P2 FIXED (severe in effect)** — a 200 response carrying ANY `chart.error` was
       treated as a permanent symbol miss. Probed Yahoo live: a genuine miss is HTTP 404
@@ -201,6 +223,9 @@ Verified 2026-08-21 at head 56097fd.
       unadjusted, so a big ex-div inside a 90-day window reads as a small mechanical
       drop. Immaterial for the non-dividend micro-caps this scanner mostly surfaces.
       FIRST BOT FINDING THAT DID NOT HOLD UP — relevant to the convergence judgment.
+      **CORRECTED IN ROUND 9:** the refutation was right about the stated mechanism and
+      WRONG to conclude the area was safe. The NVDA test fetched both endpoints AFTER the
+      split, so both came off one basis and no mismatch could appear. See round 9.
   13. **REAL, SURFACED — the most important methodological issue on the PR.** The baseline
       is the close on `filed_date`. An 8-K filed after the 4pm close was not public at
       that price, so for those filings the measured move includes the overnight reaction

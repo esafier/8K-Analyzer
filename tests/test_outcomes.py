@@ -8,6 +8,8 @@ visible in the denominator, and nothing may be marked before it has happened.
 from datetime import date
 from unittest.mock import patch
 
+import pytest
+
 import database
 import outcomes
 
@@ -545,3 +547,95 @@ def test_the_scheduled_job_also_refuses_to_overlap(tmp_sqlite_db):
     with patch("outcomes.capture_baselines", side_effect=reentrant), \
          patch("outcomes.mark_due_outcomes", return_value={}):
         assert outcomes.run_outcome_job() is not None
+
+
+# ---------- a split must not be scored as a return ----------
+
+def _rebased_row(tmp_db, split_ratio, filed_date="2026-01-05"):
+    """Price a baseline, then simulate the price source re-basing history by the
+    given ratio (10.0 = a 10-for-1 split; 0.1 = a 1-for-10 reverse split)."""
+    filing_id = _priced_filing(tmp_db, filed_date=filed_date)   # baseline 10.0 / SPY 500.0
+    # After the split, the same historical bar comes back re-based.
+    database.upsert_closes("AAPL", {filed_date: 10.0 / split_ratio})
+    return filing_id
+
+
+def test_a_forward_split_is_not_scored_as_a_collapse(tmp_sqlite_db):
+    """The bug: a baseline stored at 10.0 pre-split, a horizon fetched post-split
+    at ~1.05 on the re-based series. Naively that reads as a ~90% collapse and
+    would sit in the scorecard forever as a huge false bearish hit."""
+    _rebased_row(tmp_sqlite_db, split_ratio=10.0)
+
+    # Post-split series: the stock is actually up ~5% since the filing.
+    stub = _closes({
+        ("AAPL", "2026-01-12"): ("2026-01-12", 1.05),
+        ("SPY", "2026-01-12"): ("2026-01-12", 505.0),
+    })
+    with patch("outcomes.get_close_on_or_after", side_effect=stub):
+        outcomes.mark_due_outcomes(as_of=date(2026, 1, 20))
+
+    out = database.get_signal_outcomes()[0]
+    ret = (out["close_7d"] - out["baseline_close"]) / out["baseline_close"]
+    assert ret == pytest.approx(0.05, abs=0.01), f"split scored as a {ret:.0%} move"
+
+
+def test_a_reverse_split_is_not_scored_as_a_moonshot(tmp_sqlite_db):
+    """Reverse splits are routine among the distressed micro-caps this scanner
+    surfaces, and they distort the other way — an apparent +800%."""
+    _rebased_row(tmp_sqlite_db, split_ratio=0.1)
+
+    stub = _closes({
+        ("AAPL", "2026-01-12"): ("2026-01-12", 95.0),   # 1-for-10: ~5% down
+        ("SPY", "2026-01-12"): ("2026-01-12", 505.0),
+    })
+    with patch("outcomes.get_close_on_or_after", side_effect=stub):
+        outcomes.mark_due_outcomes(as_of=date(2026, 1, 20))
+
+    out = database.get_signal_outcomes()[0]
+    ret = (out["close_7d"] - out["baseline_close"]) / out["baseline_close"]
+    assert ret == pytest.approx(-0.05, abs=0.01), f"reverse split scored as a {ret:.0%} move"
+
+
+def test_marks_already_recorded_stay_valid_across_a_split(tmp_sqlite_db):
+    """Rescaling the incoming close rather than rewriting the baseline is what
+    keeps earlier horizons comparable — rewriting it would silently invalidate
+    every mark already taken against the old basis."""
+    filing_id = _priced_filing(tmp_sqlite_db, filed_date="2026-01-05")
+
+    pre = _closes({("AAPL", "2026-01-12"): ("2026-01-12", 9.5),
+                   ("SPY", "2026-01-12"): ("2026-01-12", 505.0)})
+    with patch("outcomes.get_close_on_or_after", side_effect=pre):
+        outcomes.mark_due_outcomes(as_of=date(2026, 1, 20))
+    seven_day = database.get_signal_outcomes()[0]["close_7d"]
+    assert seven_day == 9.5
+
+    # Split, then the 30-day horizon comes due on the re-based series.
+    database.upsert_closes("AAPL", {"2026-01-05": 1.0})
+    post = _closes({("AAPL", "2026-02-04"): ("2026-02-04", 0.9),
+                    ("SPY", "2026-02-04"): ("2026-02-04", 510.0)})
+    with patch("outcomes.get_close_on_or_after", side_effect=post):
+        outcomes.mark_due_outcomes(as_of=date(2026, 3, 1))
+
+    out = database.get_signal_outcomes()[0]
+    assert out["baseline_close"] == 10.0, "baseline was rewritten, invalidating earlier marks"
+    assert out["close_7d"] == seven_day, "an earlier mark was disturbed"
+    assert out["close_30d"] == pytest.approx(9.0), "30d not brought onto the stored basis"
+
+
+def test_ordinary_price_moves_are_left_alone(tmp_sqlite_db):
+    """The guard must not touch normal volatility — only a re-basing."""
+    _priced_filing(tmp_sqlite_db, filed_date="2026-01-05")
+    stub = _closes({("AAPL", "2026-01-12"): ("2026-01-12", 7.0),
+                    ("SPY", "2026-01-12"): ("2026-01-12", 505.0)})
+    with patch("outcomes.get_close_on_or_after", side_effect=stub):
+        outcomes.mark_due_outcomes(as_of=date(2026, 1, 20))
+
+    assert database.get_signal_outcomes()[0]["close_7d"] == 7.0
+
+
+def test_rebase_factor_is_neutral_without_a_cached_baseline_bar(tmp_sqlite_db):
+    """If the check cannot be made, leave the numbers alone — a return is
+    basis-invariant so long as both legs share one basis."""
+    assert outcomes._rebase_factor("AAPL", "2026-01-05", 10.0) == 1.0
+    assert outcomes._rebase_factor("AAPL", None, 10.0) == 1.0
+    assert outcomes._rebase_factor("AAPL", "2026-01-05", None) == 1.0

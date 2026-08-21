@@ -2408,7 +2408,8 @@ def get_outcomes_needing_mark(horizon_days, as_of_date, limit=500):
     p = _placeholder()
     # horizon_days is whitelisted above, so interpolating it here is safe.
     cursor.execute(f"""
-        SELECT filing_id, ticker, filed_date, baseline_date
+        SELECT filing_id, ticker, filed_date, baseline_date,
+               baseline_close, baseline_spy
         FROM signal_outcomes
         WHERE marked_{horizon_days}d_at IS NULL
           AND baseline_close IS NOT NULL
@@ -2421,7 +2422,8 @@ def get_outcomes_needing_mark(horizon_days, as_of_date, limit=500):
     rows = cursor.fetchall()
     conn.close()
 
-    columns = ["filing_id", "ticker", "filed_date", "baseline_date"]
+    columns = ["filing_id", "ticker", "filed_date", "baseline_date",
+               "baseline_close", "baseline_spy"]
     return [dict(zip(columns, [row[i] for i in range(len(columns))])) for row in rows]
 
 
