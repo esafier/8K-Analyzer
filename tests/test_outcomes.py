@@ -199,7 +199,13 @@ def test_long_silence_stops_being_retried(tmp_sqlite_db):
         result = outcomes.mark_due_outcomes(as_of=date(2026, 3, 1))
 
     assert result[7]["gave_up"] == 1
-    assert database.get_signal_outcomes()[0]["status"] == database.OUTCOME_NO_PRICE
+    out = database.get_signal_outcomes()[0]
+    # Settled for THIS horizon only — the row itself is untouched, because the
+    # name may be halted rather than dead and later horizons must stay open.
+    assert out["marked_7d_at"] is not None
+    assert out["close_7d"] is None
+    assert out["status"] == database.OUTCOME_OK
+    assert database.get_outcomes_needing_mark(7, "2026-03-01") == []
 
 
 def test_ticker_that_went_dark_is_flagged_delisted(tmp_sqlite_db):
@@ -209,7 +215,9 @@ def test_ticker_that_went_dark_is_flagged_delisted(tmp_sqlite_db):
         result = outcomes.mark_due_outcomes(as_of=date(2026, 1, 20))
 
     assert result[7]["gave_up"] == 1
-    assert database.get_signal_outcomes()[0]["status"] == database.OUTCOME_DELISTED
+    out = database.get_signal_outcomes()[0]
+    assert out["status"] == database.OUTCOME_DELISTED
+    assert out["marked_7d_at"] is not None, "horizon must be settled so it stops being due"
 
 
 def test_mark_benchmark_uses_the_stocks_bar_date(tmp_sqlite_db):
@@ -323,3 +331,98 @@ def test_backfill_marking_respects_the_batch_cap(tmp_sqlite_db):
         result = outcomes.run_outcome_backfill(verbose=False, max_batches=4)
 
     assert result["marks"][7]["marked"] == 4
+
+
+# ---------- one dead horizon must not destroy the others ----------
+
+def test_a_failed_horizon_leaves_earlier_marks_intact(tmp_sqlite_db):
+    """The regression this design exists to prevent: a stock halted around its
+    30-day target still has a perfectly real 7-day result, and a row-wide status
+    flip would have removed it from the 7-day scorecard too."""
+    filing_id = _priced_filing(tmp_sqlite_db, filed_date="2026-01-05")
+
+    good_7d = _closes({
+        ("AAPL", "2026-01-12"): ("2026-01-12", 9.0),
+        ("SPY", "2026-01-12"): ("2026-01-12", 505.0),
+    })
+    with patch("outcomes.get_close_on_or_after", side_effect=good_7d):
+        outcomes.mark_due_outcomes(as_of=date(2026, 1, 20))
+    assert database.get_signal_outcomes()[0]["close_7d"] == 9.0
+
+    # Now the 30-day horizon comes due and the stock has no bars at all.
+    with patch("outcomes.get_close_on_or_after", side_effect=_closes({})), \
+         patch("outcomes._ticker_is_gone", return_value=False), \
+         patch("outcomes._answer_is_final", return_value=True):
+        result = outcomes.mark_due_outcomes(as_of=date(2026, 4, 1))
+
+    assert result[30]["gave_up"] == 1
+    out = database.get_signal_outcomes()[0]
+    assert out["close_7d"] == 9.0, "a valid 7-day mark was destroyed by a 30-day failure"
+    assert out["close_30d"] is None
+    assert out["status"] == database.OUTCOME_OK
+
+
+def test_a_delisting_preserves_the_horizons_already_marked(tmp_sqlite_db):
+    filing_id = _priced_filing(tmp_sqlite_db, filed_date="2026-01-05")
+    good_7d = _closes({
+        ("AAPL", "2026-01-12"): ("2026-01-12", 9.0),
+        ("SPY", "2026-01-12"): ("2026-01-12", 505.0),
+    })
+    with patch("outcomes.get_close_on_or_after", side_effect=good_7d):
+        outcomes.mark_due_outcomes(as_of=date(2026, 1, 20))
+
+    with patch("outcomes.get_close_on_or_after", side_effect=_closes({})), \
+         patch("outcomes._ticker_is_gone", return_value=True):
+        outcomes.mark_due_outcomes(as_of=date(2026, 4, 1))
+
+    out = database.get_signal_outcomes()[0]
+    assert out["status"] == database.OUTCOME_DELISTED
+    assert out["close_7d"] == 9.0, "the horizons it actually traded through were erased"
+
+
+# ---------- the benchmark must land on the stock's own bar ----------
+
+def test_baseline_rejects_a_benchmark_from_a_different_day(tmp_sqlite_db):
+    """get_close_on_or_after can roll forward up to ten days. Accepting that
+    silently would measure the stock and SPY over different windows — the exact
+    same-window guarantee the excess-return number rests on."""
+    _insert(filed_date="2026-01-05")
+
+    def stub(ticker, target, **_kw):
+        if ticker.upper() == "AAPL":
+            return ("2026-01-05", 10.0)
+        return ("2026-01-09", 500.0)   # SPY rolled forward four days
+
+    with patch("outcomes.get_close_on_or_after", side_effect=stub):
+        stats = outcomes.capture_baselines()
+
+    assert stats["priced"] == 0
+    assert stats["skipped"] == 1
+    assert database.get_signal_outcomes() == [], "windows were allowed to diverge"
+
+
+def test_mark_rejects_a_benchmark_from_a_different_day(tmp_sqlite_db):
+    _priced_filing(tmp_sqlite_db, filed_date="2026-01-05")
+
+    def stub(ticker, target, **_kw):
+        if ticker.upper() == "AAPL":
+            return ("2026-01-12", 9.0)
+        return ("2026-01-15", 505.0)   # SPY rolled forward three days
+
+    with patch("outcomes.get_close_on_or_after", side_effect=stub):
+        result = outcomes.mark_due_outcomes(as_of=date(2026, 1, 20))
+
+    assert result[7]["marked"] == 0
+    assert result[7]["pending"] == 1
+    assert database.get_signal_outcomes()[0]["close_7d"] is None
+
+
+def test_matching_benchmark_bar_is_accepted(tmp_sqlite_db):
+    """The guard must not reject the normal case."""
+    _insert(filed_date="2026-01-05")
+    stub = _closes({
+        ("AAPL", "2026-01-05"): ("2026-01-05", 10.0),
+        ("SPY", "2026-01-05"): ("2026-01-05", 500.0),
+    })
+    with patch("outcomes.get_close_on_or_after", side_effect=stub):
+        assert outcomes.capture_baselines()["priced"] == 1

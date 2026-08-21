@@ -2424,6 +2424,34 @@ def set_outcome_mark(filing_id, horizon_days, close, spy):
     return updated > 0
 
 
+def give_up_on_horizon(filing_id, horizon_days):
+    """Mark one horizon as resolved-with-no-price, leaving every other horizon
+    and the row's own status alone.
+
+    Stamps `marked_{n}d_at` while leaving the closes NULL, which reads as "this
+    horizon has been settled and there is no price for it". That keeps the row
+    out of the due-for-marking queue (so a permanently stuck horizon cannot
+    starve newer rows out of a LIMIT-ed batch) without discarding marks that
+    already succeeded at other horizons — a stock halted around its 30-day
+    target still has a perfectly real 7-day result.
+    """
+    if horizon_days not in OUTCOME_HORIZONS:
+        raise ValueError(f"unsupported horizon: {horizon_days}")
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"""
+        UPDATE signal_outcomes
+        SET marked_{horizon_days}d_at = CURRENT_TIMESTAMP
+        WHERE filing_id = {p} AND marked_{horizon_days}d_at IS NULL
+    """, (filing_id,))
+    updated = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return updated > 0
+
+
 def set_outcome_status(filing_id, status):
     """Flag a row as unpriceable (no data, or delisted) so it stops being
     retried and can be reported honestly instead of disappearing."""

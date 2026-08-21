@@ -202,16 +202,22 @@
                         <td class="text-end">{{ card.coverage.no_price }}</td>
                     </tr>
                     <tr>
-                        <td>Stopped trading <span class="text-muted small">(delisted after the filing — excluded, not scored)</span></td>
+                        <td>Settled with no price at {{ card.horizon }} days <span class="text-muted small">(halted, or stopped trading before this horizon)</span></td>
+                        <td class="text-end">{{ card.coverage.unpriceable_horizon }}</td>
+                    </tr>
+                    <tr>
+                        <td>Stopped trading at some point <span class="text-muted small">(delisted after the filing)</span></td>
                         <td class="text-end">{{ card.coverage.delisted }}</td>
                     </tr>
                 </tbody>
             </table>
         </div>
         <p class="text-muted small mt-3 mb-0">
-            Delisted names are deliberately left unscored rather than counted as bearish
-            wins. Scoring them automatically would hand the bearish signal its best
-            outcomes for free; the honest move is to show the count and let you decide.
+            A name that later stopped trading is still scored at every horizon it
+            actually traded through — that price history is real. What is <em>not</em>
+            done is inventing a return for the delisting itself and counting it as a
+            bearish win; that would hand the bearish signal its best outcomes for free.
+            The horizons after a name goes dark are simply left unscored and counted above.
         </p>
     </div>
 </div>

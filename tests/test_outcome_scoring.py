@@ -137,16 +137,39 @@ def test_hit_rate_reflects_a_mixed_record():
     assert card["overall"]["hit_rate"] == pytest.approx(0.5)
 
 
-def test_unpriced_rows_do_not_enter_the_numerator_or_denominator(tmp_sqlite_db):
-    rows = _many(MIN_SAMPLE) + [
-        _row(filing_id=999, status=database.OUTCOME_NO_PRICE),
-        _row(filing_id=998, status=database.OUTCOME_DELISTED),
-    ]
-    card = build_scorecard(30, rows=rows)
+def test_rows_with_no_baseline_never_enter_the_numerator_or_denominator(tmp_sqlite_db):
+    """A row that was never priced has no baseline, so there is nothing to score."""
+    unpriced = _row(filing_id=999, status=database.OUTCOME_NO_PRICE, base=None, close=None)
+    gone = _row(filing_id=998, status=database.OUTCOME_DELISTED, base=None, close=None)
+    card = build_scorecard(30, rows=_many(MIN_SAMPLE) + [unpriced, gone])
+
     assert card["overall"]["n"] == MIN_SAMPLE
     assert card["coverage"]["no_price"] == 1
     assert card["coverage"]["delisted"] == 1
     assert card["coverage"]["total_rows"] == MIN_SAMPLE + 2
+
+
+def test_a_later_delisting_does_not_erase_the_horizons_it_traded_through(tmp_sqlite_db):
+    """A name delisted at day 40 still has a real, tradable 30-day result.
+    Dropping it because of what happened afterwards would quietly remove exactly
+    the cases where a bearish call was working."""
+    traded_then_died = _row(filing_id=42, status=database.OUTCOME_DELISTED,
+                            base=10.0, close=5.0, horizon=30)
+    card = build_scorecard(30, rows=_many(MIN_SAMPLE) + [traded_then_died])
+
+    assert card["overall"]["n"] == MIN_SAMPLE + 1, "a real 30-day result was thrown away"
+    assert card["coverage"]["delisted"] == 1
+
+
+def test_a_settled_but_unpriceable_horizon_is_reported_separately(tmp_sqlite_db):
+    """Stamped with no close = resolved, no price. Distinct from still-waiting."""
+    settled = _row(filing_id=7, base=10.0, close=None)
+    settled["marked_30d_at"] = "2026-03-01T00:00:00"
+    card = build_scorecard(30, rows=[settled])
+
+    assert card["coverage"]["unpriceable_horizon"] == 1
+    assert card["coverage"]["awaiting_horizon"] == 0
+    assert card["overall"]["n"] == 0
 
 
 def test_coverage_reports_what_the_numbers_exclude():

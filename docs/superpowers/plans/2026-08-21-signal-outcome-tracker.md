@@ -121,6 +121,21 @@ the morning it ships, instead of in November. Build for backfill first.
 ## Run log
 
 - 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — CODEX BOT RE-REVIEW of head ff86205. Two more findings, both verified real:
+  5. **P1** — a per-horizon price failure set a ROW-WIDE status, and `build_scorecard`
+     filtered on that status, so one dead horizon erased every other horizon's valid
+     marks. A name delisted at day 40 lost its real 7d and 30d results — systematically
+     removing the cases where a bearish call was working. Fixed two ways: horizons are
+     now settled individually via `give_up_on_horizon()` (stamps `marked_{n}d_at`,
+     leaves closes NULL, so a stuck horizon can't starve the LIMIT-ed batch either),
+     and scoring now reads the DATA rather than the row status.
+  6. **P2** — the benchmark lookup discarded the returned date, so `get_close_on_or_after`
+     could roll SPY forward up to 10 days and silently measure the two legs over
+     different windows — breaking the same-window guarantee the excess-return number
+     rests on. `_benchmark_close_on()` now requires an exact bar-date match.
+  Page copy corrected: a delisted name IS scored at every horizon it actually traded
+  through; only the horizons after it went dark are left unscored.
+  9 more tests, suite 276 green, re-verified live across all three horizons.
 - 2026-08-21 — CODEX BOT REVIEW on PR #2. All four findings verified as real and fixed:
   1. **P1** — `clear_all_filings()` left `signal_outcomes` behind (no FK/cascade), so a
      clear-and-repopulate would strand calls against deleted filings with dead links and

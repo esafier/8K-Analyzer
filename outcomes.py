@@ -29,6 +29,7 @@ from database import (
     OUTCOME_OK,
     get_filings_needing_outcome_baseline,
     get_outcomes_needing_mark,
+    give_up_on_horizon,
     get_price_history_meta,
     set_outcome_mark,
     set_outcome_status,
@@ -62,6 +63,21 @@ def _to_date(value):
     if hasattr(value, "year") and not isinstance(value, str):
         return value
     return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+
+
+def _benchmark_close_on(bar_date):
+    """The benchmark close for exactly `bar_date`, or None.
+
+    get_close_on_or_after can roll forward up to ten days, and silently
+    accepting that would leave the stock and the benchmark measured over
+    different windows — which is precisely the same-window guarantee the whole
+    excess-return number rests on. If SPY has no close on the stock's own bar,
+    the honest answer is "not yet", not "close enough".
+    """
+    spy_date, spy_close = get_close_on_or_after(BENCHMARK_TICKER, bar_date)
+    if spy_close is None or spy_date != bar_date:
+        return None
+    return spy_close
 
 
 def _ticker_is_gone(ticker):
@@ -127,7 +143,7 @@ def capture_baselines(limit=200, verdicts=("DEEP_LOOK", "MONITOR")):
 
             # Benchmark on the stock's own bar date — same window, or the
             # excess return is measuring the calendar instead of the signal.
-            _, spy_close = get_close_on_or_after(BENCHMARK_TICKER, bar_date)
+            spy_close = _benchmark_close_on(bar_date)
             if spy_close is None:
                 # A missing benchmark is a problem with us, not with the filing.
                 # Leave the row uncreated so the next run retries it.
@@ -182,16 +198,20 @@ def mark_due_outcomes(as_of=None, limit=200):
                 if close is None:
                     days_overdue = (as_of - target).days
                     if _ticker_is_gone(ticker):
-                        # Went dark between the filing and this horizon. That is
-                        # an outcome, not a failure — but scoring it is a
-                        # judgment call, so it is flagged, not scored.
+                        # Went dark between the filing and this horizon. No
+                        # later horizon will ever price either, so the row is
+                        # flagged delisted for reporting — but this horizon is
+                        # settled individually, and marks already earned at
+                        # shorter horizons stay exactly as they are.
+                        give_up_on_horizon(row["filing_id"], horizon)
                         set_outcome_status(row["filing_id"], OUTCOME_DELISTED)
                         stats["gave_up"] += 1
                     elif days_overdue > GIVE_UP_AFTER_DAYS and _answer_is_final(ticker, target):
-                        # Long overdue AND the source actually answered — the
-                        # name has stopped printing closes. Giving up on a
-                        # request that merely failed would be permanent.
-                        set_outcome_status(row["filing_id"], OUTCOME_NO_PRICE)
+                        # The source answered for this window and there are no
+                        # bars in it. Settle THIS horizon only: the name may be
+                        # halted rather than dead, and if it resumes trading the
+                        # later horizons must still be free to price.
+                        give_up_on_horizon(row["filing_id"], horizon)
                         stats["gave_up"] += 1
                     else:
                         # Recent enough that the bar may not exist yet, or we
@@ -199,7 +219,7 @@ def mark_due_outcomes(as_of=None, limit=200):
                         stats["pending"] += 1
                     continue
 
-                _, spy_close = get_close_on_or_after(BENCHMARK_TICKER, bar_date)
+                spy_close = _benchmark_close_on(bar_date)
                 if spy_close is None:
                     stats["pending"] += 1
                     continue

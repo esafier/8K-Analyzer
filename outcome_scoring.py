@@ -209,8 +209,15 @@ def build_scorecard(horizon=30, rows=None):
         raise ValueError(f"unsupported horizon: {horizon}")
 
     rows = get_signal_outcomes() if rows is None else rows
+
+    # Score on the DATA, not on the row's status. A filing that was delisted at
+    # day 40 still has a real, tradable 7-day and 30-day result, and dropping it
+    # from those horizons because of what happened later would quietly remove
+    # exactly the cases where a bearish call was working.
+    # excess_return() already returns None for any horizon that is unmarked or
+    # unpriceable, so unusable rows fall out on their own.
+    scored = _score_rows(rows, horizon)
     priced = [r for r in rows if r.get("status") == OUTCOME_OK]
-    scored = _score_rows(priced, horizon)
 
     by_signal = {}
     for row, hit, excess in scored:
@@ -218,13 +225,21 @@ def build_scorecard(horizon=30, rows=None):
             by_signal.setdefault(label, []).append((hit, excess))
 
     # Rows that exist but contribute nothing to this horizon's numbers.
+    # "Awaiting" means the horizon is genuinely still open: nothing settled it.
     awaiting = sum(
         1 for r in priced
         if r.get(f"close_{horizon}d") is None
+        and r.get(f"marked_{horizon}d_at") is None
         and str(r.get("direction") or "").upper() in DIRECTIONAL
     )
+    # Settled, but there was no price to record for this horizon specifically.
+    unpriceable_horizon = sum(
+        1 for r in rows
+        if r.get(f"close_{horizon}d") is None
+        and r.get(f"marked_{horizon}d_at") is not None
+    )
     non_directional = sum(
-        1 for r in priced
+        1 for r in rows
         if str(r.get("direction") or "").upper() not in DIRECTIONAL
     )
 
@@ -251,6 +266,7 @@ def build_scorecard(horizon=30, rows=None):
             "priced": len(priced),
             "scored": len(scored),
             "awaiting_horizon": awaiting,
+            "unpriceable_horizon": unpriceable_horizon,
             "non_directional": non_directional,
             "no_price": sum(1 for r in rows if r.get("status") == OUTCOME_NO_PRICE),
             "delisted": sum(1 for r in rows if r.get("status") == OUTCOME_DELISTED),
@@ -268,10 +284,9 @@ def best_and_worst(horizon=30, rows=None, limit=10):
         raise ValueError(f"unsupported horizon: {horizon}")
 
     rows = get_signal_outcomes() if rows is None else rows
-    priced = [r for r in rows if r.get("status") == OUTCOME_OK]
 
     entries = []
-    for row, hit, excess in _score_rows(priced, horizon):
+    for row, hit, excess in _score_rows(rows, horizon):
         entries.append({
             "filing_id": row.get("filing_id"),
             "ticker": row.get("ticker"),
