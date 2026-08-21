@@ -19,28 +19,44 @@ pointed at the older trial branch (do not touch Render).
 
 ---
 
-## Task 0 (INVESTIGATE FIRST — changes everything downstream)
+## Task 0 — RESOLVED 2026-08-21 (do not re-litigate)
 
-The HANDOFF assumed this feature is **prospective-only** because API Ninjas serves
-current prices, not historical — meaning the scorecard would show nothing useful
-for 90 days. Before building on that assumption, spend one iteration checking
-whether a **free, keyless historical daily price source** exists.
+The HANDOFF assumed this feature was **prospective-only** (scores only from deploy
+day forward) because API Ninjas serves current prices, not historical. That
+assumption is wrong, and overturning it is the single biggest win available here.
 
-- [ ] Test Stooq daily CSV: `https://stooq.com/q/d/l/?s=aapl.us&i=d` (no key, no
-      account). Confirm it returns OHLC history for common US tickers and for
-      `spy.us`. Check coverage on a handful of the small/mid-cap tickers this
-      project actually surfaces — that is where a free source usually fails.
-- [ ] If Stooq works: the scorecard can be **backfilled across the ~4,118 existing
-      filings on day one** rather than accruing from deploy day forward. This is
-      the difference between a page that is useful tomorrow morning and one that
-      is useful in November. Take it.
-- [ ] If it does not work: fall back to the prospective-only design, and record in
-      this file exactly what was tried and why it failed, so it is not re-litigated.
-- [ ] Either way, write the price source behind a small module (`price_history.py`)
-      with a single `get_daily_closes(ticker, start, end)` entry point, so the
-      source can be swapped without touching the scoring logic.
+**Tried and rejected — Stooq** (`stooq.com/q/d/l/?s=spy.us&i=d`): now gated behind a
+JavaScript proof-of-work challenge. Solvable in principle, but defeating an
+anti-bot challenge is not an acceptable production dependency. Do not revisit.
 
----
+**Chosen — Yahoo Finance chart endpoint**, keyless:
+`https://query1.finance.yahoo.com/v8/finance/chart/{TICKER}?period1={unix}&period2={unix}&interval=1d`
+
+Verified working from this container:
+- Returns daily closes for arbitrary historical windows (67 bars over a 100-day
+  window ending ~6 months back).
+- Covers the micro-caps this scanner actually surfaces — GEVO ($2), BTAI ($1.95),
+  SOAR ($1.09), XELA ($0.04) all returned clean series.
+- Returns a clean **HTTP 404 on delisted/renamed tickers** (AULT, NUZE), which is a
+  usable signal rather than silent garbage.
+
+**Consequence — the scorecard is retrospective, not prospective.** It can be
+backfilled across the ~4,118 filings already in Postgres and be genuinely useful
+the morning it ships, instead of in November. Build for backfill first.
+
+- [x] Confirm a free keyless historical source exists
+- [ ] `price_history.py` with one entry point `get_daily_closes(ticker, start, end)`,
+      so the source can be swapped when Yahoo breaks — it is an **unofficial
+      endpoint with no stability guarantee**, and this abstraction is the whole
+      insurance policy. Everything downstream depends only on this signature.
+- [ ] Cache fetched series in a `price_history` table — 4,118 filings must not mean
+      4,118 network calls. Fetch each ticker's full span once, slice locally.
+- [ ] Throttle politely (sequential, small sleep). This is someone else's free
+      endpoint; do not hammer it.
+- [ ] **Delisting is signal, not an error.** A bearish call on a company that later
+      went dark is the strongest possible hit. Record 404-after-baseline distinctly
+      rather than dropping the row — but do NOT auto-score it as a win without the
+      user's input; surface it as its own bucket on the page.
 
 ## Task 1: Schema — `signal_outcomes` table
 
@@ -102,4 +118,7 @@ whether a **free, keyless historical daily price source** exists.
 
 ## Run log
 
-- 2026-08-21 — Plan created. Baseline 176 tests passing. Starting Task 0.
+- 2026-08-21 — Plan created. Baseline 176 tests passing.
+- 2026-08-21 — Task 0 resolved: Stooq is PoW-gated; Yahoo chart endpoint works
+  keylessly incl. micro-caps. Feature is now **retrospective** — backfill the
+  existing ~4,118 filings rather than waiting 90 days. Starting Task 1.
