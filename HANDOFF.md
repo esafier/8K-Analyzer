@@ -204,6 +204,37 @@ the ~4,118 filings already in Postgres can be scored now rather than in 90 days.
   worth adding; right now it just refuses to show thin rates.
 - Prompt-quality loop (the second half of the overnight brief) not started.
 
+## 6. GRANT-TIMING SCREEN (spring-load), added 2026-08-21
+
+A triage-grade port of the `spring-load-detector` skill into the app. **Not** the
+full forensic pass — it sees one 8-K plus the price tape, and every result lists
+what it could not test. A high score means "run the real skill on this one".
+
+- `prompts/prompt_spring_load.txt` — extraction ONLY. The prompt forbids judgment,
+  price analysis and scoring, because all of that is deterministic Python.
+- `spring_load.py` — the screen. Price path (run-in, +1..+5 pop, +30d vs SPY,
+  monthly-low, V-shape) via the `price_history` layer built for the outcome
+  tracker; price hurdles converted to **required CAGR**; cross-recipient service-
+  condition asymmetry; scoring with the skill's bands.
+- `spring_load_analyses` table — cached by accession (immutable filing text), so
+  a clear-and-repopulate keeps the work and re-runs are free.
+- **Run on one filing:** button on the filing detail page (`POST /spring-load/<id>`).
+- **Backtest saved filings:** button on `/watchlist` (`POST /backtest-spring-load`).
+
+**Deliberate ceiling: this screen never scores above 8.** The 9-10 band needs Form
+4 history, the proxy's 402(x) narrative, or committee composition — none of which
+it can see. Underneath that, the skill's single-observation rule holds: without
+repetition or a self-contradiction in the paperwork, a lone grant is held at 7 on
+price evidence alone.
+
+Real result on PROP (2026-06-23, the filing v3 called MIXED): stock fell 35% into
+the grant, rose 20% within ten days, +22% vs SPY over 30 days; hurdles at $4.50/
+$6.50 are +586%/+891% from the $0.66 grant price, needing 47-58%/yr. The incoming
+CEO's tranche carries **no service condition** while the CFO's has three-year
+ratable vesting — CEO 8/10, CFO 7/10.
+
+Costs one cheap extraction per filing. Everything else is arithmetic.
+
 ## 6. Env / test notes
 
 - Local dev uses SQLite; prod uses Postgres. `sqlite3.Row` supports `row["k"]`

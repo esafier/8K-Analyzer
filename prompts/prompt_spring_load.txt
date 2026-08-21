@@ -1,0 +1,70 @@
+You are extracting equity-grant facts from an SEC 8-K for a forensic grant-timing screen.
+
+EXTRACT ONLY. Do not judge whether the timing looks suspicious, do not analyse the
+stock price, do not assign a score. Another system does that from your facts plus
+market data. Your job is to be accurate and complete about what the filing says.
+
+If the filing discloses no equity grant to an officer or director, return
+{"has_grant": false, "grants": [], "notes": "<one line saying what the filing was about>"}.
+
+For each grant disclosed, extract:
+
+- "recipient": full name as written
+- "role": title at the time of the grant (CEO, CFO, Chairman, Director, ...)
+- "is_new_hire": true if this grant accompanies the recipient's appointment/hire
+- "instrument": "OPTION" | "RSU" | "PSU" | "SAR" | "RESTRICTED_STOCK" | "OTHER"
+- "shares": number of shares/units underlying, as an integer. null if not stated.
+- "strike_price": exercise price as a number, or null (RSUs have none)
+- "grant_date": the effective grant date, "YYYY-MM-DD". null if not stated.
+- "approval_date": the date the board or committee APPROVED it, "YYYY-MM-DD", if the
+  filing distinguishes it from the grant date. null otherwise. The gap matters — look
+  for "approved on", "at its meeting held".
+- "stated_rationale": the filing's own words for why, condensed — "inducement award",
+  "annual grant", "promotion", "retention", "in connection with entry into the
+  Employment Agreement". Use "none stated" when the filing gives no reason. Do not
+  invent a plausible one.
+- "price_hurdles": array of share-price targets the award must reach to vest, as
+  numbers. Empty when there are none. Read exhibits carefully — these hide in
+  award-agreement schedules.
+- "hurdle_deadline": the date by which hurdles must be met, "YYYY-MM-DD", or null.
+- "hurdle_test": "TOUCH" if hitting the price once (or a short VWAP window) vests it
+  permanently; "SUSTAINED" if the price must hold for a stated period; null if unclear.
+  Quote-driven: look for "20 consecutive trading days", "at any time".
+- "vesting_summary": one line — schedule and conditions. Note explicitly if the award
+  has NO service/time condition, and if different recipients in the same filing get
+  DIFFERENT conditions. That asymmetry matters.
+- "plan": the plan it was granted under, or "inducement outside plan" for Nasdaq
+  5635(c)(4) / NYSE 303A.08 inducement awards.
+
+Also extract, once for the filing:
+
+- "concurrent_departure": true if the same filing also discloses an executive or
+  director leaving. These often pair.
+- "concurrent_material_event": true if the same filing discloses anything a market
+  would react to — a merger, an offering, a contract, results, a going-concern change.
+  Name it in "concurrent_event_note".
+- "filing_mentions_catalyst": true if the filing itself references upcoming news,
+  a pending transaction, a milestone, or an expected announcement.
+
+Return ONLY this JSON:
+
+{
+  "has_grant": true,
+  "grants": [ { ...fields above... } ],
+  "concurrent_departure": false,
+  "concurrent_material_event": false,
+  "concurrent_event_note": "",
+  "filing_mentions_catalyst": false,
+  "notes": ""
+}
+
+Rules:
+- Every field must come from the filing text. Use null rather than guessing.
+- "none stated" for rationale is a real and useful answer. Do not upgrade it to a
+  guess like "presumably a new-hire grant".
+- Dates must be ISO. If the filing says "on June 23, 2026", write "2026-06-23".
+- If several executives receive awards under one action, emit one object per recipient
+  so their terms can be compared.
+
+FILING TEXT:
+{filing_text}

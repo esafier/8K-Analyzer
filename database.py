@@ -287,6 +287,9 @@ def initialize_database():
     # Create signal_outcomes table for tracking whether verdicts worked
     _create_signal_outcomes_table(conn)
 
+    # Create spring_load_analyses table for cached grant-timing screens
+    _create_spring_load_table(conn)
+
     # Log which database we're using and how many filings are stored
     # This helps us debug data loss issues on Render
     cursor.execute("SELECT COUNT(*) FROM filings")
@@ -2533,6 +2536,152 @@ def count_signal_outcomes():
     conn.close()
     return {"total": total, "priced": priced, "unpriced": total - priced}
 
+
+
+# ============================================================
+# SPRING-LOAD SCREEN (grant-timing analyses)
+# ============================================================
+
+def _create_spring_load_table(conn):
+    """Cache of grant-timing screens, keyed on accession number.
+
+    Keyed on the accession rather than filing_id because the analysis is a
+    property of the filing text, which never changes — so a re-ingest or a
+    clear-and-repopulate keeps the work. The LLM extraction is the expensive
+    part; the scoring on top of it is free to recompute.
+    """
+    cursor = conn.cursor()
+    ts = "TIMESTAMPTZ" if _using_postgres() else "TIMESTAMP"
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS spring_load_analyses (
+            accession_number TEXT PRIMARY KEY,
+            cik TEXT,
+            ticker TEXT,
+            filed_date TEXT,
+            max_score INTEGER,
+            band TEXT,
+            has_grant INTEGER NOT NULL DEFAULT 0,
+            analysis_json TEXT NOT NULL,
+            model TEXT,
+            analyzed_at {ts} DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_spring_load_score "
+                   "ON spring_load_analyses(max_score)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_spring_load_cik "
+                   "ON spring_load_analyses(cik)")
+    conn.commit()
+    print("[STARTUP] Spring-load analyses table ready")
+
+
+_SPRING_LOAD_COLUMNS = ["accession_number", "cik", "ticker", "filed_date",
+                        "max_score", "band", "has_grant", "analysis_json", "model"]
+
+
+def get_spring_load_analysis(accession_number):
+    """Return a cached screen as a real dict, or None."""
+    if not accession_number:
+        return None
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(
+        f"SELECT {', '.join(_SPRING_LOAD_COLUMNS)} FROM spring_load_analyses "
+        f"WHERE accession_number = {p}", (accession_number,))
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return dict(zip(_SPRING_LOAD_COLUMNS,
+                    [row[i] for i in range(len(_SPRING_LOAD_COLUMNS))]))
+
+
+def upsert_spring_load_analysis(accession_number, cik, ticker, filed_date,
+                                analysis, model=None):
+    """Store or refresh a screen. `analysis` is the dict from spring_load.analyze."""
+    if not accession_number:
+        return
+    import json as _json
+    payload = _json.dumps(analysis)
+    max_score = int(analysis.get("max_score") or 0)
+    band = analysis.get("band") or ""
+    has_grant = 1 if analysis.get("has_grant") else 0
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    values = (accession_number, cik, ticker, filed_date, max_score, band,
+              has_grant, payload, model)
+    if _using_postgres():
+        cursor.execute(f"""
+            INSERT INTO spring_load_analyses
+            (accession_number, cik, ticker, filed_date, max_score, band,
+             has_grant, analysis_json, model, analyzed_at)
+            VALUES ({', '.join([p] * 9)}, CURRENT_TIMESTAMP)
+            ON CONFLICT (accession_number) DO UPDATE
+            SET cik = EXCLUDED.cik, ticker = EXCLUDED.ticker,
+                filed_date = EXCLUDED.filed_date, max_score = EXCLUDED.max_score,
+                band = EXCLUDED.band, has_grant = EXCLUDED.has_grant,
+                analysis_json = EXCLUDED.analysis_json, model = EXCLUDED.model,
+                analyzed_at = CURRENT_TIMESTAMP
+        """, values)
+    else:
+        cursor.execute(f"""
+            INSERT OR REPLACE INTO spring_load_analyses
+            (accession_number, cik, ticker, filed_date, max_score, band,
+             has_grant, analysis_json, model, analyzed_at)
+            VALUES ({', '.join([p] * 9)}, CURRENT_TIMESTAMP)
+        """, values)
+
+    conn.commit()
+    conn.close()
+
+
+def get_prior_grant_dates(cik, exclude_accession=None):
+    """Grant dates already screened for this company — the cadence baseline.
+
+    Thin by construction: it only sees what this archive has screened, not the
+    full Form 4 history the real forensic skill would pull. Callers must treat
+    an empty result as "unknown cadence", never as "no prior grants".
+    """
+    if not cik:
+        return []
+    import json as _json
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    if exclude_accession:
+        cursor.execute(
+            f"SELECT analysis_json FROM spring_load_analyses "
+            f"WHERE cik = {p} AND has_grant = 1 AND accession_number <> {p}",
+            (cik, exclude_accession))
+    else:
+        cursor.execute(
+            f"SELECT analysis_json FROM spring_load_analyses "
+            f"WHERE cik = {p} AND has_grant = 1", (cik,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    dates = []
+    for row in rows:
+        try:
+            payload = _json.loads(row[0])
+        except (ValueError, TypeError):
+            continue
+        for grant in payload.get("grants") or []:
+            if grant.get("grant_date"):
+                dates.append(grant["grant_date"])
+    return sorted(set(dates))
+
+
+def get_spring_load_screened_accessions():
+    """Accessions already screened, so a backtest can skip them."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT accession_number FROM spring_load_analyses")
+    rows = cursor.fetchall()
+    conn.close()
+    return {row[0] for row in rows}
 
 # When this file is run directly, create the database
 if __name__ == "__main__":

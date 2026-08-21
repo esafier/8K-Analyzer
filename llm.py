@@ -299,3 +299,63 @@ def extract_departures(filing_snippet, filed_date, model=None):
     except Exception as e:
         print(f"    extract_departures failed [model={use_model}]: {type(e).__name__}: {e!r}", flush=True)
         return {"departures": [], "error": True, "_tokens_in": 0, "_tokens_out": 0}
+
+
+def extract_grant_facts(filing_text, model=None):
+    """Extract equity-grant facts from a filing for the grant-timing screen.
+
+    Facts only — the prompt explicitly forbids judgment, price analysis, and
+    scoring, because all of that is done deterministically in spring_load.py.
+    Keeping the model out of the verdict is what makes the screen reproducible.
+
+    Returns:
+        Dict shaped like the prompt's schema, plus "error" and token counts.
+    """
+    use_model = model or LLM_MODEL
+
+    template = _load_prompt("prompt_spring_load.txt")
+    prompt = template.replace("{filing_text}", filing_text or "")
+
+    empty = {"has_grant": False, "grants": [], "concurrent_departure": False,
+             "concurrent_material_event": False, "concurrent_event_note": "",
+             "filing_mentions_catalyst": False, "notes": ""}
+
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model=use_model,
+            temperature=0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.choices[0].message.content or ""
+        usage = response.usage
+
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            print(f"    extract_grant_facts: JSON parse failed. Raw: {raw[:200]!r}", flush=True)
+            return {**empty, "error": True,
+                    "_tokens_in": usage.prompt_tokens, "_tokens_out": usage.completion_tokens}
+
+        if not isinstance(parsed, dict):
+            return {**empty, "error": True,
+                    "_tokens_in": usage.prompt_tokens, "_tokens_out": usage.completion_tokens}
+
+        # Drop malformed grant entries rather than letting them reach the scorer.
+        grants = [g for g in (parsed.get("grants") or []) if isinstance(g, dict)]
+        parsed["grants"] = grants
+        parsed.setdefault("has_grant", bool(grants))
+
+        return {**empty, **parsed, "error": False,
+                "_tokens_in": usage.prompt_tokens, "_tokens_out": usage.completion_tokens}
+
+    except Exception as e:
+        print(f"    extract_grant_facts failed [model={use_model}]: {type(e).__name__}: {e!r}", flush=True)
+        return {**empty, "error": True, "_tokens_in": 0, "_tokens_out": 0}

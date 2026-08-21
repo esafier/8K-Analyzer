@@ -467,6 +467,18 @@ def _render_filing_detail(filing_id, departures=None):
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
+    # Any cached grant-timing screen for this filing. Read-only — running the
+    # screen is an explicit action, never a side effect of opening the page.
+    spring_load_analysis = None
+    try:
+        from database import get_spring_load_analysis
+        cached = get_spring_load_analysis(filing.get("accession_no"))
+        if cached:
+            import json as _json
+            spring_load_analysis = _json.loads(cached["analysis_json"])
+    except Exception as e:
+        print(f"[SPRING LOAD] Could not load cached screen: {e}", flush=True)
+
     return render_template(
         "filing.html",
         filing=filing,
@@ -479,6 +491,7 @@ def _render_filing_detail(filing_id, departures=None):
         stock_price=stock_price,
         target_pcts=target_pcts,
         departures=departures,
+        spring_load=spring_load_analysis,
     )
 
 
@@ -1394,6 +1407,85 @@ def backfill_outcomes_route():
           "few thousand filings takes a while — watch the logs, then open the Scorecard.",
           "success")
     return redirect(url_for("backfill"))
+
+
+@app.route("/spring-load/<int:filing_id>", methods=["POST"])
+def spring_load_screen(filing_id):
+    """Run the grant-timing screen on one filing, on demand.
+
+    Triage-grade: it sees this 8-K plus the price tape, not Form 4 history or
+    the proxy. A high score means "worth a forensic hour", not a finding.
+    """
+    from spring_load import screen_filing
+
+    filing = get_filing_by_id(filing_id)
+    if not filing:
+        flash("Filing not found", "error")
+        return redirect(url_for("index"))
+    filing = dict(filing)  # sqlite3.Row has no .get() — see CLAUDE.md
+
+    try:
+        analysis = screen_filing(filing, force=request.form.get("force") == "1")
+    except Exception as e:
+        print(f"[SPRING LOAD] Screen failed for filing {filing_id}: {e}", flush=True)
+        flash("Grant-timing screen failed — see the logs.", "error")
+        return redirect(url_for("filing_detail", filing_id=filing_id))
+
+    if analysis is None:
+        flash("Could not screen this filing — no stored text, or the extraction failed. "
+              "Try 'Retry Missing Summaries' on the backfill page first.", "error")
+    elif not analysis.get("has_grant"):
+        flash("No equity grant disclosed in this filing — nothing to screen.", "success")
+    else:
+        flash(f"Grant-timing screen: {analysis['max_score']}/10 — {analysis['band']}.", "success")
+
+    return redirect(url_for("filing_detail", filing_id=filing_id))
+
+
+@app.route("/backtest-spring-load", methods=["POST"])
+def backtest_spring_load_route():
+    """Screen every filing on the watchlist for grant-timing opportunism.
+
+    These are the filings saved by hand because the question was open. Costs one
+    cheap LLM extraction per filing, cached by accession, so re-runs are free.
+    """
+    from spring_load import backtest_watchlist
+    from database import create_backfill_run
+
+    try:
+        run_id = create_backfill_run(
+            backfill_type="spring_load_backtest", date_start=None,
+            date_end=None, model=None,
+        )
+    except Exception as e:
+        print(f"[SPRING LOAD] WARN: could not create backfill_run row: {e}", flush=True)
+        run_id = None
+
+    def _worker():
+        from database import complete_backfill_run
+        try:
+            stats = backtest_watchlist(verbose=True)
+            if run_id:
+                complete_backfill_run(
+                    run_id, fetched=stats["screened"] + stats["skipped"],
+                    filtered=stats["screened"], new=len(stats["flagged"]),
+                    skipped=stats["skipped"],
+                )
+        except Exception as e:
+            print(f"[SPRING LOAD] Backtest worker died: {e}", flush=True)
+            if run_id:
+                try:
+                    complete_backfill_run(run_id, status="failed")
+                except Exception:
+                    pass
+
+    thread = threading.Thread(target=_worker)
+    thread.daemon = True
+    thread.start()
+
+    flash("Grant-timing backtest started over your watchlist. Watch the logs; "
+          "results appear on each filing's detail page.", "success")
+    return redirect(url_for("watchlist"))
 
 
 @app.route("/clear-market-cap-cache", methods=["POST"])

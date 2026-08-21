@@ -256,6 +256,99 @@
         </div>
         {% endif %}
 
+        <!-- Grant-timing screen (spring-load) -->
+        <div class="card mb-4">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start flex-wrap">
+                    <div>
+                        <h5 class="mb-1">Grant-Timing Screen</h5>
+                        <p class="text-muted small mb-0">
+                            Triage-grade only: this reads the filing plus the price tape.
+                            A high score means <em>worth a forensic hour</em>, not a finding.
+                        </p>
+                    </div>
+                    <form method="POST" action="/spring-load/{{ filing.id }}" class="mt-2">
+                        {% if spring_load %}<input type="hidden" name="force" value="1">{% endif %}
+                        <button type="submit" class="btn btn-sm btn-outline-primary">
+                            {{ "Re-run screen" if spring_load else "Run screen" }}
+                        </button>
+                    </form>
+                </div>
+
+                {% if spring_load %}
+                    {% if not spring_load.has_grant %}
+                    <p class="mt-3 mb-0 text-muted">
+                        No equity grant disclosed in this filing.
+                        {% if spring_load.notes %}<em>{{ spring_load.notes }}</em>{% endif %}
+                    </p>
+                    {% else %}
+                    <hr>
+                    <p class="mb-3">
+                        <span class="fs-4">{{ spring_load.max_score }}/10</span>
+                        <span class="badge bg-secondary ms-2">{{ spring_load.band }}</span>
+                    </p>
+
+                    {% for g in spring_load.grants %}
+                    <div class="mb-4">
+                        <h6 class="mb-1">
+                            {{ g.recipient or "Unnamed" }}{% if g.role %} — {{ g.role }}{% endif %}
+                            <span class="text-muted small">
+                                {{ g.instrument }}{% if g.shares %} · {{ "{:,}".format(g.shares) }} shares{% endif %}
+                                {% if g.grant_date %} · granted {{ g.grant_date }}{% endif %}
+                            </span>
+                        </h6>
+                        <p class="small text-muted mb-2">
+                            Rationale: {{ g.stated_rationale or "none stated" }}
+                            {% if g.vesting_summary %}<br>Vesting: {{ g.vesting_summary }}{% endif %}
+                        </p>
+
+                        <ul class="list-unstyled small mb-2">
+                        {% for sev, text in g.signals %}
+                            <li>{{ sev }} {{ text }}</li>
+                        {% endfor %}
+                        </ul>
+
+                        {% if g.hurdles %}
+                        <table class="table table-sm mb-2" style="max-width: 520px;">
+                            <thead class="table-light">
+                                <tr><th>Price hurdle</th><th class="text-end">vs price at grant</th><th class="text-end">Required CAGR</th></tr>
+                            </thead>
+                            <tbody>
+                            {% for h in g.hurdles %}
+                                <tr>
+                                    <td>${{ "%.2f"|format(h.hurdle) }}</td>
+                                    <td class="text-end">{% if h.vs_grant_price is not none %}{{ "%+.0f"|format(h.vs_grant_price * 100) }}%{% else %}—{% endif %}</td>
+                                    <td class="text-end">{% if h.required_cagr is not none %}{{ "%.0f"|format(h.required_cagr * 100) }}%/yr{% else %}—{% endif %}</td>
+                                </tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                        <p class="text-muted small">
+                            A hurdle is only as demanding as its deadline. Read the CAGR column,
+                            not the headline percentage.
+                        </p>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+
+                    <details class="small text-muted">
+                        <summary>What this screen could not test ({{ spring_load.untestable|length }})</summary>
+                        <ul class="mt-2">
+                        {% for item in spring_load.untestable %}
+                            <li>{{ item }}</li>
+                        {% endfor %}
+                        </ul>
+                        <p class="mb-0">
+                            These need the full forensic pass — Form 4 history, the proxy's grant
+                            table, committee composition at the grant date. A clean score here is
+                            not a clean company.
+                        </p>
+                    </details>
+                    {% endif %}
+                {% endif %}
+            </div>
+        </div>
+
         <!-- Executive Departures (last 24 months) — populated when user picks the dropdown option -->
         {% if departures is not none %}
         <div class="card mt-4">
