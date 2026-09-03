@@ -4,7 +4,7 @@
 
 import json
 from config import TARGET_ITEM_CODES, KEYWORD_CATEGORIES, SUB_CATEGORIES
-from llm import classify_and_summarize
+from pipeline import analyze_filing, apply_to_filing
 from summarizer import extract_summary
 
 # Common SEC boilerplate phrases that contain our keywords but aren't relevant.
@@ -217,20 +217,28 @@ def determine_subcategory(text_lower, matched_keywords):
     return best_subcategory
 
 
-def filter_filings(filings_metadata, fetch_text_func=None, model=None):
-    """Run both filter stages on a list of filings.
+def filter_filings(filings_metadata, fetch_text_func=None, model=None,
+                   judge_model=None, apply_universe=True, skip_existing=True):
+    """Run the ingest funnel over a list of filings.
 
     Stage 1 runs on metadata only (fast).
-    Stage 2 downloads and scans the actual text (slower, only for Stage 1 passes).
+    Stage 1b drops filings outside the investable universe and ones already
+    stored — both BEFORE any download or model call, because the cheapest
+    filing is the one never fetched.
+    Stage 2 downloads and keyword-scans the text.
+    Stage 3 hands each survivor to the shared analysis pipeline.
 
     Args:
         filings_metadata: List of filing metadata dicts from fetcher.py
         fetch_text_func: Function to call to get filing text (from fetcher.py).
                          Signature: fetch_text_func(filing_url, cik, accession_no) -> str
-        model: Which LLM model to use for Stage 3 (default: LLM_MODEL from config)
+        model / judge_model: model overrides for extraction and judgment
+        apply_universe: False disables the market-cap floor (tests, and any
+                        caller that has already screened)
+        skip_existing: False re-processes filings already in the database
 
     Returns:
-        List of filing dicts that passed both stages, enriched with category info
+        List of filing dicts that passed every stage, enriched with analysis
     """
     print(f"Filtering {len(filings_metadata)} filings...", flush=True)
 
@@ -244,6 +252,35 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
             stage1_skipped += 1
 
     print(f"  Stage 1 (item codes): {len(stage1_passed)} passed, {stage1_skipped} filtered out", flush=True)
+
+    # Stage 1b: universe + dedupe, before we spend anything on a document.
+    if apply_universe and stage1_passed:
+        from universe import screen_filings, summarize_skips
+        stage1_passed, out_of_universe = screen_filings(stage1_passed)
+        if out_of_universe:
+            print(f"  Stage 1b (universe): {len(out_of_universe)} skipped "
+                  f"{summarize_skips(out_of_universe)}", flush=True)
+
+    if skip_existing and stage1_passed:
+        # Deduplication used to happen only at insert_filing() — i.e. after the
+        # SEC fetch and the model call had already been paid for. Re-running an
+        # overlapping date range charged full price for rows that were then
+        # thrown away.
+        from database import filing_exists
+        fresh = []
+        already = 0
+        for filing in stage1_passed:
+            try:
+                seen = filing_exists(filing.get("accession_no"))
+            except Exception:
+                seen = False  # DB unavailable — better to re-fetch than to drop
+            if seen:
+                already += 1
+            else:
+                fresh.append(filing)
+        if already:
+            print(f"  Stage 1c (dedupe): {already} already in the database", flush=True)
+        stage1_passed = fresh
 
     if not fetch_text_func:
         print("  Warning: No text fetch function provided, skipping Stage 2", flush=True)
@@ -330,12 +367,16 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
               f"(rate limited or unavailable). They are saved with a placeholder "
               f"summary — run 'Retry Missing Summaries' to fill them in.", flush=True)
 
-    # Stage 3: LLM review — classify, validate, and summarize
-    # Runs on both keyword matches (for better summaries) and near-misses (to rescue good ones)
+    # Stage 3: analysis — extract, contextualize, detect, judge.
+    #
+    # Delegates to pipeline.analyze_filing, which is the single analysis path
+    # shared with re-summarize and retry-missing. This used to be ~100 lines
+    # of field mapping duplicated in three places; they drifted, and the retry
+    # copy silently lost market-target detection for months.
     all_for_llm = stage2_passed + near_misses
     final_passed = []
 
-    print(f"  Stage 3 (LLM): Reviewing {len(all_for_llm)} filings...", flush=True)
+    print(f"  Stage 3 (analysis): Reviewing {len(all_for_llm)} filings...", flush=True)
 
     for i, filing in enumerate(all_for_llm):
         company = filing.get("company", "Unknown")
@@ -346,108 +387,43 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None):
             # placeholder Stage 2 set on `summary` (e.g. the rate-limit notice).
             # Don't overwrite that with "" — leaves the dashboard ambiguous.
             filing.setdefault("summary", "")
+            filing.setdefault("source", "8-K")
             final_passed.append(filing)
             continue
 
-        print(f"  Stage 3: LLM reviewing {i + 1}/{len(all_for_llm)} — {company}", flush=True)
+        print(f"  Stage 3: analyzing {i + 1}/{len(all_for_llm)} — {company}", flush=True)
 
-        llm_result = classify_and_summarize(text, model=model)
+        result = analyze_filing(filing, text=text, model=model, judge_model=judge_model)
 
-        if llm_result is not None:
-            is_relevant = llm_result.get("relevant", False)
-
-            if is_relevant:
-                # --- v3 fields ---
-                filing["auto_category"] = (
-                    llm_result.get("top_level_category")
-                    or llm_result.get("category")
-                    or filing.get("auto_category")
-                )
-
-                # Subcategories: prefer v3 array, fall back to legacy single string
-                from summary_utils import serialize_subcategories
-                subcats = llm_result.get("subcategories")
-                if subcats is None:
-                    legacy = llm_result.get("subcategory")
-                    subcats = [legacy] if legacy else []
-                filing["auto_subcategory"] = serialize_subcategories(subcats)
-
-                filing["urgent"] = bool(llm_result.get("urgent", False))
-                filing["is_complex"] = bool(llm_result.get("is_complex", False))
-                filing["narrative_summary"] = llm_result.get("narrative_summary")
-                filing["relevant_reason"] = None  # only set on rejection path
-
-                # Build structured_summary blob from the event arrays.
-                # Use `or []` because the LLM sometimes emits explicit null instead of [].
-                structured = {
-                    "reasoning": llm_result.get("reasoning"),
-                    "departures": llm_result.get("departures") or [],
-                    "appointments": llm_result.get("appointments") or [],
-                    "comp_events": llm_result.get("comp_events") or [],
-                    "other": llm_result.get("other") or [],
-                }
-
-                # Detect market-based comp targets (stock price / market cap / TSR)
-                # and store BOTH the aggregate inside the JSON (for display) and
-                # a 0/1 flag at the row level (for fast filtering).
-                from market_targets import detect_market_targets
-                mt = detect_market_targets(structured)
-                structured["has_market_targets"] = mt["has_any"]
-                structured["market_targets"] = mt["targets"]
-                filing["has_market_targets"] = 1 if mt["has_any"] else 0
-
-                filing["structured_summary"] = json.dumps(structured)
-
-                # Triage verdict (DEEP_LOOK / MONITOR / PASS) + score + direction
-                # — powers the dashboard's signal sorting and verdict filter.
-                from summary_utils import parse_triage, count_departures
-                triage = parse_triage(llm_result)
-                filing["triage_verdict"] = triage["verdict"]
-                filing["signal_score"] = triage["score"]
-                filing["signal_direction"] = triage["direction"]
-                filing["top_signal"] = triage["top_signal"]
-
-                # Departures in THIS filing — summed per company for cluster badges
-                filing["departure_count"] = count_departures(structured)
-
-                # Bearish sub-signals promoted to filterable columns
-                from summary_utils import derive_departure_flags
-                flags = derive_departure_flags(structured)
-                filing["forfeited_comp"] = flags["forfeited_comp"]
-                filing["has_successor"] = flags["has_successor"]
-
-                # Legacy "summary" field stays populated for older templates/emails.
-                # Use narrative if present, else a brief assembly from the first event.
-                filing["summary"] = _build_legacy_summary(llm_result)
-
-                # Legacy comp_details stays supported for backward compat
-                comp_details = llm_result.get("comp_details")
-                if comp_details and any(v for v in comp_details.values()):
-                    filing["comp_details"] = json.dumps(comp_details)
-                else:
-                    filing["comp_details"] = None
-
-                final_passed.append(filing)
-                tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
-                cats_display = subcats[0] if subcats else "—"
-                print(f"    LLM: RELEVANT — {filing['auto_category']} / {cats_display} ({tokens} tokens)", flush=True)
-            else:
-                reason = llm_result.get("relevant_reason") or "(no reason given)"
-                print(f"    LLM: NOT RELEVANT — {reason}", flush=True)
-        else:
-            # LLM failed. Keyword matches and 5.02 near-misses fall back to the
-            # keyword classification + sentence-scorer summary (previous
+        if result.error:
+            # Extraction failed. Keyword matches and 5.02 near-misses fall back
+            # to the keyword classification + sentence-scorer summary (previous
             # behavior). Keywordless non-5.02 near-misses are dropped — with no
-            # keywords and no LLM verdict there's zero evidence of relevance,
-            # and storing them would just be noise.
+            # keywords and no verdict there's zero evidence of relevance, and
+            # storing them would just be noise.
             if filing.get("_near_miss") and "5.02" not in filing.get("items_list", []):
-                print(f"    LLM FAILED on keywordless near-miss — dropping", flush=True)
+                print(f"    ANALYSIS FAILED on keywordless near-miss — dropping", flush=True)
                 continue
-            print(f"    LLM FAILED — falling back to keyword classification", flush=True)
+            print(f"    ANALYSIS FAILED ({result.error}) — falling back to keywords", flush=True)
             filing["summary"] = extract_summary(text, filing.get("matched_keywords", "").split(","))
+            filing.setdefault("source", "8-K")
             final_passed.append(filing)
+            continue
 
-    print(f"  Stage 3 (LLM): {len(final_passed)} passed out of {len(all_for_llm)}", flush=True)
+        if not result.relevant:
+            reason = result.fields.get("relevant_reason") or "(no reason given)"
+            print(f"    NOT RELEVANT — {reason}", flush=True)
+            continue
+
+        apply_to_filing(filing, result)
+        final_passed.append(filing)
+
+        tokens = result.tokens_in + result.tokens_out
+        badge = ",".join(result.signal_types) or "no signals"
+        print(f"    {filing['triage_verdict']} {filing['signal_score']}/10 "
+              f"[{badge}] ({tokens} tokens)", flush=True)
+
+    print(f"  Stage 3 (analysis): {len(final_passed)} passed out of {len(all_for_llm)}", flush=True)
     print(f"  Final result: {len(final_passed)} filings match your criteria", flush=True)
 
     return final_passed

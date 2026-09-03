@@ -961,150 +961,72 @@ def resummarize():
 
 
 def run_resummarize(date_from=None, date_to=None, model=None):
-    """Background task: re-run LLM classification + summary on existing filings.
+    """Background task: re-run analysis on filings whose text is already stored.
 
-    Pulls raw_text from the database (already stored from the original backfill),
-    sends it through the LLM, and updates the summary/category/subcategory fields.
-    No SEC fetching needed — just LLM calls."""
-    import json
-    from llm import classify_and_summarize
-    from fetcher import strip_cover_page
+    No SEC fetching — this reads raw_text from the database and sends it back
+    through the shared pipeline. Use it after a prompt or signal-weight change
+    to re-rank history, or when the model was unavailable during a backfill.
+    """
+    from pipeline import analyze_filing, persist
 
-    model_label = model or "GPT-5.4-nano"
-    print(f"\n--- Re-summarize started (model: {model_label}) ---", flush=True)
+    model_label = model or "default"
+    print(f"\n--- Re-analysis started (model: {model_label}) ---", flush=True)
 
     filings = get_filings_for_resummarize(date_from, date_to)
-
     if not filings:
-        print("No filings found to re-summarize.", flush=True)
+        print("No filings found to re-analyze.", flush=True)
         return
 
-    print(f"Found {len(filings)} filings to re-summarize", flush=True)
+    print(f"Found {len(filings)} filings to re-analyze", flush=True)
 
-    updated = 0
-    failed = 0
-    no_text = 0
+    updated = failed = no_text = irrelevant = 0
+    tokens_in = tokens_out = 0
 
     for i, filing in enumerate(filings):
+        filing = dict(filing)
         company = filing.get("company", "Unknown")
-        filing_id = filing["id"]
-        raw_text = filing.get("raw_text", "")
 
-        if not raw_text:
+        if not filing.get("raw_text"):
             no_text += 1
-            print(f"  [{i+1}/{len(filings)}] {company} — no raw_text, skipping", flush=True)
+            print(f"  [{i+1}/{len(filings)}] {company} — no stored text, skipping", flush=True)
             continue
 
-        print(f"  [{i+1}/{len(filings)}] {company} — sending to LLM...", flush=True)
+        print(f"  [{i+1}/{len(filings)}] {company} — analyzing...", flush=True)
+        result = analyze_filing(filing, model=model)
+        tokens_in += result.tokens_in
+        tokens_out += result.tokens_out
 
-        # Strip cover page before sending to LLM (cleaner input = better output)
-        cleaned_text = strip_cover_page(raw_text)
-
-        llm_result = classify_and_summarize(cleaned_text, model=model)
-
-        if llm_result and llm_result.get("relevant"):
-            # LLM succeeded — update the database with v3 structured fields
-            from summary_utils import serialize_subcategories, parse_triage, count_departures
-            from filter import _build_legacy_summary
-
-            # v3 prefers top_level_category and subcategories array; fall back to v2 legacy fields
-            category = (
-                llm_result.get("top_level_category")
-                or llm_result.get("category")
-                or filing.get("auto_category")
-            )
-
-            subcats = llm_result.get("subcategories")
-            if subcats is None:
-                legacy = llm_result.get("subcategory")
-                subcats = [legacy] if legacy else []
-            auto_subcategory = serialize_subcategories(subcats)
-
-            urgent = bool(llm_result.get("urgent", False))
-            is_complex = bool(llm_result.get("is_complex", False))
-            narrative = llm_result.get("narrative_summary")
-
-            # Build structured_summary blob from the event arrays + reasoning.
-            # Use `or []` because the LLM sometimes emits explicit null instead of [].
-            structured = {
-                "reasoning": llm_result.get("reasoning"),
-                "departures": llm_result.get("departures") or [],
-                "appointments": llm_result.get("appointments") or [],
-                "comp_events": llm_result.get("comp_events") or [],
-                "other": llm_result.get("other") or [],
-            }
-
-            # Detect market-based comp targets — store aggregate in JSON + 0/1 flag for column
-            from market_targets import detect_market_targets
-            mt = detect_market_targets(structured)
-            structured["has_market_targets"] = mt["has_any"]
-            structured["market_targets"] = mt["targets"]
-            structured_json = json.dumps(structured)
-
-            # Legacy summary string for backward compatibility (emails, old templates)
-            summary = _build_legacy_summary(llm_result)
-
-            # Legacy comp_details (preserved as-is for backward compat)
-            comp_details = llm_result.get("comp_details")
-            comp_json = None
-            if comp_details and any(v for v in comp_details.values()):
-                comp_json = json.dumps(comp_details)
-
-            # Triage verdict + departure count (same validation as backfill path)
-            triage = parse_triage(llm_result)
-            from summary_utils import derive_departure_flags
-            flags = derive_departure_flags(structured)
-
-            update_filing_analysis(
-                filing_id,
-                summary,
-                category,
-                auto_subcategory,
-                urgent,
-                comp_json,
-                structured_summary=structured_json,
-                is_complex=is_complex,
-                narrative_summary=narrative,
-                relevant_reason=None,
-                has_market_targets=mt["has_any"],
-                triage_verdict=triage["verdict"],
-                signal_score=triage["score"],
-                signal_direction=triage["direction"],
-                top_signal=triage["top_signal"],
-                departure_count=count_departures(structured),
-                forfeited_comp=flags["forfeited_comp"],
-                has_successor=flags["has_successor"],
-            )
-            updated += 1
-
-            tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
-            subcat_display = subcats[0] if subcats else "—"
-            print(f"    Updated — {category} / {subcat_display} ({tokens} tokens)", flush=True)
-
-        elif llm_result and not llm_result.get("relevant"):
-            # LLM says not relevant — keep existing data but log it
-            print(f"    LLM says not relevant — keeping existing summary", flush=True)
-
-        else:
-            # LLM call failed again
+        if result.error:
             failed += 1
-            print(f"    LLM FAILED — summary unchanged", flush=True)
+            print(f"    FAILED ({result.error}) — row unchanged", flush=True)
+            continue
+        if not result.relevant:
+            irrelevant += 1
+            print(f"    Not relevant — keeping existing row", flush=True)
+            continue
 
-    print(f"--- Re-summarize complete: {updated} updated, {failed} failed, "
-          f"{no_text} skipped for missing text ---", flush=True)
+        persist(filing["id"], result)
+        updated += 1
+        badge = ",".join(result.signal_types) or "no signals"
+        print(f"    {result.fields['triage_verdict']} "
+              f"{result.fields['signal_score']}/10 [{badge}]", flush=True)
 
-    # Re-summarize only reads text already in the database, so filings stranded
-    # by a SEC rate-limit block are invisible to it — it reports success while
-    # never touching the very rows that look broken on the dashboard. Say so
-    # explicitly and name the button that does fix them.
+    print(f"--- Re-analysis complete: {updated} updated, {failed} failed, "
+          f"{irrelevant} not relevant, {no_text} without text "
+          f"({tokens_in:,} in / {tokens_out:,} out) ---", flush=True)
+
+    # Re-analysis only reads text already in the database, so filings stranded
+    # by a SEC rate-limit block are invisible to it — it would otherwise report
+    # success while never touching the very rows that look broken on the
+    # dashboard. Say so, and name the button that does fix them.
     try:
         stranded = count_filings_missing_text()
     except Exception:
         stranded = None
     if stranded:
-        print(f"    NOTE: {stranded} filing(s) in the database still have no stored SEC text "
-              f"and cannot be re-summarized. Use 'Retry Missing Summaries' — it re-fetches "
-              f"from SEC first.", flush=True)
+        print(f"    NOTE: {stranded} filing(s) still have no stored SEC text and "
+              f"cannot be re-analyzed. Use 'Retry Missing Summaries' — it "
+              f"re-fetches from SEC first.", flush=True)
 
 
 @app.route("/retrofit-market-targets", methods=["POST"])
@@ -1198,16 +1120,14 @@ def retry_missing_summaries():
 
 
 def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
-    """Background task: for filings with empty raw_text, re-fetch from SEC
-    and run the LLM pipeline, then update the database."""
-    import json
-    from llm import classify_and_summarize
-    from fetcher import strip_cover_page
-    from summary_utils import serialize_subcategories, parse_triage, count_departures
-    from filter import _build_legacy_summary
-    from market_targets import detect_market_targets
+    """Background task: re-fetch SEC text for rows that have none, then analyze.
 
-    model_label = model or "GPT-5.4-nano"
+    These are the rows Re-Analyze cannot fix, because it reads stored text and
+    these have none — the residue of a SEC rate-limit block during a backfill.
+    """
+    from pipeline import analyze_filing, persist
+
+    model_label = model or "default"
     print(f"\n--- Retry missing summaries started (model: {model_label}) ---", flush=True)
 
     filings = get_filings_missing_text(date_from, date_to)
@@ -1218,108 +1138,49 @@ def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
     scope = f"{date_from} to {date_to}" if date_from and date_to else "all dates"
     print(f"Found {len(filings)} filings missing raw_text ({scope})", flush=True)
 
-    fetched = 0
-    updated = 0
-    fetch_failed = 0
-    llm_failed = 0
+    fetched = updated = fetch_failed = analysis_failed = 0
 
     for i, filing in enumerate(filings):
+        filing = dict(filing)
         company = filing.get("company", "Unknown")
-        filing_id = filing["id"]
-        filing_url = filing.get("filing_url", "")
-        cik = filing.get("cik", "")
-        accession_no = filing.get("accession_no", "")
 
         print(f"  [{i+1}/{len(filings)}] {company} — re-fetching SEC text...", flush=True)
-
-        text, doc_url = fetch_filing_text(filing_url, cik, accession_no)
+        text, doc_url = fetch_filing_text(
+            filing.get("filing_url", ""), filing.get("cik", ""),
+            filing.get("accession_no", ""),
+        )
 
         if not text:
             print(f"    Fetch failed — still no text available", flush=True)
             fetch_failed += 1
             continue
 
-        update_filing_raw_text(filing_id, text, filing_document_url=doc_url)
+        update_filing_raw_text(filing["id"], text, filing_document_url=doc_url)
+        filing["raw_text"] = text
         fetched += 1
-        print(f"    Fetched {len(text)} chars, running LLM...", flush=True)
+        print(f"    Fetched {len(text)} chars, analyzing...", flush=True)
 
-        cleaned_text = strip_cover_page(text)
-        llm_result = classify_and_summarize(cleaned_text, model=model)
-
-        if not llm_result:
-            print(f"    LLM FAILED — text saved but summary not updated", flush=True)
-            llm_failed += 1
+        # Same pipeline as every other path — which is the point. This path
+        # used to be its own copy of the field mapping and silently lost
+        # market-target detection, so rescued filings were permanently missing
+        # their hurdle flag with nothing to indicate it.
+        result = analyze_filing(filing, text=text, model=model)
+        if result.error:
+            print(f"    ANALYSIS FAILED ({result.error}) — text saved", flush=True)
+            analysis_failed += 1
+            continue
+        if not result.relevant:
+            print(f"    Not relevant — keeping placeholder", flush=True)
             continue
 
-        if not llm_result.get("relevant"):
-            print(f"    LLM says not relevant — keeping placeholder summary", flush=True)
-            continue
-
-        category = (
-            llm_result.get("top_level_category")
-            or llm_result.get("category")
-            or filing.get("auto_category")
-        )
-        subcats = llm_result.get("subcategories")
-        if subcats is None:
-            legacy = llm_result.get("subcategory")
-            subcats = [legacy] if legacy else []
-        auto_subcategory = serialize_subcategories(subcats)
-
-        structured = {
-            "reasoning": llm_result.get("reasoning"),
-            "departures": llm_result.get("departures") or [],
-            "appointments": llm_result.get("appointments") or [],
-            "comp_events": llm_result.get("comp_events") or [],
-            "other": llm_result.get("other") or [],
-        }
-
-        # Same enrichment as the backfill/resummarize paths — previously this
-        # path skipped market-target detection, so rescued filings never got
-        # the 🎯 flag. Now all three ingest paths stay consistent.
-        mt = detect_market_targets(structured)
-        structured["has_market_targets"] = mt["has_any"]
-        structured["market_targets"] = mt["targets"]
-
-        structured_json = json.dumps(structured)
-        summary = _build_legacy_summary(llm_result)
-
-        comp_details = llm_result.get("comp_details")
-        comp_json = None
-        if comp_details and any(v for v in comp_details.values()):
-            comp_json = json.dumps(comp_details)
-
-        triage = parse_triage(llm_result)
-        from summary_utils import derive_departure_flags
-        flags = derive_departure_flags(structured)
-
-        update_filing_analysis(
-            filing_id,
-            summary,
-            category,
-            auto_subcategory,
-            bool(llm_result.get("urgent", False)),
-            comp_json,
-            structured_summary=structured_json,
-            is_complex=bool(llm_result.get("is_complex", False)),
-            narrative_summary=llm_result.get("narrative_summary"),
-            relevant_reason=None,
-            has_market_targets=mt["has_any"],
-            triage_verdict=triage["verdict"],
-            signal_score=triage["score"],
-            signal_direction=triage["direction"],
-            top_signal=triage["top_signal"],
-            departure_count=count_departures(structured),
-            forfeited_comp=flags["forfeited_comp"],
-            has_successor=flags["has_successor"],
-        )
+        persist(filing["id"], result)
         updated += 1
-        tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
-        subcat_display = subcats[0] if subcats else "—"
-        print(f"    Updated — {category} / {subcat_display} ({tokens} tokens)", flush=True)
+        badge = ",".join(result.signal_types) or "no signals"
+        print(f"    {result.fields['triage_verdict']} "
+              f"{result.fields['signal_score']}/10 [{badge}]", flush=True)
 
-    print(f"--- Retry complete: {fetched} fetched, {updated} updated, "
-          f"{fetch_failed} fetch-failed, {llm_failed} llm-failed ---", flush=True)
+    print(f"--- Retry complete: {fetched} fetched, {updated} analyzed, "
+          f"{fetch_failed} fetch-failed, {analysis_failed} analysis-failed ---", flush=True)
 
 
 @app.route("/clear-market-cap-cache", methods=["POST"])
