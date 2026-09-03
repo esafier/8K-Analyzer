@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+
+{# Confirmation page for a one-tap label from a digest email.
+   Deliberately not a silent redirect: mail clients and link scanners fetch
+   URLs on their own, so the user needs to see what was recorded and be able
+   to undo it in one more tap. #}
+
+<div class="label-done">
+  {% if invalid %}
+    <h3>That link didn't work</h3>
+    <p class="text-muted">
+      It may have expired, or been altered in transit. Nothing was changed.
+    </p>
+    <a href="/" class="btn btn-primary">Open the signal inbox</a>
+
+  {% elif undone %}
+    <h3>Undone</h3>
+    <p class="text-muted">
+      {% if filing %}The label on <strong>{{ filing['company'] }}</strong> was removed.{% else %}Label removed.{% endif %}
+    </p>
+    <a href="/" class="btn btn-primary">Open the signal inbox</a>
+
+  {% else %}
+    <h3>
+      {% if label == 'signal' %}Marked as signal{% elif label == 'noise' %}Marked as noise{% else %}Recorded{% endif %}
+    </h3>
+    <p class="text-muted">
+      <strong>{{ filing['company'] }}</strong>{% if filing['ticker'] %} ({{ filing['ticker'] }}){% endif %}
+      — {{ filing['filed_date'] }}
+    </p>
+    {% if filing['top_signal'] %}
+    <p class="label-done-thesis">{{ filing['top_signal'] }}</p>
+    {% endif %}
+    <p class="text-muted small">This is now training data — it shapes how similar filings are ranked.</p>
+    <div class="d-flex gap-2 justify-content-center flex-wrap">
+      <a href="/filing/{{ filing['id'] }}" class="btn btn-outline-secondary btn-sm">See the filing</a>
+      <a href="/" class="btn btn-primary btn-sm">Signal inbox</a>
+      <a href="/label/{{ token }}?undo=1" class="btn btn-link btn-sm text-muted">Undo</a>
+    </div>
+  {% endif %}
+</div>
+
+{% endblock %}

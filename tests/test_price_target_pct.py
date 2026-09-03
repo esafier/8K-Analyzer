@@ -92,7 +92,7 @@ def test_dashboard_shows_pct_chip(tmp_sqlite_db):
 
     app.config["TESTING"] = True
     client = app.test_client()
-    resp = client.get("/")
+    resp = client.get("/all")
     assert resp.status_code == 200
     assert b"+100%" in resp.data
 

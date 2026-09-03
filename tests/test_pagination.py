@@ -31,7 +31,7 @@ def _insert_filings(n):
 def test_non_numeric_page_does_not_500(tmp_sqlite_db):
     client = _client(tmp_sqlite_db)
     _insert_filings(3)
-    resp = client.get("/?page=abc")
+    resp = client.get("/all?page=abc")
     assert resp.status_code == 200
     assert b"Company 0" in resp.data
 
@@ -39,7 +39,7 @@ def test_non_numeric_page_does_not_500(tmp_sqlite_db):
 def test_empty_page_param_does_not_500(tmp_sqlite_db):
     client = _client(tmp_sqlite_db)
     _insert_filings(1)
-    resp = client.get("/?page=")
+    resp = client.get("/all?page=")
     assert resp.status_code == 200
 
 
@@ -47,7 +47,7 @@ def test_zero_and_negative_page_clamp_to_first(tmp_sqlite_db):
     client = _client(tmp_sqlite_db)
     _insert_filings(3)
     for bad in ("0", "-5"):
-        resp = client.get(f"/?page={bad}")
+        resp = client.get(f"/all?page={bad}")
         assert resp.status_code == 200
         assert b"Company 0" in resp.data
 
@@ -57,7 +57,7 @@ def test_over_range_page_clamps_to_last_page(tmp_sqlite_db):
     empty 'No filings found' dead-end with no pagination controls."""
     client = _client(tmp_sqlite_db)
     _insert_filings(3)
-    resp = client.get("/?page=99")
+    resp = client.get("/all?page=99")
     assert resp.status_code == 200
     assert b"No filings found" not in resp.data
     assert b"Company 0" in resp.data
@@ -82,7 +82,7 @@ def test_search_with_special_chars_keeps_pagination_links_valid(tmp_sqlite_db):
         "raw_text": "",
         "matched_keywords": "",
     })
-    resp = client.get("/?search=AT%26T")
+    resp = client.get("/all?search=AT%26T")
     assert resp.status_code == 200
     # The company matched, so pagination links rendered — and the ampersand
     # inside the search term must be %-encoded, not a raw query separator

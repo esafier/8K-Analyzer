@@ -2050,6 +2050,170 @@ def upsert_departure_extraction(accession_number, cik, filed_date, extractions, 
 
 
 # ============================================================
+# INBOX + REVIEW QUERIES
+# ============================================================
+
+def get_inbox_filings(days=7, min_score=0, direction=None, signal_type=None,
+                      include_pass=False, unlabeled_only=False, limit=100, offset=0):
+    """The ranked signal inbox — the new default view.
+
+    Differs from get_filings() in what it assumes. The old dashboard was a
+    chronological archive: everything, newest first, filters optional. This is
+    a work queue: a recent window, PASS hidden, strongest signal first. The
+    user's complaint was never that filings were missing — it was that finding
+    the three worth reading meant scrolling past ninety that weren't.
+
+    Rows analyzed before the rebuild (NULL verdict) are excluded rather than
+    ranked: they have no signals, so they would sort into the middle of the
+    list carrying no information about why they were there.
+    """
+    from datetime import datetime, timedelta
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    where = " AND triage_verdict IS NOT NULL"
+    params = []
+
+    if days:
+        cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+        where += f" AND filed_date >= {p}"
+        params.append(cutoff)
+
+    if not include_pass:
+        where += " AND triage_verdict <> 'PASS'"
+
+    if min_score:
+        where += f" AND COALESCE(signal_score, 0) >= {p}"
+        params.append(int(min_score))
+
+    if direction in ("BEARISH", "BULLISH", "MIXED", "NEUTRAL"):
+        where += f" AND signal_direction = {p}"
+        params.append(direction)
+
+    if signal_type:
+        where += f" AND signal_types LIKE {p}"
+        params.append(f"%{signal_type}%")
+
+    if unlabeled_only:
+        where += " AND id NOT IN (SELECT filing_id FROM judgments)"
+
+    query = (
+        "SELECT * FROM filings WHERE 1=1" + where +
+        " ORDER BY COALESCE(signal_score, 0) DESC, filed_date DESC, created_at DESC"
+        f" LIMIT {p} OFFSET {p}"
+    )
+    params.extend([limit, offset])
+
+    cursor.execute(query, params)
+    results = [dict(r) for r in _dict_rows(cursor.fetchall(), cursor)]
+    conn.close()
+    return results
+
+
+def count_inbox_filings(days=7, min_score=0, direction=None, signal_type=None,
+                        include_pass=False, unlabeled_only=False):
+    """Row count for the same filter set — used for pagination and the header."""
+    from datetime import datetime, timedelta
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    where = " AND triage_verdict IS NOT NULL"
+    params = []
+    if days:
+        cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+        where += f" AND filed_date >= {p}"
+        params.append(cutoff)
+    if not include_pass:
+        where += " AND triage_verdict <> 'PASS'"
+    if min_score:
+        where += f" AND COALESCE(signal_score, 0) >= {p}"
+        params.append(int(min_score))
+    if direction in ("BEARISH", "BULLISH", "MIXED", "NEUTRAL"):
+        where += f" AND signal_direction = {p}"
+        params.append(direction)
+    if signal_type:
+        where += f" AND signal_types LIKE {p}"
+        params.append(f"%{signal_type}%")
+    if unlabeled_only:
+        where += " AND id NOT IN (SELECT filing_id FROM judgments)"
+
+    cursor.execute("SELECT COUNT(*) FROM filings WHERE 1=1" + where, params)
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
+def get_review_queue(limit=1, include_pass=False):
+    """Next unlabeled filing(s) to review, strongest signal first.
+
+    Ordered by score rather than by date on purpose: the labels worth having
+    are on the filings the system was most confident about, because those are
+    where being wrong costs the most.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    where = " AND triage_verdict IS NOT NULL AND id NOT IN (SELECT filing_id FROM judgments)"
+    if not include_pass:
+        where += " AND triage_verdict <> 'PASS'"
+
+    cursor.execute(
+        "SELECT * FROM filings WHERE 1=1" + where +
+        f" ORDER BY COALESCE(signal_score, 0) DESC, filed_date DESC LIMIT {p}",
+        (limit,),
+    )
+    results = [dict(r) for r in _dict_rows(cursor.fetchall(), cursor)]
+    conn.close()
+    return results
+
+
+def count_review_queue(include_pass=False):
+    conn = get_connection()
+    cursor = conn.cursor()
+    where = " AND triage_verdict IS NOT NULL AND id NOT IN (SELECT filing_id FROM judgments)"
+    if not include_pass:
+        where += " AND triage_verdict <> 'PASS'"
+    cursor.execute("SELECT COUNT(*) FROM filings WHERE 1=1" + where)
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
+def get_signal_type_counts(days=30):
+    """How often each signal type fired recently.
+
+    Powers the inbox's type filter chips, and doubles as the cheapest possible
+    health check: a detector that suddenly fires on everything, or stops
+    firing at all, shows up here first.
+    """
+    from datetime import datetime, timedelta
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+    cursor.execute(
+        f"SELECT signal_types FROM filings WHERE signal_types IS NOT NULL AND filed_date >= {p}",
+        (cutoff,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    counts = {}
+    for row in rows:
+        for signal_type in (row[0] or "").split(","):
+            signal_type = signal_type.strip()
+            if signal_type:
+                counts[signal_type] = counts.get(signal_type, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+
+# ============================================================
 # SIGNAL-FIRST TABLES (labels, guidelines, company context, digests)
 # ============================================================
 

@@ -303,7 +303,7 @@ def test_index_unread_param_filters_results(flask_client, tmp_sqlite_db):
     conn.commit()
     conn.close()
 
-    resp = flask_client.get("/?unread=1")
+    resp = flask_client.get("/all?unread=1")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
     assert "StillUnread" in body

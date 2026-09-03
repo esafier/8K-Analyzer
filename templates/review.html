@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="review-wrap">
+
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+      <h2 class="mb-1">Review</h2>
+      <div class="text-muted small">
+        {{ remaining }} left ·
+        {{ labeled_counts.get('signal', 0) }} signal ·
+        {{ labeled_counts.get('noise', 0) }} noise
+        {%- set done = labeled_counts.get('signal', 0) + labeled_counts.get('noise', 0) + labeled_counts.get('meh', 0) %}
+        {%- if done < 100 %} · {{ 100 - done }} more makes the scoring measurable{% endif %}
+      </div>
+    </div>
+    <a href="/" class="btn btn-outline-secondary btn-sm">Back to signals</a>
+  </div>
+
+  {% if filing %}
+  <div class="review-card dir-{{ (filing.signal_direction or 'neutral')|lower }}" id="reviewCard">
+    <div class="review-head">
+      <span class="score-badge dir-{{ (filing.signal_direction or 'neutral')|lower }}">
+        {%- if filing.signal_direction == 'BEARISH' %}&#9660;
+        {%- elif filing.signal_direction == 'BULLISH' %}&#9650;
+        {%- elif filing.signal_direction == 'MIXED' %}&#9670;
+        {%- endif %} {{ filing.signal_score if filing.signal_score is not none else '–' }}</span>
+      <div>
+        <div class="review-company">{{ filing.company }}</div>
+        <div class="text-muted small">
+          {{ filing.ticker or 'no ticker' }} · {{ filing.filed_date }} · items {{ filing.item_codes }}
+        </div>
+      </div>
+    </div>
+
+    {% if filing.top_signal %}
+    <p class="review-thesis">{{ filing.top_signal }}</p>
+    {% endif %}
+
+    <div class="chips mb-3">
+      {% set signals = filing._signals %}
+      {% include '_signal_chips.html' %}
+    </div>
+
+    {% if filing._judge %}
+      {% if filing._judge.why %}
+      <ul class="review-why">
+        {% for w in filing._judge.why %}<li>{{ w }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% if filing._judge.anti_thesis %}
+      <p class="review-anti"><strong>Against:</strong> {{ filing._judge.anti_thesis }}</p>
+      {% endif %}
+    {% endif %}
+
+    <div class="review-links mb-3">
+      <a href="{{ filing.filing_document_url or filing.filing_url }}" target="_blank"
+         rel="noopener" class="btn btn-sm btn-outline-primary">Open the filing</a>
+      <a href="/filing/{{ filing.id }}?back=/review" class="btn btn-sm btn-outline-secondary">Full detail</a>
+    </div>
+
+    {# Two keys, no scrolling. Anything more expensive than this and the
+       labelling stops happening — which is how the tool got abandoned once. #}
+    <div class="review-actions">
+      <button class="review-btn signal" data-label="signal">
+        <kbd>S</kbd> Signal
+      </button>
+      <button class="review-btn meh" data-label="meh">
+        <kbd>M</kbd> Borderline
+      </button>
+      <button class="review-btn noise" data-label="noise">
+        <kbd>N</kbd> Noise
+      </button>
+    </div>
+
+    <input type="text" id="reviewNote" class="form-control form-control-sm mt-3"
+           placeholder="Optional: why? (this text goes to the model as a rule of thumb)">
+  </div>
+
+  <script>
+  // The review loop. Label, then immediately load the next filing — the
+  // whole value depends on this staying faster than thinking about it.
+  (function () {
+    var filingId = {{ filing.id }};
+
+    function send(label) {
+      var note = document.getElementById('reviewNote').value.trim();
+      fetch('/api/label', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filing_id: filingId, label: label, note: note || null })
+      }).then(function () { window.location.reload(); })
+        .catch(function () { window.location.reload(); });
+    }
+
+    document.querySelectorAll('.review-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () { send(btn.dataset.label); });
+    });
+
+    document.addEventListener('keydown', function (e) {
+      // Don't hijack keys while the note field has focus.
+      if (document.activeElement && document.activeElement.id === 'reviewNote') return;
+      var key = e.key.toLowerCase();
+      if (key === 's') send('signal');
+      else if (key === 'n') send('noise');
+      else if (key === 'm') send('meh');
+      else if (key === 'o') {
+        window.open('{{ filing.filing_document_url or filing.filing_url }}', '_blank');
+      }
+    });
+  })();
+  </script>
+
+  {% else %}
+  <div class="text-center py-5">
+    <h4 class="text-muted mb-2">Nothing left to review</h4>
+    <p class="text-muted">
+      Every flagged filing has a label. New ones arrive with the next daily run.
+    </p>
+    <form method="POST" action="/seed-labels" class="d-inline">
+      <button class="btn btn-outline-secondary btn-sm">Seed labels from my watchlist</button>
+    </form>
+    <a href="/" class="btn btn-primary btn-sm">Back to signals</a>
+  </div>
+  {% endif %}
+
+  {# Standing rules. Cheaper than a prompt edit and immediately effective —
+     they are loaded into every judgment. #}
+  <div class="card mt-4">
+    <div class="card-body">
+      <h6 class="mb-2">Your rules for the analyst</h6>
+      <p class="text-muted small mb-2">
+        Written in plain English and applied to every filing judged from here on.
+        They override the model's defaults.
+      </p>
+      {% if guidelines %}
+      <ul class="guideline-list mb-3">
+        {% for g in guidelines %}
+        <li>
+          {{ g.rule }}
+          <form method="POST" action="/guidelines/{{ g.id }}/remove" class="d-inline">
+            <button class="btn btn-link btn-sm text-danger p-0 ms-2">remove</button>
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <form method="POST" action="/guidelines" class="d-flex gap-2">
+        <input type="text" name="rule" class="form-control form-control-sm"
+               placeholder="e.g. Ignore director shuffles at SPACs and shells">
+        <button class="btn btn-sm btn-outline-primary">Add</button>
+      </form>
+    </div>
+  </div>
+
+</div>
+
+{% endblock %}

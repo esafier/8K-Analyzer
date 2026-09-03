@@ -11,6 +11,10 @@ from database import (
     initialize_database, get_filings, get_filing_by_id, update_user_tag,
     get_categories, get_filing_count, get_filtered_filing_count,
     update_departure_history,
+    get_inbox_filings, count_inbox_filings, get_review_queue, count_review_queue,
+    get_signal_type_counts, count_judgments, get_judgment,
+    get_guidelines, add_guideline, deactivate_guideline,
+    seed_judgments_from_watchlist,
     add_to_watchlist, remove_from_watchlist, update_watchlist_notes,
     get_watchlist_item, get_all_watchlist_ids, get_watchlist_filings,
     get_watchlist_filings_by_ids, mark_filings_email_sent,
@@ -123,8 +127,14 @@ def check_trial_access():
     if not trial_code:
         return None
 
-    # Allow the login page itself (otherwise infinite redirect loop)
-    if request.endpoint in ("login", "static"):
+    # Allow the login page itself (otherwise infinite redirect loop).
+    #
+    # label_from_token is also open: it arrives from a signed link in a digest
+    # email, often on a phone with no session. The token IS the authentication
+    # — it is signed with SECRET_KEY, scoped to one filing and one label, and
+    # expires. Requiring a login here would mean the one-tap labelling path
+    # costs a login, which is exactly the friction that stops it happening.
+    if request.endpoint in ("login", "static", "label_from_token"):
         return None
 
     # Check if user has a valid session
@@ -181,8 +191,115 @@ def logout():
 
 
 @app.route("/")
+def inbox():
+    """The signal inbox — ranked by what the system thinks is worth reading.
+
+    This is the answer to the complaint that started the rebuild: the old
+    dashboard was a chronological archive of everything, so finding the three
+    filings worth reading meant scanning past ninety that weren't. Here PASS
+    is hidden, the strongest signal sorts first, and every row carries the
+    named reason it is on screen.
+
+    The chronological view still exists at /all — nothing was taken away.
+    """
+    import json
+
+    days = _int_arg("days", 7, minimum=1, maximum=365)
+    min_score = _int_arg("min_score", 0, minimum=0, maximum=10)
+    page = _int_arg("page", 1, minimum=1)
+    per_page = 50
+
+    direction = request.args.get("direction", "").upper()
+    if direction not in ("BEARISH", "BULLISH", "MIXED", "NEUTRAL"):
+        direction = ""
+    signal_type = request.args.get("signal_type", "").strip().upper() or None
+    include_pass = request.args.get("include_pass", "") == "1"
+    unlabeled_only = request.args.get("unlabeled", "") == "1"
+
+    filters = dict(days=days, min_score=min_score, direction=direction or None,
+                   signal_type=signal_type, include_pass=include_pass,
+                   unlabeled_only=unlabeled_only)
+
+    total = count_inbox_filings(**filters)
+    total_pages = max(1, math.ceil(total / per_page))
+    page = min(page, total_pages)
+
+    filings = get_inbox_filings(limit=per_page, offset=(page - 1) * per_page, **filters)
+
+    # Parse the stored signals so the template can render chips without
+    # re-deriving anything. Corrupt JSON degrades to an empty list rather than
+    # taking down the page.
+    for filing in filings:
+        try:
+            filing["_signals"] = json.loads(filing.get("signals_json") or "[]")
+        except (ValueError, TypeError):
+            filing["_signals"] = []
+
+    tickers = list({f["ticker"] for f in filings if f.get("ticker")})
+    market_caps, stock_prices = {}, {}
+    try:
+        from market_cap import get_market_cap_map
+        market_caps = get_market_cap_map(tickers)
+    except Exception as e:
+        print(f"[INBOX] market caps unavailable: {e}")
+    try:
+        from stock_price import get_stock_price_map
+        stock_prices = get_stock_price_map(tickers)
+    except Exception as e:
+        print(f"[INBOX] stock prices unavailable: {e}")
+
+    from urllib.parse import urlencode
+    filter_qs = urlencode([
+        ("days", days), ("min_score", min_score), ("direction", direction),
+        ("signal_type", signal_type or ""),
+        ("include_pass", "1" if include_pass else ""),
+        ("unlabeled", "1" if unlabeled_only else ""),
+    ])
+
+    return render_template(
+        "inbox.html",
+        filings=filings,
+        total=total,
+        total_pages=total_pages,
+        current_page=page,
+        filter_qs=filter_qs,
+        signal_counts=get_signal_type_counts(days=max(days, 30)),
+        labeled_counts=count_judgments(),
+        review_remaining=count_review_queue(),
+        watchlist_ids=get_all_watchlist_ids(),
+        market_caps=market_caps,
+        stock_prices=stock_prices,
+        last_backfill=get_last_backfill(),
+        current_days=days,
+        current_min_score=min_score,
+        current_direction=direction,
+        current_signal_type=signal_type or "",
+        current_include_pass=include_pass,
+        current_unlabeled=unlabeled_only,
+    )
+
+
+def _int_arg(name, default, minimum=None, maximum=None):
+    """Read an int query parameter without ever 500ing on junk input."""
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+@app.route("/all")
 def index():
-    """Main dashboard page — shows the list of filtered filings."""
+    """The full chronological archive — the original dashboard, unchanged.
+
+    Deliberately still named `index`: url_for("index") is used by the login
+    redirect and by every row's back-link, and renaming the view would have
+    broken them for no benefit.
+    """
     # Get filter parameters from the URL query string
     category = request.args.get("category", "")
     search = request.args.get("search", "")
@@ -708,6 +825,131 @@ def deep_analysis(filing_id):
         print(f"[ERROR] Signal analysis failed: {traceback.format_exc()}")
         flash(f"Signal analysis error: {e}", "error")
         return redirect(url_for("filing_detail", filing_id=filing_id))
+
+
+@app.route("/review")
+def review():
+    """One filing at a time, two keys, no scrolling.
+
+    The labels are what make everything downstream measurable — evaluation,
+    few-shot examples for the judge, per-signal-type precision. None of that
+    exists without a few hundred of them, so the only design goal here is that
+    a label costs a single keystroke and the next filing is already on screen.
+
+    Ordered by signal strength rather than by date: the labels worth having
+    are on the filings the system was most confident about, because that is
+    where being wrong is most expensive.
+    """
+    import json
+
+    queue = get_review_queue(limit=1)
+    filing = queue[0] if queue else None
+    if filing:
+        try:
+            filing["_signals"] = json.loads(filing.get("signals_json") or "[]")
+        except (ValueError, TypeError):
+            filing["_signals"] = []
+        try:
+            filing["_judge"] = json.loads(filing.get("judge_json") or "null")
+        except (ValueError, TypeError):
+            filing["_judge"] = None
+
+    return render_template(
+        "review.html",
+        filing=filing,
+        remaining=count_review_queue(),
+        labeled_counts=count_judgments(),
+        guidelines=get_guidelines(),
+    )
+
+
+@app.route("/api/label", methods=["POST"])
+def api_label():
+    """Record a label from the review page or an inbox row (AJAX)."""
+    from labels import record, undo
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        filing_id = int(payload.get("filing_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "filing_id must be an integer"}), 400
+
+    label = payload.get("label")
+    if label == "undo":
+        return jsonify({"success": undo(filing_id), "label": None})
+
+    if not record(filing_id, label, note=payload.get("note"), source="review_ui"):
+        return jsonify({"error": f"unknown label {label!r}"}), 400
+    return jsonify({"success": True, "label": label, "remaining": count_review_queue()})
+
+
+@app.route("/label/<token>")
+def label_from_token(token):
+    """One-tap labelling from a digest email — no login, no app.
+
+    Exempt from the trial gate (see check_trial_access): the signed token is
+    the credential. Renders a small confirmation page with an Undo link
+    rather than acting silently, because mail clients and link scanners fetch
+    URLs on their own and a silent write would let a scanner label filings.
+    """
+    from labels import read_token, record, undo
+
+    if request.args.get("undo") == "1":
+        filing_id, _ = read_token(token)
+        if filing_id:
+            undo(filing_id)
+            return render_template("label_done.html", filing=get_filing_by_id(filing_id),
+                                   label=None, undone=True, token=token)
+        return render_template("label_done.html", filing=None, label=None,
+                               undone=False, token=None, invalid=True)
+
+    filing_id, label = read_token(token)
+    if not filing_id or not label:
+        return render_template("label_done.html", filing=None, label=None,
+                               undone=False, token=None, invalid=True), 400
+
+    filing = get_filing_by_id(filing_id)
+    if filing is None:
+        return render_template("label_done.html", filing=None, label=None,
+                               undone=False, token=None, invalid=True), 404
+
+    record(filing_id, label, source="digest_link")
+    return render_template("label_done.html", filing=dict(filing), label=label,
+                           undone=False, token=token)
+
+
+@app.route("/guidelines", methods=["POST"])
+def add_guideline_route():
+    """Add a standing rule for the judge, in the user's own words.
+
+    Cheaper than a prompt edit and immediately effective: the rules are loaded
+    into every judgment. "Ignore SPAC director shuffles" is a one-line fix for
+    a whole category of noise.
+    """
+    rule = (request.form.get("rule") or "").strip()
+    if rule:
+        add_guideline(rule)
+        flash("Guideline added — it applies to the next filings analyzed.", "success")
+    return redirect(request.referrer or url_for("review"))
+
+
+@app.route("/guidelines/<int:guideline_id>/remove", methods=["POST"])
+def remove_guideline_route(guideline_id):
+    deactivate_guideline(guideline_id)
+    flash("Guideline removed.", "success")
+    return redirect(request.referrer or url_for("review"))
+
+
+@app.route("/seed-labels", methods=["POST"])
+def seed_labels():
+    """Turn existing watchlist stars into positive labels, once.
+
+    Starring was the only "this matters" gesture the old UI had, so it is the
+    closest thing to a pre-existing training set.
+    """
+    seeded = seed_judgments_from_watchlist()
+    flash(f"Seeded {seeded} label(s) from your watchlist.", "success")
+    return redirect(url_for("review"))
 
 
 @app.route("/api/filings/mark-read", methods=["POST"])
