@@ -33,7 +33,7 @@ def departure(**overrides):
         "effective_date": "2026-09-15", "effective_immediately": False,
         "days_notice": 30, "stated_reason": "resigned",
         "is_retirement": False, "is_merger_related": False,
-        "mentions_disagreement": False,
+        "disagreement_disclosed": False,
         "successor_named": True, "successor_info": "John Roe named interim CFO",
         "comp_impact": None, "forfeiture_flag": "not_disclosed", "tenure_months": 40,
     }
@@ -108,17 +108,85 @@ def test_for_cause_termination_fires():
 
 
 def test_acknowledged_disagreement_fires():
-    result = signals.detect(facts(departures=[
-        departure(role_class="DIRECTOR", title="Director", mentions_disagreement=True)
-    ]))
+    result = signals.detect(facts(departures=[departure(
+        role_class="DIRECTOR", title="Director",
+        disagreement_disclosed=True,
+        stated_reason="resigned over disagreements with management regarding accounting practices",
+    )]))
     assert "FOR_CAUSE_OR_DISAGREEMENT" in types_of(result)
 
 
 def test_boilerplate_no_disagreement_does_not_fire():
     """Almost every 5.02 says there was NO disagreement. If that fired, the
     signal would be on nearly every filing and mean nothing."""
-    result = signals.detect(facts(departures=[departure(mentions_disagreement=False)]))
+    result = signals.detect(facts(departures=[departure(disagreement_disclosed=False)]))
     assert "FOR_CAUSE_OR_DISAGREEMENT" not in types_of(result)
+
+
+def test_denial_boilerplate_misread_as_a_disagreement_is_caught():
+    """Observed on the first real filing tested: the extractor set the
+    disagreement flag true because the required denial sentence mentions the
+    word. Nearly every Item 5.02 contains that sentence, so trusting the flag
+    would fire a severity-5 signal on the whole feed. The stated reason is
+    checked in code as well as in the prompt."""
+    result = signals.detect(facts(departures=[departure(
+        role_class="DIRECTOR", title="Director",
+        disagreement_disclosed=True,
+        stated_reason=("resigned; the decision to resign was not the result of any "
+                       "disagreement with the Company on any matter relating to its "
+                       "operations, policies or practices"),
+    )]))
+    assert "FOR_CAUSE_OR_DISAGREEMENT" not in types_of(result)
+
+
+def test_filing_level_disagreement_flag_respects_the_same_denial():
+    result = signals.detect(facts(
+        departures=[departure(
+            stated_reason="resigned; not due to any disagreement with the Company")],
+        filing_flags={"disagreement_disclosed": True},
+    ))
+    assert "FOR_CAUSE_OR_DISAGREEMENT" not in types_of(result)
+
+
+def test_for_cause_flag_alone_does_not_fire_without_a_departure():
+    """Measured at 20% false-positive on a 20-filing sample. Every employment
+    agreement DEFINES "Cause" as a contractual term, so the phrase appears in
+    a large share of exhibits where nobody was fired. With no departure in the
+    filing there is nobody to have been terminated."""
+    result = signals.detect(facts(
+        departures=[],
+        comp_events=[comp_event()],
+        filing_flags={"terminated_for_cause": True},
+    ))
+    assert "FOR_CAUSE_OR_DISAGREEMENT" not in types_of(result)
+
+
+def test_for_cause_flag_corroborates_an_actual_departure():
+    result = signals.detect(facts(
+        departures=[departure(stated_reason="separated from the Company")],
+        filing_flags={"terminated_for_cause": True},
+    ))
+    sig = next(s for s in result.signals if s.type == "FOR_CAUSE_OR_DISAGREEMENT")
+    assert sig.severity == 4  # corroborating evidence ranks below an explicit statement
+    assert "Jane Doe" in sig.data["people"]
+
+
+def test_explicit_per_departure_reason_outranks_the_filing_flag():
+    explicit = signals.detect(facts(departures=[
+        departure(stated_reason="terminated for cause")]))
+    corroborated = signals.detect(facts(
+        departures=[departure(stated_reason="separated from the Company")],
+        filing_flags={"terminated_for_cause": True}))
+    assert next(s.severity for s in explicit.signals if s.type == "FOR_CAUSE_OR_DISAGREEMENT") >            next(s.severity for s in corroborated.signals if s.type == "FOR_CAUSE_OR_DISAGREEMENT")
+
+
+def test_legacy_field_name_is_still_honoured():
+    """Rows analyzed by the first v4 draft carry `mentions_disagreement`."""
+    result = signals.detect(facts(departures=[departure(
+        mentions_disagreement=True,
+        stated_reason="resigned following disagreements over strategy",
+    )]))
+    assert "FOR_CAUSE_OR_DISAGREEMENT" in types_of(result)
 
 
 def test_termination_without_cause_does_not_fire():
@@ -677,3 +745,81 @@ def test_signals_are_ordered_by_severity():
     )
     severities = [s.severity for s in result.signals]
     assert severities == sorted(severities, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# Deduplication — one signal type, one row
+# ---------------------------------------------------------------------------
+
+def test_repeated_signal_type_collapses_to_one():
+    """A filing granting four executives the same package produced four
+    identical signals. That repeated itself on the dashboard row AND opened
+    the judge gate (len >= 2) on what was really one observation."""
+    result = signals.detect(facts(comp_events=[
+        comp_event(executive=f"Exec {i}", is_annual_cycle=False,
+                   has_performance_condition=True, vesting_years=4)
+        for i in range(4)
+    ]))
+    mix = [s for s in result.signals if s.type == "COMP_MIX_TO_EQUITY"]
+    assert len(mix) == 1
+    assert mix[0].data["occurrences"] == 4
+    assert "+3 more" in mix[0].evidence
+
+
+def test_dedupe_keeps_the_most_severe_instance():
+    result = signals.detect(facts(departures=[
+        departure(name="Director Bob", role_class="DIRECTOR", title="Director",
+                  forfeiture_flag="forfeited"),
+        departure(name="CEO Ann", role_class="CEO", title="Chief Executive Officer",
+                  forfeiture_flag="forfeited"),
+    ]))
+    sig = next(s for s in result.signals if s.type == "FORFEITURE_EXIT")
+    assert "CEO Ann" in sig.evidence   # severity 5 beats the director's 4
+
+
+def test_repeats_of_one_type_do_not_open_the_judge_gate():
+    """Five copies of one weak signal must not read as five signals. Uses an
+    annual-cycle package so the off-cycle detector stays out of the way and
+    COMP_MIX is the only thing that could fire."""
+    result = signals.detect(facts(comp_events=[
+        comp_event(executive=f"Exec {i}", is_annual_cycle=True,
+                   has_performance_condition=True, vesting_years=4,
+                   grant_value_usd=None, share_count=None)
+        for i in range(5)
+    ]))
+    assert len(result.signals) <= 1
+    assert signals.is_judge_candidate(result) is False
+
+
+# ---------------------------------------------------------------------------
+# Frequency discipline — signals that fire on everything carry no information
+# ---------------------------------------------------------------------------
+
+def test_routine_annual_psu_grant_is_not_a_comp_mix_signal():
+    """Measured at 27% of filings before this exclusion: essentially every
+    large company's annual PSU award has performance conditions and multi-year
+    vesting, so firing on them meant firing on everything."""
+    result = signals.detect(facts(comp_events=[comp_event(
+        is_annual_cycle=True, has_performance_condition=True, vesting_years=3)]))
+    assert "COMP_MIX_TO_EQUITY" not in types_of(result)
+
+
+def test_restructured_package_still_fires_comp_mix():
+    result = signals.detect(facts(comp_events=[comp_event(
+        is_annual_cycle=False, has_performance_condition=True, vesting_years=4)]))
+    assert "COMP_MIX_TO_EQUITY" in types_of(result)
+
+
+def test_planned_retirement_with_a_search_is_not_a_successor_gap():
+    """Succession planning, not an emptied seat."""
+    result = signals.detect(facts(departures=[departure(
+        is_retirement=True, days_notice=120,
+        successor_named=False, successor_info="search underway")]))
+    assert "NO_SUCCESSOR" not in types_of(result)
+
+
+def test_abrupt_exit_with_no_successor_still_fires():
+    result = signals.detect(facts(departures=[departure(
+        is_retirement=False, days_notice=0, effective_immediately=True,
+        successor_named=False, successor_info="search underway")]))
+    assert "NO_SUCCESSOR" in types_of(result)

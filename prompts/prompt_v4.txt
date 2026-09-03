@@ -67,7 +67,7 @@ Return ONLY valid JSON in exactly this shape:
       "stated_reason": "resigned | retired | terminated for cause | terminated without cause | death | mutually agreed | not standing for re-election — quote the filing when it is specific",
       "is_retirement": false,
       "is_merger_related": false,
-      "mentions_disagreement": false,
+      "disagreement_disclosed": false,
       "successor_named": false,
       "successor_info": "Who fills the role, interim or permanent, or 'search underway' or null",
       "comp_impact": "What happens to their comp, with amounts when disclosed",
@@ -138,8 +138,7 @@ Return ONLY valid JSON in exactly this shape:
     "is_plan_share_increase": false,
     "is_financing_only": false,
     "is_restatement": false,
-    "mentions_for_cause": false,
-    "mentions_disagreement": false,
+    "terminated_for_cause": false,
     "mentions_investigation": false
   }
 }
@@ -178,7 +177,17 @@ Empty arrays mean no events of that type. null means the filing did not say.
 
 **is_retention_award** — true when the filing calls it retention, transformation, special, or similar.
 
-**mentions_disagreement** — true when the filing states there was (or was not) a disagreement with the company on operations, policies, or practices. This is a required Item 5.02 disclosure and the exact wording matters — quote it in the departure's stated_reason if a disagreement is acknowledged.
+**filing_flags.terminated_for_cause** — TRUE ONLY when this filing reports that a named executive was actually terminated for cause.
+
+Employment agreements, severance agreements, and equity plans all DEFINE "Cause" as a contractual term — "the Company may terminate the Executive for Cause, meaning..." — and those definitions appear in a large share of 8-K exhibits where nobody was fired at all. The presence of the word is not the event. Set this false unless a real termination for cause happened.
+
+**disagreement_disclosed** — TRUE ONLY when the filing acknowledges that an actual disagreement occurred.
+
+Read this one carefully, because the default answer is false. Item 5.02 REQUIRES companies to address the topic, so nearly every director resignation contains a sentence like "the resignation was not the result of any disagreement with the Company on any matter relating to its operations, policies or practices." **That sentence is a denial. Set disagreement_disclosed to false.** Setting it true because the word "disagreement" appears would fire on almost every filing ever made and destroy the signal.
+
+Set it true only for the rare filing that says a disagreement DID occur — e.g. "Mr. Smith resigned as a result of disagreements with management regarding the Company's accounting practices." When true, quote the disagreement itself in stated_reason.
+
+**stated_reason** — the reason for leaving, in the filing's own words. Do NOT append the no-disagreement boilerplate to it; that is captured by disagreement_disclosed.
 
 **filing_flags.is_annual_meeting_only** — true when the entire filing is annual-meeting results and director elections (Item 5.07) with no other event.
 

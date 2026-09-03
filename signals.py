@@ -249,19 +249,49 @@ def _detect_forfeiture_exit(facts, context):
     return out
 
 
+# Item 5.02 requires companies to address whether a departure involved a
+# disagreement, so virtually every director resignation carries a DENIAL:
+# "was not the result of any disagreement with the Company...". An extractor
+# reading that sentence can easily record "disagreement: true" — and did, on
+# the first real filing tested. Firing on it would put a severity-5 signal on
+# almost every 5.02 in existence, which is precisely the noise problem this
+# rebuild exists to end. So the phrasing is checked in code as well as in the
+# prompt: belt and braces on the single highest-frequency false positive.
+_DISAGREEMENT_DENIALS = (
+    "not the result of any disagreement",
+    "not due to any disagreement",
+    "not because of any disagreement",
+    "not as a result of any disagreement",
+    "no disagreement",
+    "not involve any disagreement",
+    "without any disagreement",
+    "was not related to any disagreement",
+)
+
+
+def _disagreement_denied(text):
+    """True when the text is the standard no-disagreement boilerplate."""
+    lowered = str(text or "").lower()
+    return any(phrase in lowered for phrase in _DISAGREEMENT_DENIALS)
+
+
 def _detect_for_cause(facts, context):
     """Termination for cause, or an acknowledged disagreement with the company.
 
-    Item 5.02 requires the company to say whether a departing director left
-    over a disagreement. Almost every filing says there was none — so the rare
-    filing that admits one, or that fires someone for cause, is saying
-    something it would much rather not have said.
+    The rare filing that admits a real disagreement, or fires someone for
+    cause, is saying something it would much rather not have said. The common
+    filing that denies a disagreement is saying nothing at all — see the
+    denial list above.
     """
     out = []
     flags = _flags(facts)
     for dep in _list(facts, "departures"):
         reason = str(dep.get("stated_reason") or "").lower()
-        disagreement = _truthy(dep.get("mentions_disagreement"))
+        # Accept the old field name too: re-analysis runs and stored rows can
+        # still carry `mentions_disagreement` from the first v4 draft.
+        disagreement = _truthy(dep.get("disagreement_disclosed")) or _truthy(dep.get("mentions_disagreement"))
+        if disagreement and _disagreement_denied(reason):
+            disagreement = False  # the filing denied it; the flag misread the boilerplate
         for_cause = "for cause" in reason or "terminated for cause" in reason
         if not (for_cause or disagreement):
             continue
@@ -274,15 +304,37 @@ def _detect_for_cause(facts, context):
             data={"person": _name(dep), "stated_reason": dep.get("stated_reason")},
         ))
 
-    # Filing-level flags catch the case where the model recorded the fact but
-    # didn't attach it to a specific person.
-    if not out and (_truthy(flags.get("mentions_for_cause")) or _truthy(flags.get("mentions_disagreement"))):
+    # A filing-level flag is deliberately NOT enough on its own.
+    #
+    # Measured on a 20-filing sample: a filing-flag fallback fired on 4 of 20
+    # (20%), against a real base rate nearer 1-2%. The cause is contractual
+    # boilerplate — every employment agreement DEFINES "Cause" ("the Company
+    # may terminate the Executive for Cause, meaning..."), so the phrase
+    # appears in a large share of 8-K exhibits where nobody was fired. The
+    # word is not the event.
+    #
+    # So the flag can only corroborate a departure that is already in the
+    # filing; with nobody leaving, there is nobody to have been terminated.
+    if out:
+        return out
+
+    departures = _list(facts, "departures")
+    flag_for_cause = _truthy(flags.get("terminated_for_cause"))
+    flag_disagreement = (_truthy(flags.get("disagreement_disclosed"))
+                         or _truthy(flags.get("mentions_disagreement")))
+    if flag_disagreement and any(_disagreement_denied(d.get("stated_reason")) for d in departures):
+        flag_disagreement = False
+
+    if departures and (flag_for_cause or flag_disagreement):
+        label = ("a for-cause termination" if flag_for_cause
+                 else "a disagreement with the company")
         out.append(Signal(
             type="FOR_CAUSE_OR_DISAGREEMENT",
             direction="BEARISH",
             severity=_clamp(SEVERITIES["FOR_CAUSE_OR_DISAGREEMENT"] - 1),
-            evidence="Filing references a for-cause termination or a disagreement with the company",
-            data={"source": "filing_flags"},
+            evidence=f"Filing reports a departure alongside {label}",
+            data={"source": "filing_flags",
+                  "people": [_name(d) for d in departures][:3]},
         ))
     return out
 
@@ -331,6 +383,11 @@ def _detect_no_successor(facts, context):
         if role not in CSUITE_ROLES:
             continue
         if _truthy(dep.get("is_merger_related")):
+            continue
+        # A planned retirement with a search underway is succession planning,
+        # not a gap. The signal is meant to catch the seat that emptied faster
+        # than the board could fill it.
+        if _truthy(dep.get("is_retirement")) and (_num(dep.get("days_notice")) or 0) >= 30:
             continue
         # Only fire when the filing affirmatively shows no successor. A null
         # here means the filing was silent, which is not the same claim.
@@ -765,15 +822,24 @@ def _detect_pre_earnings_grant(facts, context):
 
 
 def _detect_comp_mix_to_equity(facts, context):
-    """Long-vesting, performance-conditioned equity.
+    """A newly structured package weighted toward long-vesting at-risk equity.
 
-    The weakest bullish signal and priced that way: it is good governance more
-    than it is information. It matters mostly as a modifier on a package that
-    already fired something else.
+    Deliberately excludes the annual cycle. Measured on a 30-filing sample,
+    firing on any performance-conditioned multi-year grant hit 27% of filings
+    — because that describes essentially every routine annual PSU award at
+    every large company. A signal present on a quarter of all filings carries
+    no information and, worse, stacked with one other weak hit to push
+    ordinary filings through the judge gate.
+
+    Restricted to non-annual packages, it means what it is supposed to mean:
+    this executive's pay was just restructured toward equity that only pays if
+    the stock does.
     """
     out = []
     min_years = THRESHOLDS["long_vesting_years"]
     for event in _list(facts, "comp_events"):
+        if _truthy(event.get("is_annual_cycle")):
+            continue
         years = _num(event.get("vesting_years"))
         if not _truthy(event.get("has_performance_condition")) or years is None or years < min_years:
             continue
@@ -860,6 +926,33 @@ def _pass_reasons(facts, context):
 # Public API
 # ---------------------------------------------------------------------------
 
+def _dedupe_by_type(found):
+    """Collapse repeats of the same signal type into one.
+
+    A filing granting four executives the same package produced four identical
+    COMP_MIX_TO_EQUITY signals. That broke two things at once: the dashboard
+    row repeated itself, and `len(signals) >= 2` — the judge gate — opened on
+    what was really a single observation, sending routine filings to the
+    expensive model.
+
+    Keeps the highest-severity instance and records how many there were, since
+    "three executives" is itself information.
+    """
+    best = {}
+    counts = {}
+    for signal in found:
+        counts[signal.type] = counts.get(signal.type, 0) + 1
+        current = best.get(signal.type)
+        if current is None or signal.severity > current.severity:
+            best[signal.type] = signal
+
+    for signal_type, signal in best.items():
+        if counts[signal_type] > 1:
+            signal.data["occurrences"] = counts[signal_type]
+            signal.evidence += f" (+{counts[signal_type] - 1} more in this filing)"
+    return list(best.values())
+
+
 def detect(facts, context=None):
     """Run every detector over one filing's facts and context.
 
@@ -868,15 +961,16 @@ def detect(facts, context=None):
     signal is much better than losing the filing.
     """
     context = context or {}
-    signals = []
+    found = []
     for detector in DETECTORS:
         try:
-            signals.extend(detector(facts or {}, context) or [])
+            found.extend(detector(facts or {}, context) or [])
         except Exception as e:  # pragma: no cover - defensive
             print(f"[SIGNALS] {detector.__name__} failed: {type(e).__name__}: {e}", flush=True)
 
-    signals.sort(key=lambda s: -s.severity)
-    return DetectionResult(signals=signals, pass_reasons=_pass_reasons(facts or {}, context))
+    found = _dedupe_by_type(found)
+    found.sort(key=lambda s: -s.severity)
+    return DetectionResult(signals=found, pass_reasons=_pass_reasons(facts or {}, context))
 
 
 def is_judge_candidate(result):
