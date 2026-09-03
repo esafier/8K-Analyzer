@@ -22,7 +22,6 @@ Respect the user's standing delegation preferences (e.g. a CLAUDE.md model-routi
 |---|---|
 | `/fast` | Long, grindy, low-risk output ahead (bulk edits, doc generation) where latency dominates and depth doesn't |
 | `/model` | The session's default model is mismatched to a long stretch of upcoming work |
-| Extended thinking (tab) | A genuinely hard reasoning problem is about to be attempted without it |
 | Token budget directive (`+500k` style) | The user wants exhaustiveness and the current budget-free framing will under-deliver |
 | `/code-review low..ultra` | Review effort should match change risk: dep bump = low; auth/payment/concurrency touch = high or ultra |
 

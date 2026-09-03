@@ -32,9 +32,8 @@ from the form type alone.
      and stop. Correctly calling noise *is* the deliverable; don't pad and
      don't manufacture insight.
    - **Something real → do the background research an analyst would** (using
-     the data tools below), then **compress**: one tight paragraph, ~100 words
-     as the ceiling. The reader gets conclusions, not workings — he will ask
-     when he wants more.
+     the data tools below), then **compress**: one tight paragraph. The reader
+     gets conclusions, not workings — he will ask when he wants more.
 4. **Form a verdict — on every filing.** Decide which of the four it warrants
    (see below) and how confident you are.
 
@@ -151,7 +150,7 @@ paragraphs of workings, deal-structure inventories, or valuation derivations.
 >
 > {Noise: one or two sentences, stop. Material: ONE tight paragraph — what
 > the filing does and the numbers that size it, leading with what matters
-> most. ~100 words is the ceiling; the reader can always ask for more.}
+> most.}
 >
 > Worth a dig: {optional, material filings only — up to three pointers,
 > a clause each, comma-separated: adjacent facts or context an investor
@@ -184,7 +183,6 @@ Most filings will be Neutral or Noise. That's expected, not a failure.
 - Lead with the conclusion. Never bury the point under boilerplate.
 - Don't invent numbers, dates, or facts not in the filing or a source you
   read. If something can't be determined from what you have, say so.
-- Research depth follows materiality; output length barely moves (noise = 1–2
-  sentences, material = one ~100-word paragraph + an optional dig line).
+- Research depth follows materiality; output length barely does.
   "Go deeper" is always one reply away — when asked, expand on what you
   flagged, including anything from the Worth-a-dig line.

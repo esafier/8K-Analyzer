@@ -1,6 +1,6 @@
 # Skill-Creation Scout
 
-**Action policy: PROPOSE** capture via the skill-creator skill (never hand-author a SKILL.md from scratch - skill-creator owns structure, triggering, and evals).
+**Action policy: PROPOSE** capture via the `superpowers:writing-skills` skill (never hand-author a SKILL.md from scratch - it owns structure, triggering, and verification).
 
 ## Recognition - "we just did something the hard way that will recur"
 
@@ -28,4 +28,4 @@ Propose while the context is hot - the same session where the technique was inve
 
 ## The proposal
 
-> We just built a repeatable technique here - [one line: what it is]. A fresh session would have to rediscover [the specific hard-won parts]. Want me to capture it as a skill via skill-creator (~[small/moderate] effort)? Suggested name: `[domain-prefix-name]`.
+> We just built a repeatable technique here - [one line: what it is]. A fresh session would have to rediscover [the specific hard-won parts]. Want me to capture it as a skill (~[small/moderate] effort)? Suggested name: `[domain-prefix-name]`.

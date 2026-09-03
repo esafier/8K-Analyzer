@@ -6,11 +6,16 @@
 # Claude to consider a force-multiplier (workflow / agent team / loop) ONLY when
 # the prompt carries high-signal, opportunity-shaped language. Silent otherwise
 # => zero context cost on non-matching turns. Never blocks prompt submission
-# (always exit 0). See ../README of the repo, or the repo README, for wiring.
+# (always exit 0).
+#
+# Wiring: a UserPromptSubmit hook in ~/.claude/settings.json pointing at this
+# file by absolute path. Needs node (already required by Claude Code); if node
+# is missing the hook exits silently rather than erroring.
 set -euo pipefail
 
 input=$(cat)
-prompt=$(printf '%s' "$input" | jq -r '.prompt // empty' 2>/dev/null | tr '[:upper:]' '[:lower:]')
+command -v node >/dev/null 2>&1 || exit 0
+prompt=$(printf '%s' "$input" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).prompt||""))}catch(e){}})' 2>/dev/null | tr '[:upper:]' '[:lower:]')
 [ -z "$prompt" ] && exit 0
 
 # Precision over recall: multi-word / contextual signals only, so it stays
