@@ -926,6 +926,25 @@ def _pass_reasons(facts, context):
 # Public API
 # ---------------------------------------------------------------------------
 
+# Signals that describe HOW something was disclosed rather than WHAT was
+# disclosed. They sharpen a real finding — a forfeiture exit buried on a
+# Friday evening is worse than the same exit on a Tuesday — but alone they
+# are not a reason to look at anything.
+#
+# Observed on the first live backtest: three of twelve inbox rows were
+# Friday-night filings with nothing else attached, whose entire displayed
+# thesis was "Accepted by SEC after Friday's close". A row that cannot say
+# what happened is noise however cheap it was to produce.
+MODIFIER_ONLY_TYPES = {"FRIDAY_NIGHT_FILING"}
+
+
+def _drop_lone_modifiers(found):
+    """Remove modifier signals when nothing substantive fired alongside them."""
+    if any(s.type not in MODIFIER_ONLY_TYPES for s in found):
+        return found
+    return []
+
+
 def _dedupe_by_type(found):
     """Collapse repeats of the same signal type into one.
 
@@ -968,7 +987,7 @@ def detect(facts, context=None):
         except Exception as e:  # pragma: no cover - defensive
             print(f"[SIGNALS] {detector.__name__} failed: {type(e).__name__}: {e}", flush=True)
 
-    found = _dedupe_by_type(found)
+    found = _drop_lone_modifiers(_dedupe_by_type(found))
     found.sort(key=lambda s: -s.severity)
     return DetectionResult(signals=found, pass_reasons=_pass_reasons(facts or {}, context))
 
@@ -1001,8 +1020,13 @@ def detector_score(result):
 
 
 def detector_verdict(result):
-    """DEEP_LOOK / MONITOR / PASS from detectors alone."""
-    if not result.signals:
+    """DEEP_LOOK / MONITOR / PASS from detectors alone.
+
+    A single lowest-severity hit is not worth a slot in the inbox. MONITOR
+    means "know that this happened"; earning it requires at least one signal
+    the user would recognise as an event.
+    """
+    if not result.signals or result.max_severity < 2:
         return "PASS"
     return "MONITOR"
 

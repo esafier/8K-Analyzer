@@ -416,8 +416,10 @@ def test_exit_long_before_earnings_does_not_fire():
 
 
 def test_friday_night_filing_fires_at_low_severity():
+    """Needs something substantive alongside it — a modifier can't stand
+    alone (see test_friday_night_alone_produces_no_signal)."""
     result = signals.detect(
-        facts(departures=[departure()]),
+        facts(departures=[departure(forfeiture_flag="forfeited")]),
         {"is_after_hours_friday": True, "accepted_et": "2026-08-28 18:42 ET"},
     )
     sig = next(s for s in result.signals if s.type == "FRIDAY_NIGHT_FILING")
@@ -823,3 +825,36 @@ def test_abrupt_exit_with_no_successor_still_fires():
         is_retirement=False, days_notice=0, effective_immediately=True,
         successor_named=False, successor_info="search underway")]))
     assert "NO_SUCCESSOR" in types_of(result)
+
+
+# ---------------------------------------------------------------------------
+# Modifier signals — how something was disclosed is not, by itself, an event
+# ---------------------------------------------------------------------------
+
+def test_friday_night_alone_produces_no_signal():
+    """Observed on the first live backtest: three of twelve inbox rows were
+    Friday-night filings with nothing else attached, whose entire displayed
+    thesis was "Accepted by SEC after Friday's close". A row that cannot say
+    what happened is noise however cheap it was to produce."""
+    result = signals.detect(facts(), {"is_after_hours_friday": True})
+    assert result.signals == []
+    assert signals.detector_verdict(result) == "PASS"
+
+
+def test_friday_night_still_sharpens_a_real_finding():
+    """A forfeiture exit buried on a Friday evening IS worse than the same
+    exit on a Tuesday — the modifier just can't stand alone."""
+    result = signals.detect(
+        facts(departures=[departure(forfeiture_flag="forfeited")]),
+        {"is_after_hours_friday": True},
+    )
+    assert "FRIDAY_NIGHT_FILING" in types_of(result)
+    assert "FORFEITURE_EXIT" in types_of(result)
+
+
+def test_a_lone_lowest_severity_signal_does_not_reach_the_inbox():
+    """MONITOR means 'know that this happened'. Earning it takes at least one
+    signal the user would recognise as an event."""
+    result = signals.detect(facts(), {"is_after_hours_friday": True})
+    assert signals.detector_verdict(result) == "PASS"
+    assert signals.detector_score(result) == 0
