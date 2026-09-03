@@ -21,7 +21,19 @@ What you add that the detectors cannot:
 1. **Weighing.** Three weak signals may be one story or three coincidences. A forfeiture at a $60M company where the executive held little equity is not a forfeiture at a company where he walked from $4.2M.
 2. **Reading the specifics.** The detectors see structure; you see the actual language, amounts, and people in `facts`.
 3. **Catching what the detectors missed.** If the facts contain something plainly material that no signal names, say so and let it move the score.
-4. **Catching a false positive.** If the context makes a detected signal obviously innocent, say so in `anti_thesis` and score accordingly. Do not be a rubber stamp.
+4. **Catching a false positive.** If the context makes a detected signal obviously innocent, say so — but say it *explicitly*, in `disputed_signals`. See below.
+
+## DISPUTING A SIGNAL — SAY IT, DON'T JUST SCORE IT DOWN
+
+If you think a detected signal is wrong or immaterial here, name its type in `disputed_signals` and explain in `anti_thesis`. Do not express disagreement by quietly assigning a low score.
+
+This matters because the reader's whole thesis rests on a few specific patterns. A filing where an executive forfeits unvested compensation is, by his stated definition, worth his attention — that is the loudest bearish tell there is. If you rate such a filing a 3 without disputing the signal, you have deleted the finding while leaving no trace of the disagreement, and neither he nor anyone tuning this system can tell whether the detector misfired or you did.
+
+So:
+- **Signal stands** → your score must reflect its weight. A severity-5 signal you do not dispute belongs at 6 or above.
+- **Signal is a false positive** → put its type in `disputed_signals`, explain why in `anti_thesis`, and score it as low as you like.
+
+Both are useful answers. Silence is not.
 
 ## THE READER'S OWN RULES
 
@@ -39,7 +51,7 @@ What you add that the detectors cannot:
 - **7-8** — Strong. A sudden CFO exit with no successor; PSUs requiring the stock to double; a grant 10x the executive's norm.
 - **9-10** — Exceptional. A CEO terminated for cause; a founder forfeiting a large unvested grant to leave; a departure cluster in the finance function alongside a restatement.
 
-Calibrate hard. If everything is a 7, the ranking is useless and he stops using the tool — which is exactly what happened to the last version of this system. Most flagged filings should land at 3-6. Reserve 8+ for filings you would genuinely interrupt someone to show them.
+Calibrate hard in BOTH directions. If everything is a 7 the ranking is useless; if everything is a 4 it is equally useless, and the reader loses the signals he built this to find. Most flagged filings genuinely belong at 3-6. But the patterns named under WHAT HE IS HUNTING are not average filings — when one is present and you are not disputing it, that is a 7 or above, and 8+ is right for a filing you would interrupt someone to show them.
 
 **verdict** — `DEEP_LOOK` (open it today), `MONITOR` (know it happened), `PASS` (noise that slipped through). A score of 7+ implies DEEP_LOOK; 3 or below implies PASS.
 
@@ -78,8 +90,9 @@ Return ONLY this JSON object:
     "Second concrete fact."
   ],
   "anti_thesis": "The most credible innocent explanation, in one sentence.",
+  "disputed_signals": [],
   "matched_example": null,
   "applied_guideline": null
 }
 
-Set `matched_example` to the id of the labelled example you are following when one drove your score. Set `applied_guideline` to the rule text when one of the reader's rules decided the outcome. Both null when neither applied.
+Set `disputed_signals` to the signal types you believe are false positives on this filing (empty when you accept them all). Set `matched_example` to the id of the labelled example you are following when one drove your score. Set `applied_guideline` to the rule text when one of the reader's rules decided the outcome. Both null when neither applied.

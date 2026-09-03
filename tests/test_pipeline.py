@@ -332,3 +332,64 @@ def test_every_field_written_is_an_allowed_column(tmp_sqlite_db, no_context):
         result = pipeline.analyze_filing(_filing())
 
     assert set(result.fields) <= database.UPDATABLE_FILING_FIELDS
+
+
+# ---------------------------------------------------------------------------
+# The judge may overrule a detector — but it has to say so
+# ---------------------------------------------------------------------------
+
+def test_undisputed_severe_signal_floors_the_score(no_context):
+    """Observed on the first live run: the judge scored a filing carrying
+    FORFEITURE_EXIT + ABRUPT_CSUITE_EXIT + NO_SUCCESSOR at 4/10, and another
+    carrying FORFEITURE_EXIT at 3/10 — PASS. Forfeiture is the user's single
+    most important tell, and a low number was deleting it with no record that
+    anyone disagreed."""
+    with patch("llm.classify_and_summarize", return_value=_facts()), \
+         patch("pipeline._judge", return_value=_judgment(score=3, verdict="PASS",
+                                                         disputed_signals=[])):
+        result = pipeline.analyze_filing(_filing())
+
+    assert result.fields["signal_score"] == 6
+    assert result.fields["triage_verdict"] == "PASS"  # the judge's verdict still stands
+
+
+def test_disputing_the_signal_lets_the_judge_score_it_down(no_context):
+    """The override is still available — it just has to be stated, which
+    turns a silent washout into a reviewable claim."""
+    with patch("llm.classify_and_summarize", return_value=_facts()), \
+         patch("pipeline._judge", return_value=_judgment(
+             score=2, verdict="PASS",
+             disputed_signals=["FORFEITURE_EXIT", "ABRUPT_CSUITE_EXIT", "NO_SUCCESSOR"],
+             anti_thesis="Forfeiture is nominal — the executive held almost no unvested equity.")):
+        result = pipeline.analyze_filing(_filing())
+
+    assert result.fields["signal_score"] == 2
+    assert result.fields["triage_verdict"] == "PASS"
+
+
+def test_a_high_judge_score_is_never_lowered_by_the_floor(no_context):
+    with patch("llm.classify_and_summarize", return_value=_facts()), \
+         patch("pipeline._judge", return_value=_judgment(score=9)):
+        result = pipeline.analyze_filing(_filing())
+    assert result.fields["signal_score"] == 9
+
+
+def test_disputed_signal_names_are_matched_case_insensitively(no_context):
+    with patch("llm.classify_and_summarize", return_value=_facts()), \
+         patch("pipeline._judge", return_value=_judgment(
+             score=2, disputed_signals=["forfeiture_exit", "abrupt_csuite_exit",
+                                        "no_successor"])):
+        result = pipeline.analyze_filing(_filing())
+    assert result.fields["signal_score"] == 2
+
+
+def test_a_floored_score_never_reads_as_pass_at_the_top_of_the_list(no_context):
+    """A row badged PASS while sorting above everything else reads as a
+    broken tool."""
+    facts = _facts(departures=[dict(_facts()["departures"][0],
+                                    forfeiture_flag="forfeited")])
+    with patch("llm.classify_and_summarize", return_value=facts), \
+         patch("pipeline._judge", return_value=_judgment(score=8, verdict="PASS")):
+        result = pipeline.analyze_filing(_filing())
+    assert result.fields["signal_score"] == 8
+    assert result.fields["triage_verdict"] == "MONITOR"

@@ -222,7 +222,7 @@ def _rank(detection, judgment):
 
     if judgment:
         if judgment.get("score") is not None:
-            score = judgment["score"]
+            score = _floored_score(judgment, detection)
         if judgment.get("verdict"):
             verdict = judgment["verdict"]
         if judgment.get("direction"):
@@ -230,7 +230,49 @@ def _rank(detection, judgment):
         if judgment.get("thesis"):
             top_signal = judgment["thesis"]
 
+        # Keep the verdict consistent with a floored score, or the row reads
+        # as PASS while sorting near the top.
+        if score >= 7 and verdict == "PASS":
+            verdict = "MONITOR"
+
     return verdict, score, direction, top_signal
+
+
+# A signal this severe that the judge did NOT dispute sets a floor on the
+# final score. Chosen so a severity-5 signal cannot land below "genuinely
+# notable".
+_UNDISPUTED_FLOOR = {5: 6, 4: 5}
+
+
+def _floored_score(judgment, detection):
+    """The judge's score, floored by any severe signal it declined to dispute.
+
+    Observed on the first live run: the judge scored a filing carrying
+    FORFEITURE_EXIT + ABRUPT_CSUITE_EXIT + NO_SUCCESSOR at 4/10, and another
+    carrying FORFEITURE_EXIT + VALUE_EXTRACTION at 3/10 — PASS. Forfeiture is
+    the user's single most important tell, and it was being deleted by a low
+    number with no record of disagreement.
+
+    The judge may still overrule a detector; it just has to SAY so, by naming
+    the signal type in `disputed_signals`. That turns a silent washout into a
+    reviewable claim: the user can see that the system found a forfeiture and
+    decided it didn't matter here, which is a completely different thing from
+    never surfacing it.
+    """
+    score = judgment["score"]
+    disputed = {str(s).upper() for s in (judgment.get("disputed_signals") or [])}
+
+    floor = 0
+    for signal in detection.signals:
+        if signal.type in disputed:
+            continue
+        floor = max(floor, _UNDISPUTED_FLOOR.get(signal.severity, 0))
+
+    if floor > score:
+        print(f"[PIPELINE] Judge scored {score} against an undisputed "
+              f"severity-{detection.max_severity} signal; floored to {floor}", flush=True)
+        return floor
+    return score
 
 
 def _is_urgent(detection):

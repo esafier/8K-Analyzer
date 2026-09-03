@@ -208,6 +208,12 @@ def validate(raw):
         why = [why]
     why = [_text(w, 300) for w in why if _text(w, 300)] if isinstance(why, list) else []
 
+    disputed = raw.get("disputed_signals")
+    if isinstance(disputed, str):
+        disputed = [disputed]
+    disputed = ([str(d).strip().upper() for d in disputed if str(d or "").strip()]
+                if isinstance(disputed, list) else [])
+
     return {
         "score": score,
         "verdict": verdict,
@@ -215,6 +221,7 @@ def validate(raw):
         "thesis": thesis,
         "why": why[:5],
         "anti_thesis": _text(raw.get("anti_thesis"), 400),
+        "disputed_signals": disputed,
         "matched_example": raw.get("matched_example"),
         "applied_guideline": _text(raw.get("applied_guideline"), 300),
     }
