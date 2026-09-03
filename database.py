@@ -13,7 +13,7 @@ from config import DATABASE_PATH
 try:
     import pg8000.dbapi
     HAS_PG = True
-    print("[BOOT] pg8000 is installed ✓")
+    print("[BOOT] pg8000 is installed")
 except ImportError:
     HAS_PG = False
     print("[BOOT] pg8000 is NOT installed — PostgreSQL unavailable")
@@ -64,20 +64,34 @@ def _parse_database_url():
 
 
 def _create_pg_connection():
-    """Create a fresh PostgreSQL connection."""
+    """Create a fresh PostgreSQL connection.
+
+    Tries SSL first, because the hosted database requires it, then falls back
+    to a plain connection when the server refuses. Without the fallback the
+    code can only ever talk to Render: a local or CI Postgres has SSL turned
+    off and rejects the handshake outright, so there was no way to run the
+    suite — or reproduce a production bug — against a real Postgres.
+
+    Encryption is never silently downgraded on a server that supports it; the
+    fallback only happens when the server itself says no.
+    """
     user, password, host, port, dbname = _parse_database_url()
+
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
 
-    return pg8000.dbapi.connect(
-        user=user,
-        password=password,
-        host=host,
-        port=port,
-        database=dbname,
-        ssl_context=ssl_context
-    )
+    params = {"user": user, "password": password, "host": host,
+              "port": port, "database": dbname}
+
+    try:
+        return pg8000.dbapi.connect(ssl_context=ssl_context, **params)
+    except Exception as e:
+        if "refuses ssl" not in str(e).lower():
+            raise
+        print("[DB] Server refuses SSL — connecting without it "
+              "(expected for a local or CI PostgreSQL)", flush=True)
+        return pg8000.dbapi.connect(ssl_context=None, **params)
 
 
 def _get_pg_connection():
@@ -280,6 +294,13 @@ def initialize_database():
     # Create departure_extractions table for caching 5.02 LLM extractions
     _create_departure_extractions_table(conn)
 
+    # Signal-first tables: the user's labels, their standing rules, the
+    # per-company context cache, and a log of what each digest contained.
+    _create_judgments_table(conn)
+    _create_guidelines_table(conn)
+    _create_company_profiles_table(conn)
+    _create_digests_table(conn)
+
     # Log which database we're using and how many filings are stored
     # This helps us debug data loss issues on Render
     cursor.execute("SELECT COUNT(*) FROM filings")
@@ -424,6 +445,62 @@ def _migrate_add_columns(conn):
     _add_column(conn, cursor, existing, "has_successor",
                 "ALTER TABLE filings ADD COLUMN has_successor INTEGER DEFAULT NULL")
 
+    # --- Signal-first pipeline columns (2026-09) ---------------------------
+    # Where a row came from. '8-K' for everything ingested before this existed;
+    # 'FORM4' rows arrive from the insider-transaction scanner and must be kept
+    # out of the 8-K text-repair queries (they have no 8-K document to fetch).
+    _add_column(conn, cursor, existing, "source",
+                "ALTER TABLE filings ADD COLUMN source TEXT DEFAULT NULL")
+
+    # Typed detector output: full Signal list as JSON, plus a comma-separated
+    # type list for cheap SQL filtering ("show me every FORFEITURE_EXIT").
+    _add_column(conn, cursor, existing, "signals_json",
+                "ALTER TABLE filings ADD COLUMN signals_json TEXT DEFAULT NULL")
+    _add_column(conn, cursor, existing, "signal_types",
+                "ALTER TABLE filings ADD COLUMN signal_types TEXT DEFAULT NULL")
+
+    # Strong-model judgment (thesis / why / anti-thesis) and the context block
+    # the detectors and judge actually saw — kept so a verdict can be audited
+    # months later without re-fetching prices that have since moved.
+    _add_column(conn, cursor, existing, "judge_json",
+                "ALTER TABLE filings ADD COLUMN judge_json TEXT DEFAULT NULL")
+    _add_column(conn, cursor, existing, "context_json",
+                "ALTER TABLE filings ADD COLUMN context_json TEXT DEFAULT NULL")
+
+    # Which prompt/weight generation produced the current verdict. Without it,
+    # a ranking regression can't be traced back to the change that caused it.
+    _add_column(conn, cursor, existing, "pipeline_version",
+                "ALTER TABLE filings ADD COLUMN pipeline_version TEXT DEFAULT NULL")
+
+    # The pre-rebuild triage verdict, snapshotted before the new pipeline
+    # overwrites the legacy quartet. Makes the migration reversible in place.
+    _add_column(conn, cursor, existing, "legacy_triage_json",
+                "ALTER TABLE filings ADD COLUMN legacy_triage_json TEXT DEFAULT NULL")
+
+    # Market snapshot at analysis time. Outcome tracking needs the price the
+    # signal was generated at, not today's — and a later backtest must not be
+    # able to quietly substitute a price the analyst never saw.
+    _add_column(conn, cursor, existing, "price_at_ingest",
+                "ALTER TABLE filings ADD COLUMN price_at_ingest REAL DEFAULT NULL")
+    _add_column(conn, cursor, existing, "market_cap_at_ingest",
+                "ALTER TABLE filings ADD COLUMN market_cap_at_ingest BIGINT DEFAULT NULL"
+                if _using_postgres() else
+                "ALTER TABLE filings ADD COLUMN market_cap_at_ingest INTEGER DEFAULT NULL")
+
+    # SEC acceptance timestamp (UTC ISO string). filed_date rolls to the next
+    # business day for anything accepted after 17:30 ET, so Friday-night
+    # burial is only visible from the acceptance time.
+    _add_column(conn, cursor, existing, "accepted_at",
+                "ALTER TABLE filings ADD COLUMN accepted_at TEXT DEFAULT NULL")
+
+    # When the strong model last judged this row (NULL = detectors only).
+    _add_column(conn, cursor, existing, "judged_at",
+                "ALTER TABLE filings ADD COLUMN judged_at TIMESTAMP DEFAULT NULL")
+
+    # The inbox filters on signal_types and orders by score — index both.
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_filings_signal_types ON filings(signal_types)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_filings_source ON filings(source)")
+
     conn.commit()
 
 
@@ -523,6 +600,19 @@ def insert_filing(filing_data):
     forfeited_comp_val = filing_data.get("forfeited_comp")
     has_successor_val = filing_data.get("has_successor")
 
+    # Signal-first fields. `source` defaults to '8-K' so every row inserted by
+    # the ordinary pipeline is explicitly an 8-K, and only the Form 4 scanner
+    # has to say otherwise.
+    source_val = _to_str(filing_data.get("source")) or "8-K"
+    signals_json_val = _to_str(filing_data.get("signals_json"))
+    signal_types_val = _to_str(filing_data.get("signal_types"))
+    judge_json_val = _to_str(filing_data.get("judge_json"))
+    context_json_val = _to_str(filing_data.get("context_json"))
+    pipeline_version_val = _to_str(filing_data.get("pipeline_version"))
+    price_at_ingest_val = filing_data.get("price_at_ingest")
+    market_cap_at_ingest_val = filing_data.get("market_cap_at_ingest")
+    accepted_at_val = _to_str(filing_data.get("accepted_at"))
+
     insert_values = (
         _to_str(filing_data.get("accession_no")),
         _to_str(filing_data.get("company")),
@@ -551,6 +641,15 @@ def insert_filing(filing_data):
         departure_count_val,
         forfeited_comp_val,
         has_successor_val,
+        source_val,
+        signals_json_val,
+        signal_types_val,
+        judge_json_val,
+        context_json_val,
+        pipeline_version_val,
+        price_at_ingest_val,
+        market_cap_at_ingest_val,
+        accepted_at_val,
     )
 
     insert_columns = """
@@ -560,7 +659,9 @@ def insert_filing(filing_data):
              filing_document_url, is_complex, narrative_summary,
              relevant_reason, structured_summary, has_market_targets,
              triage_verdict, signal_score, signal_direction, top_signal,
-             departure_count, forfeited_comp, has_successor)
+             departure_count, forfeited_comp, has_successor,
+             source, signals_json, signal_types, judge_json, context_json,
+             pipeline_version, price_at_ingest, market_cap_at_ingest, accepted_at)
     """
     placeholders_sql = ", ".join([p] * len(insert_values))
 
@@ -945,9 +1046,14 @@ def get_filings_missing_text(date_from=None, date_to=None):
     cursor = conn.cursor()
     p = _placeholder()
 
+    # source is NULL on every row ingested before the signal-first rebuild,
+    # so COALESCE keeps legacy 8-Ks in scope. FORM4 rows are excluded on
+    # purpose: they have no 8-K document to re-fetch, so including them would
+    # make the repair queue permanently non-empty and re-fetch them forever.
     query = """
         SELECT * FROM filings
         WHERE (raw_text IS NULL OR raw_text = '')
+          AND COALESCE(source, '8-K') = '8-K'
     """
     params = ()
     if date_from and date_to:
@@ -968,7 +1074,8 @@ def count_filings_missing_text():
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT COUNT(*) AS count FROM filings WHERE raw_text IS NULL OR raw_text = ''"
+        "SELECT COUNT(*) AS count FROM filings "
+        "WHERE (raw_text IS NULL OR raw_text = '') AND COALESCE(source, '8-K') = '8-K'"
     )
     row = cursor.fetchone()
     count = row[0] if _using_postgres() else row["count"]
@@ -1021,6 +1128,7 @@ def get_filings_for_resummarize(date_from=None, date_to=None):
     query = f"""
         SELECT * FROM filings
         WHERE raw_text IS NOT NULL AND raw_text != ''
+          AND COALESCE(source, '8-K') = '8-K'
           AND filed_date >= {p} AND filed_date <= {p}
         ORDER BY filed_date DESC
     """
@@ -1953,6 +2061,686 @@ def upsert_departure_extraction(accession_number, cik, filed_date, extractions, 
 
     conn.commit()
     conn.close()
+
+
+# ============================================================
+# INBOX + REVIEW QUERIES
+# ============================================================
+
+def get_inbox_filings(days=7, min_score=0, direction=None, signal_type=None,
+                      include_pass=False, unlabeled_only=False, limit=100, offset=0):
+    """The ranked signal inbox — the new default view.
+
+    Differs from get_filings() in what it assumes. The old dashboard was a
+    chronological archive: everything, newest first, filters optional. This is
+    a work queue: a recent window, PASS hidden, strongest signal first. The
+    user's complaint was never that filings were missing — it was that finding
+    the three worth reading meant scrolling past ninety that weren't.
+
+    Rows analyzed before the rebuild (NULL verdict) are excluded rather than
+    ranked: they have no signals, so they would sort into the middle of the
+    list carrying no information about why they were there.
+    """
+    from datetime import datetime, timedelta
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    where = " AND triage_verdict IS NOT NULL"
+    params = []
+
+    if days:
+        cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+        where += f" AND filed_date >= {p}"
+        params.append(cutoff)
+
+    if not include_pass:
+        where += " AND triage_verdict <> 'PASS'"
+
+    if min_score:
+        where += f" AND COALESCE(signal_score, 0) >= {p}"
+        params.append(int(min_score))
+
+    if direction in ("BEARISH", "BULLISH", "MIXED", "NEUTRAL"):
+        where += f" AND signal_direction = {p}"
+        params.append(direction)
+
+    if signal_type:
+        where += f" AND signal_types LIKE {p}"
+        params.append(f"%{signal_type}%")
+
+    if unlabeled_only:
+        where += " AND id NOT IN (SELECT filing_id FROM judgments)"
+
+    query = (
+        "SELECT * FROM filings WHERE 1=1" + where +
+        " ORDER BY COALESCE(signal_score, 0) DESC, filed_date DESC, created_at DESC"
+        f" LIMIT {p} OFFSET {p}"
+    )
+    params.extend([limit, offset])
+
+    cursor.execute(query, params)
+    results = [dict(r) for r in _dict_rows(cursor.fetchall(), cursor)]
+    conn.close()
+    return results
+
+
+def count_inbox_filings(days=7, min_score=0, direction=None, signal_type=None,
+                        include_pass=False, unlabeled_only=False):
+    """Row count for the same filter set — used for pagination and the header."""
+    from datetime import datetime, timedelta
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    where = " AND triage_verdict IS NOT NULL"
+    params = []
+    if days:
+        cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+        where += f" AND filed_date >= {p}"
+        params.append(cutoff)
+    if not include_pass:
+        where += " AND triage_verdict <> 'PASS'"
+    if min_score:
+        where += f" AND COALESCE(signal_score, 0) >= {p}"
+        params.append(int(min_score))
+    if direction in ("BEARISH", "BULLISH", "MIXED", "NEUTRAL"):
+        where += f" AND signal_direction = {p}"
+        params.append(direction)
+    if signal_type:
+        where += f" AND signal_types LIKE {p}"
+        params.append(f"%{signal_type}%")
+    if unlabeled_only:
+        where += " AND id NOT IN (SELECT filing_id FROM judgments)"
+
+    cursor.execute("SELECT COUNT(*) FROM filings WHERE 1=1" + where, params)
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
+def get_review_queue(limit=1, include_pass=False):
+    """Next unlabeled filing(s) to review, strongest signal first.
+
+    Ordered by score rather than by date on purpose: the labels worth having
+    are on the filings the system was most confident about, because those are
+    where being wrong costs the most.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    where = " AND triage_verdict IS NOT NULL AND id NOT IN (SELECT filing_id FROM judgments)"
+    if not include_pass:
+        where += " AND triage_verdict <> 'PASS'"
+
+    cursor.execute(
+        "SELECT * FROM filings WHERE 1=1" + where +
+        f" ORDER BY COALESCE(signal_score, 0) DESC, filed_date DESC LIMIT {p}",
+        (limit,),
+    )
+    results = [dict(r) for r in _dict_rows(cursor.fetchall(), cursor)]
+    conn.close()
+    return results
+
+
+def count_review_queue(include_pass=False):
+    conn = get_connection()
+    cursor = conn.cursor()
+    where = " AND triage_verdict IS NOT NULL AND id NOT IN (SELECT filing_id FROM judgments)"
+    if not include_pass:
+        where += " AND triage_verdict <> 'PASS'"
+    cursor.execute("SELECT COUNT(*) FROM filings WHERE 1=1" + where)
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
+def get_signal_type_counts(days=30):
+    """How often each signal type fired recently.
+
+    Powers the inbox's type filter chips, and doubles as the cheapest possible
+    health check: a detector that suddenly fires on everything, or stops
+    firing at all, shows up here first.
+    """
+    from datetime import datetime, timedelta
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+    cursor.execute(
+        f"SELECT signal_types FROM filings WHERE signal_types IS NOT NULL AND filed_date >= {p}",
+        (cutoff,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    counts = {}
+    for row in rows:
+        for signal_type in (row[0] or "").split(","):
+            signal_type = signal_type.strip()
+            if signal_type:
+                counts[signal_type] = counts.get(signal_type, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+
+# ============================================================
+# SIGNAL-FIRST TABLES (labels, guidelines, company context, digests)
+# ============================================================
+
+def _create_judgments_table(conn):
+    """One row per user verdict on a filing — the training signal for the
+    whole ranking system.
+
+    `filing_id` is UNIQUE: a filing has exactly one current label, and
+    re-labelling overwrites rather than appending. `source` records where the
+    tap came from (review page, digest link, or the one-time watchlist seed)
+    so a later analysis can tell a deliberate desk review from a phone tap.
+    """
+    cursor = conn.cursor()
+    if _using_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS judgments (
+                id SERIAL PRIMARY KEY,
+                filing_id INTEGER NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                note TEXT,
+                source TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (filing_id) REFERENCES filings(id) ON DELETE CASCADE
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS judgments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filing_id INTEGER NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                note TEXT,
+                source TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (filing_id) REFERENCES filings(id) ON DELETE CASCADE
+            )
+        """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_judgments_label ON judgments(label)")
+    conn.commit()
+    print("[STARTUP] Judgments table ready")
+
+
+def _create_guidelines_table(conn):
+    """Free-text rules the user writes ("ignore SPAC director shuffles").
+    Loaded into the judge prompt, so the user can correct the system in
+    English instead of waiting on a prompt edit."""
+    cursor = conn.cursor()
+    if _using_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS guidelines (
+                id SERIAL PRIMARY KEY,
+                rule TEXT NOT NULL,
+                active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS guidelines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule TEXT NOT NULL,
+                active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    conn.commit()
+    print("[STARTUP] Guidelines table ready")
+
+
+def _create_company_profiles_table(conn):
+    """Per-company context cache, keyed by CIK.
+
+    The expensive half of context-building (SEC submissions JSON, grant
+    cadence) is per-company, not per-filing — five filings from one issuer in
+    a week should cost one fetch, not five.
+    """
+    cursor = conn.cursor()
+    if _using_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS company_profiles (
+                cik TEXT PRIMARY KEY,
+                ticker TEXT,
+                market_cap BIGINT,
+                price REAL,
+                next_earnings TEXT,
+                last_202_date TEXT,
+                recent_8k_items_json TEXT,
+                ipo_date TEXT,
+                grant_cadence_json TEXT,
+                refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS company_profiles (
+                cik TEXT PRIMARY KEY,
+                ticker TEXT,
+                market_cap INTEGER,
+                price REAL,
+                next_earnings TEXT,
+                last_202_date TEXT,
+                recent_8k_items_json TEXT,
+                ipo_date TEXT,
+                grant_cadence_json TEXT,
+                refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    conn.commit()
+    print("[STARTUP] Company profiles table ready")
+
+
+def _create_digests_table(conn):
+    """What each digest contained, so a re-run doesn't re-send the same
+    filings and so a label arriving by email link can be traced to its send."""
+    cursor = conn.cursor()
+    if _using_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS digests (
+                id SERIAL PRIMARY KEY,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                channel TEXT,
+                filing_ids_json TEXT,
+                status TEXT
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS digests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                channel TEXT,
+                filing_ids_json TEXT,
+                status TEXT
+            )
+        """)
+    conn.commit()
+    print("[STARTUP] Digests table ready")
+
+
+# Columns the pipeline is allowed to write through update_filing_fields().
+# An allow-list rather than free-form SQL: the column name is interpolated
+# into the statement (it can't be a bound parameter), so it must never come
+# from anywhere but this set.
+UPDATABLE_FILING_FIELDS = {
+    "summary", "auto_category", "auto_subcategory", "urgent", "comp_details",
+    "structured_summary", "is_complex", "narrative_summary", "relevant_reason",
+    "has_market_targets", "triage_verdict", "signal_score", "signal_direction",
+    "top_signal", "departure_count", "forfeited_comp", "has_successor",
+    "source", "signals_json", "signal_types", "judge_json", "context_json",
+    "pipeline_version", "legacy_triage_json", "price_at_ingest",
+    "market_cap_at_ingest", "accepted_at", "judged_at", "raw_text",
+    "filing_document_url",
+}
+
+
+def update_filing_fields(filing_id, **fields):
+    """Update an arbitrary subset of a filing's analysis columns.
+
+    Replaces the hard-coded column tuples in update_filing_analysis() for new
+    code: the pipeline writes a different subset depending on how far a filing
+    got (extraction only, detectors, or a full judgment), and enumerating
+    every combination as its own function is how the three ingest paths
+    drifted apart in the first place.
+
+    Unknown column names raise — a typo silently writing nothing is worse
+    than a crash during a backfill.
+    """
+    if not fields:
+        return 0
+
+    unknown = set(fields) - UPDATABLE_FILING_FIELDS
+    if unknown:
+        raise ValueError(f"update_filing_fields: unknown column(s) {sorted(unknown)}")
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    names = sorted(fields)  # deterministic order keeps the SQL stable in tests
+    assignments = ", ".join(f"{name} = {p}" for name in names)
+    values = [fields[name] for name in names]
+    values.append(filing_id)
+
+    cursor.execute(f"UPDATE filings SET {assignments} WHERE id = {p}", values)
+    rowcount = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return rowcount
+
+
+# ============================================================
+# APP STATUS (generic key/value — used for the ingest watermark)
+# ============================================================
+
+def set_app_status(key, value):
+    """Store a scalar under `key` in app_status (upsert on both engines)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    if _using_postgres():
+        cursor.execute(f"""
+            INSERT INTO app_status (key, value, updated_at)
+            VALUES ({p}, {p}, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET value = {p}, updated_at = CURRENT_TIMESTAMP
+        """, (key, str(value), str(value)))
+    else:
+        cursor.execute(f"""
+            INSERT OR REPLACE INTO app_status (key, value, updated_at)
+            VALUES ({p}, {p}, CURRENT_TIMESTAMP)
+        """, (key, str(value)))
+    conn.commit()
+    conn.close()
+
+
+def get_app_status(key, default=None):
+    """Read a scalar from app_status, or `default` when it isn't set."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"SELECT value FROM app_status WHERE key = {p}", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return default
+    return row[0]
+
+
+# ============================================================
+# JUDGMENTS (the user's labels)
+# ============================================================
+
+VALID_LABELS = {"signal", "noise", "meh"}
+
+
+def upsert_judgment(filing_id, label, note=None, source="review_ui"):
+    """Record (or replace) the user's label for a filing.
+
+    Returns True when stored, False when the label isn't one we recognise —
+    a bad value from a stale email link shouldn't poison the training set.
+    """
+    if label not in VALID_LABELS:
+        return False
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    if _using_postgres():
+        cursor.execute(f"""
+            INSERT INTO judgments (filing_id, label, note, source, created_at)
+            VALUES ({p}, {p}, {p}, {p}, CURRENT_TIMESTAMP)
+            ON CONFLICT (filing_id) DO UPDATE
+            SET label = {p}, note = {p}, source = {p}, created_at = CURRENT_TIMESTAMP
+        """, (filing_id, label, note, source, label, note, source))
+    else:
+        cursor.execute(f"""
+            INSERT OR REPLACE INTO judgments (filing_id, label, note, source, created_at)
+            VALUES ({p}, {p}, {p}, {p}, CURRENT_TIMESTAMP)
+        """, (filing_id, label, note, source))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def delete_judgment(filing_id):
+    """Remove a label — powers the Undo link after a mis-tap in the digest."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"DELETE FROM judgments WHERE filing_id = {p}", (filing_id,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def get_judgment(filing_id):
+    """The current label for one filing, or None."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"SELECT * FROM judgments WHERE filing_id = {p}", (filing_id,))
+    row = cursor.fetchone()
+    result = _dict_row(row, cursor)
+    conn.close()
+    return dict(result) if result is not None else None
+
+
+def count_judgments():
+    """How many labels exist, split by label. Shown on the review page so the
+    user can see progress toward the ~100-150 needed for evaluation to mean
+    anything."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT label, COUNT(*) FROM judgments GROUP BY label")
+    rows = cursor.fetchall()
+    conn.close()
+    return {row[0]: row[1] for row in rows}
+
+
+def get_labeled_examples(signal_type=None, label=None, limit=4):
+    """Fetch labelled filings for few-shot prompting.
+
+    When `signal_type` is given, prefers examples that carry the same signal —
+    a judge deciding on a FORFEITURE_EXIT learns most from how the user rated
+    previous forfeiture exits, not from an unrelated comp grant.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    where = ""
+    params = []
+    if label:
+        where += f" AND j.label = {p}"
+        params.append(label)
+    if signal_type:
+        where += f" AND f.signal_types LIKE {p}"
+        params.append(f"%{signal_type}%")
+
+    params.append(limit)
+    cursor.execute(f"""
+        SELECT f.id, f.company, f.ticker, f.filed_date, f.top_signal,
+               f.signal_types, f.signal_score, f.signal_direction,
+               j.label, j.note
+        FROM judgments j JOIN filings f ON f.id = j.filing_id
+        WHERE 1=1{where}
+        ORDER BY j.created_at DESC
+        LIMIT {p}
+    """, params)
+    results = _dict_rows(cursor.fetchall(), cursor)
+    conn.close()
+    return [dict(r) for r in results]
+
+
+def seed_judgments_from_watchlist():
+    """One-time bootstrap: every filing the user starred becomes a positive
+    label. Starring was the only "this matters" gesture the old UI had, so
+    it's the closest thing to a pre-existing training set.
+
+    Idempotent — filings that already carry a label are left alone.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT filing_id FROM watchlist
+        WHERE filing_id NOT IN (SELECT filing_id FROM judgments)
+    """)
+    ids = [row[0] for row in cursor.fetchall()]
+    conn.close()
+
+    for filing_id in ids:
+        upsert_judgment(filing_id, "signal", note=None, source="watchlist_seed")
+    return len(ids)
+
+
+# ============================================================
+# GUIDELINES (user's standing rules for the judge)
+# ============================================================
+
+def add_guideline(rule):
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(
+        f"INSERT INTO guidelines (rule, active, created_at) VALUES ({p}, 1, CURRENT_TIMESTAMP)",
+        (rule,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_guidelines(active_only=True):
+    conn = get_connection()
+    cursor = conn.cursor()
+    query = "SELECT id, rule, active, created_at FROM guidelines"
+    if active_only:
+        query += " WHERE active = 1"
+    query += " ORDER BY created_at"
+    cursor.execute(query)
+    results = _dict_rows(cursor.fetchall(), cursor)
+    conn.close()
+    return [dict(r) for r in results]
+
+
+def deactivate_guideline(guideline_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"UPDATE guidelines SET active = 0 WHERE id = {p}", (guideline_id,))
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# COMPANY PROFILES (per-company context cache)
+# ============================================================
+
+def get_company_profile(cik, max_age_hours=24):
+    """Cached context for one company, or None when missing/stale.
+
+    Prices go stale fast; the SEC-derived half (IPO date, filing history)
+    doesn't. One TTL for both is the simple choice — a day-old price is close
+    enough for a ">50% above current" hurdle test, and the caller can always
+    refresh the price separately.
+    """
+    if not cik:
+        return None
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    if max_age_hours is None:
+        cursor.execute(f"SELECT * FROM company_profiles WHERE cik = {p}", (cik,))
+    elif _using_postgres():
+        hours = int(max_age_hours)
+        cursor.execute(
+            f"SELECT * FROM company_profiles WHERE cik = {p} "
+            f"AND refreshed_at > NOW() - INTERVAL '{hours} hours'",
+            (cik,),
+        )
+    else:
+        hours = int(max_age_hours)
+        cursor.execute(
+            f"SELECT * FROM company_profiles WHERE cik = {p} "
+            f"AND refreshed_at > datetime('now', '-{hours} hours')",
+            (cik,),
+        )
+
+    row = cursor.fetchone()
+    result = _dict_row(row, cursor)
+    conn.close()
+    return dict(result) if result is not None else None
+
+
+def upsert_company_profile(cik, **fields):
+    """Insert or refresh a company's cached context."""
+    allowed = {"ticker", "market_cap", "price", "next_earnings", "last_202_date",
+               "recent_8k_items_json", "ipo_date", "grant_cadence_json"}
+    unknown = set(fields) - allowed
+    if unknown:
+        raise ValueError(f"upsert_company_profile: unknown field(s) {sorted(unknown)}")
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+
+    names = sorted(fields)
+    values = [fields[n] for n in names]
+
+    if _using_postgres():
+        col_sql = ", ".join(["cik"] + names)
+        val_sql = ", ".join([p] * (len(names) + 1))
+        update_sql = ", ".join(f"{n} = {p}" for n in names)
+        cursor.execute(f"""
+            INSERT INTO company_profiles ({col_sql}, refreshed_at)
+            VALUES ({val_sql}, CURRENT_TIMESTAMP)
+            ON CONFLICT (cik) DO UPDATE
+            SET {update_sql}, refreshed_at = CURRENT_TIMESTAMP
+        """, [cik] + values + values)
+    else:
+        col_sql = ", ".join(["cik"] + names)
+        val_sql = ", ".join([p] * (len(names) + 1))
+        cursor.execute(f"""
+            INSERT OR REPLACE INTO company_profiles ({col_sql}, refreshed_at)
+            VALUES ({val_sql}, CURRENT_TIMESTAMP)
+        """, [cik] + values)
+
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# DIGESTS
+# ============================================================
+
+def record_digest(channel, filing_ids, status="sent"):
+    import json as _json
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(
+        f"INSERT INTO digests (channel, filing_ids_json, status, sent_at) "
+        f"VALUES ({p}, {p}, {p}, CURRENT_TIMESTAMP)",
+        (channel, _json.dumps(list(filing_ids)), status),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_recently_digested_ids(days=7):
+    """Filing ids already sent in a recent digest, so a re-run or an
+    overlapping window doesn't mail the same rows twice."""
+    import json as _json
+    from datetime import datetime, timedelta
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    cursor.execute(
+        f"SELECT filing_ids_json FROM digests WHERE sent_at >= {p} AND status = 'sent'",
+        (cutoff,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    sent = set()
+    for row in rows:
+        try:
+            sent.update(_json.loads(row[0] or "[]"))
+        except (ValueError, TypeError):
+            continue
+    return sent
 
 
 # When this file is run directly, create the database

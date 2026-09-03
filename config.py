@@ -1,6 +1,32 @@
 # config.py — Settings for the 8-K Filing Analyzer
 # Change these values to customize what filings you're looking for
 
+import sys
+
+
+def _make_console_unicode_safe():
+    """Stop a stray non-ASCII character in a log line from killing the process.
+
+    Windows consoles default to cp1252, which cannot encode a check mark, an
+    arrow, or an emoji. Any print() containing one raises UnicodeEncodeError —
+    and because these calls sit at module import time and inside long
+    background jobs, the failure lands somewhere unrelated to its cause. A
+    single tick in a boot message was enough to make every command-line entry
+    point (daily.py, evaluate.py, digest.py) die before doing anything.
+
+    Errors that matter must still be loud; a decorative glyph must never be
+    one of them. So encoding failures degrade to a replacement character
+    rather than an exception.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # already fine, or not a real stream (pytest capture, pipes)
+
+
+_make_console_unicode_safe()
+
 # Load .env file so we can read API keys from it locally
 from dotenv import load_dotenv
 load_dotenv()
@@ -109,24 +135,46 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 # Get one at https://api-ninjas.com (paid plan needed for earnings features)
 API_NINJAS_KEY = os.environ.get("API_NINJAS_KEY", "")
 
-# Which model to use for daily classification and summarization (cheap, fast).
-# Overridable via the LLM_MODEL env var so the deployed model can be changed
-# from the Render dashboard with no code change — set LLM_MODEL=gpt-4o-mini to
-# trial the pipeline on the old model, or bump to a stronger tier when ready.
-# Tiers as of mid-2026 (per 1M input/output tokens):
-#   gpt-5.4-nano  $0.20 / $1.25  — default: built for classification/extraction
-#   gpt-5.4-mini  $0.75 / $4.50  — upgrade: sharper triage judgment
-#   gpt-5.4       $2.50 / $15.00 — premium: deep analysis quality
-LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-5.4-nano")
+# --- Models ---------------------------------------------------------------
+# The pipeline splits work across two tiers on purpose. Extraction is a
+# high-volume, low-judgment job (pull facts into a fixed schema) and runs on
+# the cheapest capable model. Judgment is low-volume and high-stakes — it only
+# sees filings that already carry a signal — so it gets a much stronger model
+# and still costs well under a dollar a day.
+#
+# GPT-5.6 family, per 1M input/output tokens:
+#   gpt-5.6-luna   $0.20 / $1.20  — extraction default
+#   gpt-5.6-terra  $2.00 / $12.00 — judge default
+#   gpt-5.6-sol    $4.00 / $20.00 — override for a hard call
+#
+# All three are env-overridable so the deployed models can change from the
+# Render dashboard without a redeploy.
+LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-5.6-luna")
+LLM_MODEL_PREMIUM = os.environ.get("LLM_MODEL_PREMIUM", "gpt-5.6-sol")
+LLM_MODEL_JUDGE = os.environ.get("LLM_MODEL_JUDGE", "gpt-5.6-terra")
 
-# Premium model — use this when you want deeper/better analysis on specific
-# filings. Also env-overridable (LLM_MODEL_PREMIUM).
-LLM_MODEL_PREMIUM = os.environ.get("LLM_MODEL_PREMIUM", "gpt-5.4")
+# Models that reject an explicit `temperature`. The GPT-5.6 family only
+# accepts its default, and passing temperature=0 is a hard 400 — so llm.py
+# omits the parameter for these rather than discovering it in production.
+# Determinism is not lost in any way that matters here: the prompts return
+# strict JSON, and the schema is what constrains the output.
+MODELS_WITHOUT_TEMPERATURE = ("gpt-5.6",)
 
 # Folder where prompt files are stored (prompt_v1.txt, prompt_v2.txt, etc.)
 # The "active" prompt used by the live pipeline is whichever one ACTIVE_PROMPT points to.
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
-ACTIVE_PROMPT = "prompt_v3.txt"
+ACTIVE_PROMPT = os.environ.get("ACTIVE_PROMPT", "prompt_v4.txt")
+
+# Stamped onto every filing the pipeline analyzes. Bump it whenever a prompt
+# or the signal weights change, so a ranking regression can be traced to the
+# generation that produced it instead of being argued about.
+PIPELINE_VERSION = "v4.1-signals"
+
+# Filing text is capped before it reaches a model. Exhibits push documents to
+# 120k characters; the judge does not need all of it and paying for it on
+# every candidate is how a $1/day budget becomes $15/day.
+MAX_EXTRACTION_CHARS = 120_000
+MAX_JUDGE_CHARS = 24_000
 
 # --- Database ---
 # If DATABASE_URL is set (Render provides this), use PostgreSQL

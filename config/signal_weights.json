@@ -1,0 +1,46 @@
+{
+  "_comment": "Severity 1-5 per signal type, plus the thresholds each detector uses. Tuned here rather than in code so a ranking change is a data change that evaluate.py can score, not a commit. Bumps (e.g. +1 when the departing exec is CEO/CFO) are applied on top of the base and clamped to 5.",
+
+  "severities": {
+    "FORFEITURE_EXIT": 5,
+    "FOR_CAUSE_OR_DISAGREEMENT": 5,
+    "ABRUPT_CSUITE_EXIT": 4,
+    "NO_SUCCESSOR": 3,
+    "DEPARTURE_CLUSTER": 3,
+    "EXIT_AFTER_IPO": 3,
+    "RESTATEMENT_CONTEXT": 3,
+    "VALUE_EXTRACTION": 3,
+    "INSIDER_MONETIZATION": 2,
+    "EXIT_NEAR_EARNINGS": 2,
+    "FRIDAY_NIGHT_FILING": 1,
+
+    "HURDLE_CONVICTION": 3,
+    "OFF_CYCLE_GRANT": 3,
+    "OVERSIZED_GRANT": 3,
+    "PRE_EARNINGS_GRANT": 3,
+    "COMP_MIX_TO_EQUITY": 2
+  },
+
+  "thresholds": {
+    "abrupt_exit_max_days_notice": 7,
+    "cluster_min_departures": 2,
+    "cluster_high_departures": 3,
+    "ipo_recent_months": 12,
+    "restatement_lookback_days": 180,
+    "exit_near_earnings_days": 14,
+    "hurdle_appreciation_pct": 50,
+    "hurdle_high_appreciation_pct": 100,
+    "oversized_multiple_of_prior": 3.0,
+    "oversized_pct_of_market_cap": 1.0,
+    "pre_earnings_grant_days": 21,
+    "retention_award_min_usd": 1000000,
+    "insider_sale_near_grant_days": 30,
+    "planned_retirement_min_days": 60,
+    "long_vesting_years": 3
+  },
+
+  "judge_gate": {
+    "min_max_severity": 3,
+    "min_signal_count": 2
+  }
+}

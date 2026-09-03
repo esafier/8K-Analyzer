@@ -142,13 +142,13 @@ def test_dashboard_direction_filter_route(tmp_sqlite_db):
     _insert("acc-route-bear", direction="BEARISH")
     _insert("acc-route-bull", direction="BULLISH")
 
-    resp = client.get("/?direction=BEARISH")
+    resp = client.get("/all?direction=BEARISH")
     assert resp.status_code == 200
     assert b"Co acc-route-bear" in resp.data
     assert b"Co acc-route-bull" not in resp.data
 
     # garbage direction is ignored, not a 500
-    resp = client.get("/?direction=SIDEWAYS")
+    resp = client.get("/all?direction=SIDEWAYS")
     assert resp.status_code == 200
     assert b"Co acc-route-bull" in resp.data
 

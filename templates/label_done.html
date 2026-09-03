@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+
+{# Landing page for a label link from a digest email.
+
+   The GET deliberately does NOT write. Mail scanners fetch every link in an
+   email before the recipient ever sees it, and a digest row carries both a
+   Signal and a Noise link — so a silent write would let a scanner label the
+   whole digest, last link winning. The button below is the write. #}
+
+<div class="label-done">
+  {% if state == "invalid" %}
+    <h3>That link didn't work</h3>
+    <p class="text-muted">
+      It may have expired, or been altered in transit. Nothing was changed.
+    </p>
+    <a href="/" class="btn btn-primary">Open the signal inbox</a>
+
+  {% elif state == "undone" %}
+    <h3>Undone</h3>
+    <p class="text-muted">
+      The label on <strong>{{ filing['company'] }}</strong> was removed.
+    </p>
+    <a href="/" class="btn btn-primary">Open the signal inbox</a>
+
+  {% elif state == "saved" %}
+    <h3>{% if label == 'signal' %}Marked as signal{% elif label == 'noise' %}Marked as noise{% else %}Recorded{% endif %}</h3>
+    <p class="text-muted">
+      <strong>{{ filing['company'] }}</strong>{% if filing['ticker'] %} ({{ filing['ticker'] }}){% endif %}
+      — {{ filing['filed_date'] }}
+    </p>
+    <p class="text-muted small">This is now training data — it shapes how similar filings are ranked.</p>
+    <div class="d-flex gap-2 justify-content-center flex-wrap">
+      <a href="/filing/{{ filing['id'] }}" class="btn btn-outline-secondary btn-sm">See the filing</a>
+      <a href="/" class="btn btn-primary btn-sm">Signal inbox</a>
+      <form method="POST" action="/label/{{ token }}" class="d-inline">
+        <input type="hidden" name="action" value="undo">
+        <button class="btn btn-link btn-sm text-muted">Undo</button>
+      </form>
+    </div>
+
+  {% else %}
+    {# state == "confirm" — nothing has been written yet #}
+    <h3>Mark this as {{ 'signal' if label == 'signal' else 'noise' }}?</h3>
+    <p class="text-muted">
+      <strong>{{ filing['company'] }}</strong>{% if filing['ticker'] %} ({{ filing['ticker'] }}){% endif %}
+      — {{ filing['filed_date'] }}
+    </p>
+    {% if filing['top_signal'] %}
+    <p class="label-done-thesis">{{ filing['top_signal'] }}</p>
+    {% endif %}
+    {% if existing %}
+    <p class="text-muted small">
+      Currently labelled <strong>{{ existing['label'] }}</strong>{% if existing['note'] %} — "{{ existing['note'] }}"{% endif %}.
+      Confirming replaces it.
+    </p>
+    {% endif %}
+    <form method="POST" action="/label/{{ token }}">
+      <button class="btn {{ 'btn-success' if label == 'signal' else 'btn-danger' }}">
+        Yes, mark as {{ label }}
+      </button>
+      <a href="/filing/{{ filing['id'] }}" class="btn btn-outline-secondary">Open the filing instead</a>
+    </form>
+  {% endif %}
+</div>
+
+{% endblock %}

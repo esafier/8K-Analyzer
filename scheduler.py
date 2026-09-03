@@ -1,128 +1,50 @@
-# scheduler.py — Runs the daily fetch job on a schedule
-# This checks for new 8-K filings once a day, filters them, and stores matches
+# scheduler.py — local daily runner.
 #
-# How to use:
-#   python scheduler.py          — runs the scheduler (checks once daily)
-#   python scheduler.py --now    — run a fetch immediately, then exit
+# In production the daily job runs on GitHub Actions (.github/workflows/daily.yml),
+# which is free for this public repo and survives Render's free tier spinning
+# the web service down. This file is the same job for a machine you control:
+#
+#   python scheduler.py          keep running, fire at 07:00 each day
+#   python scheduler.py --now    run once and exit
+#
+# It delegates to daily.run() so there is exactly one definition of what the
+# daily job does. The previous version had its own copy of the fetch/filter/
+# store loop, which is how it quietly diverged from the web backfill path.
 
 import sys
 import time
+
 import schedule
-from datetime import datetime, timedelta
-from fetcher import fetch_filings, fetch_filing_text
-from filter import filter_filings
-from summarizer import extract_summary
-from database import initialize_database, insert_filing, update_last_backfill, create_backfill_run, complete_backfill_run
+
+from daily import run as run_daily
+from database import initialize_database
 
 
 def daily_fetch_job():
-    """Fetch yesterday's 8-K filings, filter them, and store matches.
-    This is the function that runs on schedule."""
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Running daily fetch for {yesterday}...")
-
-    # Track this run so it shows up on the backfill page
-    run_id = create_backfill_run("scheduled", yesterday, today, "GPT-5.4-nano")
-
-    # Step 1: Fetch filing metadata. A fetch error (e.g. EDGAR 5xx that
-    # survived retries) must mark the run failed — otherwise it sits in
-    # "running" forever and the failure is invisible on the backfill page.
+    """Ingest whatever window hasn't been covered, then send the digest."""
     try:
-        filings_metadata = fetch_filings(yesterday, today)
+        run_daily()
     except Exception as e:
-        print(f"  Fetch failed: {e} — marking run as failed")
-        complete_backfill_run(run_id, status="failed")
-        return
-
-    if not filings_metadata:
-        print("  No filings found")
-        complete_backfill_run(run_id, fetched=0, filtered=0, new=0, skipped=0)
-        return
-
-    # Step 2: Filter
-    matched = filter_filings(filings_metadata, fetch_text_func=fetch_filing_text)
-
-    # Step 3: Store results (LLM summary is already set in filter stage 3;
-    # only fall back to sentence scorer if LLM didn't provide one)
-    new_count = 0
-    skipped_count = 0
-    for filing in matched:
-        if not filing.get("summary"):
-            keywords = filing.get("matched_keywords", "").split(",")
-            filing["summary"] = extract_summary(filing.get("raw_text", ""), keywords)
-        was_new = insert_filing(filing)
-        if was_new:
-            new_count += 1
-        else:
-            skipped_count += 1
-
-    print(f"  Daily fetch complete: {new_count} new, {skipped_count} already existed")
-
-    # Record final stats
-    complete_backfill_run(run_id,
-                         fetched=len(filings_metadata),
-                         filtered=len(matched),
-                         new=new_count,
-                         skipped=skipped_count)
-
-    # Stamp departure filings with 24-month EDGAR departure history
-    # (cluster badge + instant detail card)
-    try:
-        from departures import enrich_new_filings
-        enrich_new_filings(matched)
-    except Exception as e:
-        print(f"  [DEPARTURES] History enrichment failed (not critical): {e}")
-
-    # Pre-fetch market caps / earnings / stock prices so the dashboard has
-    # data ready when users open it. Use *_sync — this is a background job.
-    tickers_to_fetch = list({f['ticker'] for f in matched if f.get('ticker')})
-    if tickers_to_fetch:
-        try:
-            from market_cap import refresh_market_caps_sync
-            print(f"  [MARKET CAP] Pre-fetching for {len(tickers_to_fetch)} tickers...")
-            refresh_market_caps_sync(tickers_to_fetch)
-        except Exception as e:
-            print(f"  [MARKET CAP] Pre-fetch failed (not critical): {e}")
-
-        try:
-            from earnings import refresh_earnings_sync
-            print(f"  [EARNINGS] Pre-fetching for {len(tickers_to_fetch)} tickers...")
-            refresh_earnings_sync(tickers_to_fetch)
-        except Exception as e:
-            print(f"  [EARNINGS] Pre-fetch failed (not critical): {e}")
-
-        try:
-            from stock_price import refresh_stock_prices_sync
-            print(f"  [STOCK PRICE] Pre-fetching for {len(tickers_to_fetch)} tickers...")
-            refresh_stock_prices_sync(tickers_to_fetch)
-        except Exception as e:
-            print(f"  [STOCK PRICE] Pre-fetch failed (not critical): {e}")
-
-    # Record that a scheduled fetch completed (for front page display)
-    update_last_backfill("scheduled")
+        # Keep the scheduler alive: one bad morning (SEC block, API outage)
+        # must not stop tomorrow's run.
+        print(f"[SCHEDULER] Daily job failed: {type(e).__name__}: {e}", flush=True)
 
 
 if __name__ == "__main__":
     initialize_database()
 
-    # If --now flag is passed, run once immediately and exit
     if "--now" in sys.argv:
         daily_fetch_job()
         sys.exit(0)
 
-    # Schedule the job to run daily at 7:00 AM
     schedule.every().day.at("07:00").do(daily_fetch_job)
 
-    print("8-K Filing Scheduler started")
-    print("Daily fetch scheduled for 7:00 AM")
+    print("8-K signal scheduler started")
+    print("Daily run scheduled for 7:00 AM")
     print("Press Ctrl+C to stop\n")
 
-    # Run once at startup too, so you don't have to wait until 7 AM
-    daily_fetch_job()
+    daily_fetch_job()  # run once at startup so you don't wait until 7am
 
-    # Keep running and check the schedule every 60 seconds
     while True:
         schedule.run_pending()
         time.sleep(60)

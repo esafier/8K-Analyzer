@@ -11,6 +11,10 @@ from database import (
     initialize_database, get_filings, get_filing_by_id, update_user_tag,
     get_categories, get_filing_count, get_filtered_filing_count,
     update_departure_history,
+    get_inbox_filings, count_inbox_filings, get_review_queue, count_review_queue,
+    get_signal_type_counts, count_judgments, get_judgment,
+    get_guidelines, add_guideline, deactivate_guideline,
+    seed_judgments_from_watchlist,
     add_to_watchlist, remove_from_watchlist, update_watchlist_notes,
     get_watchlist_item, get_all_watchlist_ids, get_watchlist_filings,
     get_watchlist_filings_by_ids, mark_filings_email_sent,
@@ -70,6 +74,27 @@ def format_earnings_date(earnings_info):
 app.jinja_env.filters["format_earnings_date"] = format_earnings_date
 
 
+def format_timestamp(value):
+    """Render a datetime as 'Sep 02, 7:30 PM'.
+
+    Uses only strftime directives that exist on every platform. The obvious
+    way to drop the hour's leading zero is '%-I', which works on Linux and
+    raises ValueError on Windows — and because it's inside a template, the
+    failure surfaces as a 500 on the page rather than anything traceable.
+    Strip the zero in Python instead.
+    """
+    if not value:
+        return ""
+    try:
+        formatted = value.strftime("%b %d, %I:%M %p")
+    except (AttributeError, ValueError):
+        return str(value)
+    # "Sep 02, 07:30 PM" -> "Sep 02, 7:30 PM"
+    return formatted.replace(", 0", ", ", 1) if ", 0" in formatted else formatted
+
+app.jinja_env.filters["format_timestamp"] = format_timestamp
+
+
 # --- Jinja filters for v3 structured summary ---
 from summary_utils import parse_subcategories, structured_summary_for_display
 
@@ -123,8 +148,14 @@ def check_trial_access():
     if not trial_code:
         return None
 
-    # Allow the login page itself (otherwise infinite redirect loop)
-    if request.endpoint in ("login", "static"):
+    # Allow the login page itself (otherwise infinite redirect loop).
+    #
+    # label_from_token is also open: it arrives from a signed link in a digest
+    # email, often on a phone with no session. The token IS the authentication
+    # — it is signed with SECRET_KEY, scoped to one filing and one label, and
+    # expires. Requiring a login here would mean the one-tap labelling path
+    # costs a login, which is exactly the friction that stops it happening.
+    if request.endpoint in ("login", "static", "label_from_token"):
         return None
 
     # Check if user has a valid session
@@ -181,8 +212,115 @@ def logout():
 
 
 @app.route("/")
+def inbox():
+    """The signal inbox — ranked by what the system thinks is worth reading.
+
+    This is the answer to the complaint that started the rebuild: the old
+    dashboard was a chronological archive of everything, so finding the three
+    filings worth reading meant scanning past ninety that weren't. Here PASS
+    is hidden, the strongest signal sorts first, and every row carries the
+    named reason it is on screen.
+
+    The chronological view still exists at /all — nothing was taken away.
+    """
+    import json
+
+    days = _int_arg("days", 7, minimum=1, maximum=365)
+    min_score = _int_arg("min_score", 0, minimum=0, maximum=10)
+    page = _int_arg("page", 1, minimum=1)
+    per_page = 50
+
+    direction = request.args.get("direction", "").upper()
+    if direction not in ("BEARISH", "BULLISH", "MIXED", "NEUTRAL"):
+        direction = ""
+    signal_type = request.args.get("signal_type", "").strip().upper() or None
+    include_pass = request.args.get("include_pass", "") == "1"
+    unlabeled_only = request.args.get("unlabeled", "") == "1"
+
+    filters = dict(days=days, min_score=min_score, direction=direction or None,
+                   signal_type=signal_type, include_pass=include_pass,
+                   unlabeled_only=unlabeled_only)
+
+    total = count_inbox_filings(**filters)
+    total_pages = max(1, math.ceil(total / per_page))
+    page = min(page, total_pages)
+
+    filings = get_inbox_filings(limit=per_page, offset=(page - 1) * per_page, **filters)
+
+    # Parse the stored signals so the template can render chips without
+    # re-deriving anything. Corrupt JSON degrades to an empty list rather than
+    # taking down the page.
+    for filing in filings:
+        try:
+            filing["_signals"] = json.loads(filing.get("signals_json") or "[]")
+        except (ValueError, TypeError):
+            filing["_signals"] = []
+
+    tickers = list({f["ticker"] for f in filings if f.get("ticker")})
+    market_caps, stock_prices = {}, {}
+    try:
+        from market_cap import get_market_cap_map
+        market_caps = get_market_cap_map(tickers)
+    except Exception as e:
+        print(f"[INBOX] market caps unavailable: {e}")
+    try:
+        from stock_price import get_stock_price_map
+        stock_prices = get_stock_price_map(tickers)
+    except Exception as e:
+        print(f"[INBOX] stock prices unavailable: {e}")
+
+    from urllib.parse import urlencode
+    filter_qs = urlencode([
+        ("days", days), ("min_score", min_score), ("direction", direction),
+        ("signal_type", signal_type or ""),
+        ("include_pass", "1" if include_pass else ""),
+        ("unlabeled", "1" if unlabeled_only else ""),
+    ])
+
+    return render_template(
+        "inbox.html",
+        filings=filings,
+        total=total,
+        total_pages=total_pages,
+        current_page=page,
+        filter_qs=filter_qs,
+        signal_counts=get_signal_type_counts(days=max(days, 30)),
+        labeled_counts=count_judgments(),
+        review_remaining=count_review_queue(),
+        watchlist_ids=get_all_watchlist_ids(),
+        market_caps=market_caps,
+        stock_prices=stock_prices,
+        last_backfill=get_last_backfill(),
+        current_days=days,
+        current_min_score=min_score,
+        current_direction=direction,
+        current_signal_type=signal_type or "",
+        current_include_pass=include_pass,
+        current_unlabeled=unlabeled_only,
+    )
+
+
+def _int_arg(name, default, minimum=None, maximum=None):
+    """Read an int query parameter without ever 500ing on junk input."""
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+@app.route("/all")
 def index():
-    """Main dashboard page — shows the list of filtered filings."""
+    """The full chronological archive — the original dashboard, unchanged.
+
+    Deliberately still named `index`: url_for("index") is used by the login
+    redirect and by every row's back-link, and renaming the view would have
+    broken them for no benefit.
+    """
     # Get filter parameters from the URL query string
     category = request.args.get("category", "")
     search = request.args.get("search", "")
@@ -710,6 +848,139 @@ def deep_analysis(filing_id):
         return redirect(url_for("filing_detail", filing_id=filing_id))
 
 
+@app.route("/review")
+def review():
+    """One filing at a time, two keys, no scrolling.
+
+    The labels are what make everything downstream measurable — evaluation,
+    few-shot examples for the judge, per-signal-type precision. None of that
+    exists without a few hundred of them, so the only design goal here is that
+    a label costs a single keystroke and the next filing is already on screen.
+
+    Ordered by signal strength rather than by date: the labels worth having
+    are on the filings the system was most confident about, because that is
+    where being wrong is most expensive.
+    """
+    import json
+
+    queue = get_review_queue(limit=1)
+    filing = queue[0] if queue else None
+    if filing:
+        try:
+            filing["_signals"] = json.loads(filing.get("signals_json") or "[]")
+        except (ValueError, TypeError):
+            filing["_signals"] = []
+        try:
+            filing["_judge"] = json.loads(filing.get("judge_json") or "null")
+        except (ValueError, TypeError):
+            filing["_judge"] = None
+
+    return render_template(
+        "review.html",
+        filing=filing,
+        remaining=count_review_queue(),
+        labeled_counts=count_judgments(),
+        guidelines=get_guidelines(),
+    )
+
+
+@app.route("/api/label", methods=["POST"])
+def api_label():
+    """Record a label from the review page or an inbox row (AJAX)."""
+    from labels import record, undo
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        filing_id = int(payload.get("filing_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "filing_id must be an integer"}), 400
+
+    label = payload.get("label")
+    if label == "undo":
+        return jsonify({"success": undo(filing_id), "label": None})
+
+    if not record(filing_id, label, note=payload.get("note"), source="review_ui"):
+        return jsonify({"error": f"unknown label {label!r}"}), 400
+    return jsonify({"success": True, "label": label, "remaining": count_review_queue()})
+
+
+@app.route("/label/<token>", methods=["GET", "POST"])
+def label_from_token(token):
+    """Labelling from a digest email — no login, no app.
+
+    Exempt from the trial gate (see check_trial_access): the signed token is
+    the credential.
+
+    **GET never writes.** Corporate mail scanners (Outlook SafeLinks, Gmail's
+    prefetch) request every URL in an email before the recipient sees it. A
+    digest row carries both a Signal and a Noise link, so a scanner would
+    fetch both and the last one would win — quietly filling the training set
+    with labels nobody chose, and overwriting deliberate ones made in
+    /review. So GET renders a confirm page and the POST does the work: one
+    tap in the mail client, one tap on the page.
+    """
+    from labels import read_token, record, undo
+
+    filing_id, label = read_token(token)
+    if not filing_id or not label:
+        return render_template("label_done.html", filing=None, label=None,
+                               state="invalid", token=None), 400
+
+    filing = get_filing_by_id(filing_id)
+    if filing is None:
+        return render_template("label_done.html", filing=None, label=None,
+                               state="invalid", token=None), 404
+    filing = dict(filing)
+
+    if request.method == "GET":
+        return render_template("label_done.html", filing=filing, label=label,
+                               state="confirm", token=token,
+                               existing=get_judgment(filing_id))
+
+    if request.form.get("action") == "undo":
+        undo(filing_id)
+        return render_template("label_done.html", filing=filing, label=None,
+                               state="undone", token=token)
+
+    record(filing_id, label, source="digest_link")
+    return render_template("label_done.html", filing=filing, label=label,
+                           state="saved", token=token)
+
+
+@app.route("/guidelines", methods=["POST"])
+def add_guideline_route():
+    """Add a standing rule for the judge, in the user's own words.
+
+    Cheaper than a prompt edit and immediately effective: the rules are loaded
+    into every judgment. "Ignore SPAC director shuffles" is a one-line fix for
+    a whole category of noise.
+    """
+    rule = (request.form.get("rule") or "").strip()
+    if rule:
+        add_guideline(rule)
+        flash("Guideline added — it applies to the next filings analyzed.", "success")
+    return redirect(request.referrer or url_for("review"))
+
+
+@app.route("/guidelines/<int:guideline_id>/remove", methods=["POST"])
+def remove_guideline_route(guideline_id):
+    deactivate_guideline(guideline_id)
+    flash("Guideline removed.", "success")
+    return redirect(request.referrer or url_for("review"))
+
+
+@app.route("/seed-labels", methods=["POST"])
+def seed_labels():
+    """Turn existing watchlist stars into positive labels, once.
+
+    Starring was the only "this matters" gesture the old UI had, so it is the
+    closest thing to a pre-existing training set.
+    """
+    seeded = seed_judgments_from_watchlist()
+    flash(f"Seeded {seeded} label(s) from your watchlist.", "success")
+    return redirect(url_for("review"))
+
+
 @app.route("/api/filings/mark-read", methods=["POST"])
 def api_mark_filings_read():
     """Batch-mark filings as read.
@@ -961,150 +1232,72 @@ def resummarize():
 
 
 def run_resummarize(date_from=None, date_to=None, model=None):
-    """Background task: re-run LLM classification + summary on existing filings.
+    """Background task: re-run analysis on filings whose text is already stored.
 
-    Pulls raw_text from the database (already stored from the original backfill),
-    sends it through the LLM, and updates the summary/category/subcategory fields.
-    No SEC fetching needed — just LLM calls."""
-    import json
-    from llm import classify_and_summarize
-    from fetcher import strip_cover_page
+    No SEC fetching — this reads raw_text from the database and sends it back
+    through the shared pipeline. Use it after a prompt or signal-weight change
+    to re-rank history, or when the model was unavailable during a backfill.
+    """
+    from pipeline import analyze_filing, persist
 
-    model_label = model or "GPT-5.4-nano"
-    print(f"\n--- Re-summarize started (model: {model_label}) ---", flush=True)
+    model_label = model or "default"
+    print(f"\n--- Re-analysis started (model: {model_label}) ---", flush=True)
 
     filings = get_filings_for_resummarize(date_from, date_to)
-
     if not filings:
-        print("No filings found to re-summarize.", flush=True)
+        print("No filings found to re-analyze.", flush=True)
         return
 
-    print(f"Found {len(filings)} filings to re-summarize", flush=True)
+    print(f"Found {len(filings)} filings to re-analyze", flush=True)
 
-    updated = 0
-    failed = 0
-    no_text = 0
+    updated = failed = no_text = irrelevant = 0
+    tokens_in = tokens_out = 0
 
     for i, filing in enumerate(filings):
+        filing = dict(filing)
         company = filing.get("company", "Unknown")
-        filing_id = filing["id"]
-        raw_text = filing.get("raw_text", "")
 
-        if not raw_text:
+        if not filing.get("raw_text"):
             no_text += 1
-            print(f"  [{i+1}/{len(filings)}] {company} — no raw_text, skipping", flush=True)
+            print(f"  [{i+1}/{len(filings)}] {company} — no stored text, skipping", flush=True)
             continue
 
-        print(f"  [{i+1}/{len(filings)}] {company} — sending to LLM...", flush=True)
+        print(f"  [{i+1}/{len(filings)}] {company} — analyzing...", flush=True)
+        result = analyze_filing(filing, model=model)
+        tokens_in += result.tokens_in
+        tokens_out += result.tokens_out
 
-        # Strip cover page before sending to LLM (cleaner input = better output)
-        cleaned_text = strip_cover_page(raw_text)
-
-        llm_result = classify_and_summarize(cleaned_text, model=model)
-
-        if llm_result and llm_result.get("relevant"):
-            # LLM succeeded — update the database with v3 structured fields
-            from summary_utils import serialize_subcategories, parse_triage, count_departures
-            from filter import _build_legacy_summary
-
-            # v3 prefers top_level_category and subcategories array; fall back to v2 legacy fields
-            category = (
-                llm_result.get("top_level_category")
-                or llm_result.get("category")
-                or filing.get("auto_category")
-            )
-
-            subcats = llm_result.get("subcategories")
-            if subcats is None:
-                legacy = llm_result.get("subcategory")
-                subcats = [legacy] if legacy else []
-            auto_subcategory = serialize_subcategories(subcats)
-
-            urgent = bool(llm_result.get("urgent", False))
-            is_complex = bool(llm_result.get("is_complex", False))
-            narrative = llm_result.get("narrative_summary")
-
-            # Build structured_summary blob from the event arrays + reasoning.
-            # Use `or []` because the LLM sometimes emits explicit null instead of [].
-            structured = {
-                "reasoning": llm_result.get("reasoning"),
-                "departures": llm_result.get("departures") or [],
-                "appointments": llm_result.get("appointments") or [],
-                "comp_events": llm_result.get("comp_events") or [],
-                "other": llm_result.get("other") or [],
-            }
-
-            # Detect market-based comp targets — store aggregate in JSON + 0/1 flag for column
-            from market_targets import detect_market_targets
-            mt = detect_market_targets(structured)
-            structured["has_market_targets"] = mt["has_any"]
-            structured["market_targets"] = mt["targets"]
-            structured_json = json.dumps(structured)
-
-            # Legacy summary string for backward compatibility (emails, old templates)
-            summary = _build_legacy_summary(llm_result)
-
-            # Legacy comp_details (preserved as-is for backward compat)
-            comp_details = llm_result.get("comp_details")
-            comp_json = None
-            if comp_details and any(v for v in comp_details.values()):
-                comp_json = json.dumps(comp_details)
-
-            # Triage verdict + departure count (same validation as backfill path)
-            triage = parse_triage(llm_result)
-            from summary_utils import derive_departure_flags
-            flags = derive_departure_flags(structured)
-
-            update_filing_analysis(
-                filing_id,
-                summary,
-                category,
-                auto_subcategory,
-                urgent,
-                comp_json,
-                structured_summary=structured_json,
-                is_complex=is_complex,
-                narrative_summary=narrative,
-                relevant_reason=None,
-                has_market_targets=mt["has_any"],
-                triage_verdict=triage["verdict"],
-                signal_score=triage["score"],
-                signal_direction=triage["direction"],
-                top_signal=triage["top_signal"],
-                departure_count=count_departures(structured),
-                forfeited_comp=flags["forfeited_comp"],
-                has_successor=flags["has_successor"],
-            )
-            updated += 1
-
-            tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
-            subcat_display = subcats[0] if subcats else "—"
-            print(f"    Updated — {category} / {subcat_display} ({tokens} tokens)", flush=True)
-
-        elif llm_result and not llm_result.get("relevant"):
-            # LLM says not relevant — keep existing data but log it
-            print(f"    LLM says not relevant — keeping existing summary", flush=True)
-
-        else:
-            # LLM call failed again
+        if result.error:
             failed += 1
-            print(f"    LLM FAILED — summary unchanged", flush=True)
+            print(f"    FAILED ({result.error}) — row unchanged", flush=True)
+            continue
+        if not result.relevant:
+            irrelevant += 1
+            print(f"    Not relevant — keeping existing row", flush=True)
+            continue
 
-    print(f"--- Re-summarize complete: {updated} updated, {failed} failed, "
-          f"{no_text} skipped for missing text ---", flush=True)
+        persist(filing["id"], result)
+        updated += 1
+        badge = ",".join(result.signal_types) or "no signals"
+        print(f"    {result.fields['triage_verdict']} "
+              f"{result.fields['signal_score']}/10 [{badge}]", flush=True)
 
-    # Re-summarize only reads text already in the database, so filings stranded
-    # by a SEC rate-limit block are invisible to it — it reports success while
-    # never touching the very rows that look broken on the dashboard. Say so
-    # explicitly and name the button that does fix them.
+    print(f"--- Re-analysis complete: {updated} updated, {failed} failed, "
+          f"{irrelevant} not relevant, {no_text} without text "
+          f"({tokens_in:,} in / {tokens_out:,} out) ---", flush=True)
+
+    # Re-analysis only reads text already in the database, so filings stranded
+    # by a SEC rate-limit block are invisible to it — it would otherwise report
+    # success while never touching the very rows that look broken on the
+    # dashboard. Say so, and name the button that does fix them.
     try:
         stranded = count_filings_missing_text()
     except Exception:
         stranded = None
     if stranded:
-        print(f"    NOTE: {stranded} filing(s) in the database still have no stored SEC text "
-              f"and cannot be re-summarized. Use 'Retry Missing Summaries' — it re-fetches "
-              f"from SEC first.", flush=True)
+        print(f"    NOTE: {stranded} filing(s) still have no stored SEC text and "
+              f"cannot be re-analyzed. Use 'Retry Missing Summaries' — it "
+              f"re-fetches from SEC first.", flush=True)
 
 
 @app.route("/retrofit-market-targets", methods=["POST"])
@@ -1198,16 +1391,14 @@ def retry_missing_summaries():
 
 
 def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
-    """Background task: for filings with empty raw_text, re-fetch from SEC
-    and run the LLM pipeline, then update the database."""
-    import json
-    from llm import classify_and_summarize
-    from fetcher import strip_cover_page
-    from summary_utils import serialize_subcategories, parse_triage, count_departures
-    from filter import _build_legacy_summary
-    from market_targets import detect_market_targets
+    """Background task: re-fetch SEC text for rows that have none, then analyze.
 
-    model_label = model or "GPT-5.4-nano"
+    These are the rows Re-Analyze cannot fix, because it reads stored text and
+    these have none — the residue of a SEC rate-limit block during a backfill.
+    """
+    from pipeline import analyze_filing, persist
+
+    model_label = model or "default"
     print(f"\n--- Retry missing summaries started (model: {model_label}) ---", flush=True)
 
     filings = get_filings_missing_text(date_from, date_to)
@@ -1218,108 +1409,49 @@ def run_retry_missing_summaries(date_from=None, date_to=None, model=None):
     scope = f"{date_from} to {date_to}" if date_from and date_to else "all dates"
     print(f"Found {len(filings)} filings missing raw_text ({scope})", flush=True)
 
-    fetched = 0
-    updated = 0
-    fetch_failed = 0
-    llm_failed = 0
+    fetched = updated = fetch_failed = analysis_failed = 0
 
     for i, filing in enumerate(filings):
+        filing = dict(filing)
         company = filing.get("company", "Unknown")
-        filing_id = filing["id"]
-        filing_url = filing.get("filing_url", "")
-        cik = filing.get("cik", "")
-        accession_no = filing.get("accession_no", "")
 
         print(f"  [{i+1}/{len(filings)}] {company} — re-fetching SEC text...", flush=True)
-
-        text, doc_url = fetch_filing_text(filing_url, cik, accession_no)
+        text, doc_url = fetch_filing_text(
+            filing.get("filing_url", ""), filing.get("cik", ""),
+            filing.get("accession_no", ""),
+        )
 
         if not text:
             print(f"    Fetch failed — still no text available", flush=True)
             fetch_failed += 1
             continue
 
-        update_filing_raw_text(filing_id, text, filing_document_url=doc_url)
+        update_filing_raw_text(filing["id"], text, filing_document_url=doc_url)
+        filing["raw_text"] = text
         fetched += 1
-        print(f"    Fetched {len(text)} chars, running LLM...", flush=True)
+        print(f"    Fetched {len(text)} chars, analyzing...", flush=True)
 
-        cleaned_text = strip_cover_page(text)
-        llm_result = classify_and_summarize(cleaned_text, model=model)
-
-        if not llm_result:
-            print(f"    LLM FAILED — text saved but summary not updated", flush=True)
-            llm_failed += 1
+        # Same pipeline as every other path — which is the point. This path
+        # used to be its own copy of the field mapping and silently lost
+        # market-target detection, so rescued filings were permanently missing
+        # their hurdle flag with nothing to indicate it.
+        result = analyze_filing(filing, text=text, model=model)
+        if result.error:
+            print(f"    ANALYSIS FAILED ({result.error}) — text saved", flush=True)
+            analysis_failed += 1
+            continue
+        if not result.relevant:
+            print(f"    Not relevant — keeping placeholder", flush=True)
             continue
 
-        if not llm_result.get("relevant"):
-            print(f"    LLM says not relevant — keeping placeholder summary", flush=True)
-            continue
-
-        category = (
-            llm_result.get("top_level_category")
-            or llm_result.get("category")
-            or filing.get("auto_category")
-        )
-        subcats = llm_result.get("subcategories")
-        if subcats is None:
-            legacy = llm_result.get("subcategory")
-            subcats = [legacy] if legacy else []
-        auto_subcategory = serialize_subcategories(subcats)
-
-        structured = {
-            "reasoning": llm_result.get("reasoning"),
-            "departures": llm_result.get("departures") or [],
-            "appointments": llm_result.get("appointments") or [],
-            "comp_events": llm_result.get("comp_events") or [],
-            "other": llm_result.get("other") or [],
-        }
-
-        # Same enrichment as the backfill/resummarize paths — previously this
-        # path skipped market-target detection, so rescued filings never got
-        # the 🎯 flag. Now all three ingest paths stay consistent.
-        mt = detect_market_targets(structured)
-        structured["has_market_targets"] = mt["has_any"]
-        structured["market_targets"] = mt["targets"]
-
-        structured_json = json.dumps(structured)
-        summary = _build_legacy_summary(llm_result)
-
-        comp_details = llm_result.get("comp_details")
-        comp_json = None
-        if comp_details and any(v for v in comp_details.values()):
-            comp_json = json.dumps(comp_details)
-
-        triage = parse_triage(llm_result)
-        from summary_utils import derive_departure_flags
-        flags = derive_departure_flags(structured)
-
-        update_filing_analysis(
-            filing_id,
-            summary,
-            category,
-            auto_subcategory,
-            bool(llm_result.get("urgent", False)),
-            comp_json,
-            structured_summary=structured_json,
-            is_complex=bool(llm_result.get("is_complex", False)),
-            narrative_summary=llm_result.get("narrative_summary"),
-            relevant_reason=None,
-            has_market_targets=mt["has_any"],
-            triage_verdict=triage["verdict"],
-            signal_score=triage["score"],
-            signal_direction=triage["direction"],
-            top_signal=triage["top_signal"],
-            departure_count=count_departures(structured),
-            forfeited_comp=flags["forfeited_comp"],
-            has_successor=flags["has_successor"],
-        )
+        persist(filing["id"], result)
         updated += 1
-        tokens = llm_result.get("_tokens_in", 0) + llm_result.get("_tokens_out", 0)
-        subcat_display = subcats[0] if subcats else "—"
-        print(f"    Updated — {category} / {subcat_display} ({tokens} tokens)", flush=True)
+        badge = ",".join(result.signal_types) or "no signals"
+        print(f"    {result.fields['triage_verdict']} "
+              f"{result.fields['signal_score']}/10 [{badge}]", flush=True)
 
-    print(f"--- Retry complete: {fetched} fetched, {updated} updated, "
-          f"{fetch_failed} fetch-failed, {llm_failed} llm-failed ---", flush=True)
+    print(f"--- Retry complete: {fetched} fetched, {updated} analyzed, "
+          f"{fetch_failed} fetch-failed, {analysis_failed} analysis-failed ---", flush=True)
 
 
 @app.route("/clear-market-cap-cache", methods=["POST"])

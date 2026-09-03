@@ -17,7 +17,16 @@ SEC_MAX_RETRIES = 3
 
 # HTTP statuses worth retrying: rate limits and transient server errors.
 # Other 4xx (bad request, not found) are permanent and fail immediately.
-SEC_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+#
+# 403 is here because SEC blocks by IP, not by request: from a shared CI
+# runner the block arrives as 403 rather than 429. Treating it as permanent
+# meant a blocked job parked every filing as "pending retry" and then reported
+# success — a silent outage that looks exactly like a quiet news day.
+SEC_RETRYABLE_STATUSES = {403, 429, 500, 502, 503, 504}
+
+# Statuses that mean "you personally are blocked, back all the way off" as
+# opposed to "this request failed". Both get the penalty-box wait.
+SEC_BLOCK_STATUSES = {403, 429}
 
 # --- SEC rate-limit handling ---------------------------------------------
 # A 429 from EDGAR is not a "wait a moment" signal — SEC puts the offending
@@ -178,7 +187,7 @@ def _sec_get_with_retry(url, headers, timeout=30, max_retries=SEC_MAX_RETRIES, p
                     except ValueError:
                         retry_after = None
 
-            if status == 429:
+            if status in SEC_BLOCK_STATUSES:
                 # Penalty-box wait: minutes, not seconds. Publish it so every
                 # other SEC caller parks too instead of hammering the block.
                 idx = min(attempt, len(SEC_RATE_LIMIT_BACKOFF) - 1)
@@ -187,7 +196,7 @@ def _sec_get_with_retry(url, headers, timeout=30, max_retries=SEC_MAX_RETRIES, p
                 _note_sec_rate_limit(backoff)
                 if attempt == max_retries:
                     raise
-                print(f"  SEC rate limited (429) on attempt {attempt + 1}/{max_retries + 1} — "
+                print(f"  SEC blocked us ({status}) on attempt {attempt + 1}/{max_retries + 1} — "
                       f"pausing all SEC traffic {backoff:.0f}s: {url}", flush=True)
                 # _sec_gate() at the top of the next iteration does the waiting.
                 continue
@@ -623,6 +632,33 @@ def _fetch_502_snippet(cik, accession_no, primary_doc):
         print(f"  Failed to fetch 5.02 snippet from {url}: {e}", flush=True)
 
     return ""
+
+
+def fetch_company_submissions(cik):
+    """Fetch SEC's per-company submissions JSON.
+
+    One request buys three things the signal layer needs and nothing else
+    provides:
+      - `acceptanceDateTime` per filing, which is the only way to see a
+        Friday-evening burial (filed_date rolls to the next business day for
+        anything accepted after 17:30 ET, so the date column hides it)
+      - the full 8-K item-code calendar, for "was there a 4.02 recently" and
+        "when did they last report earnings (Item 2.02)"
+      - the company's earliest filing date, a serviceable proxy for the IPO
+
+    Returns the parsed dict, or None when the lookup fails. None means
+    "unknown", never "nothing there" — callers must not read a network error
+    as an absence of restatements.
+    """
+    if not cik:
+        return None
+    url = f"https://data.sec.gov/submissions/CIK{str(cik).zfill(10)}.json"
+    try:
+        resp = _sec_get_with_retry(url, FILING_HEADERS, timeout=20)
+        return resp.json()
+    except Exception as e:
+        print(f"  Submissions lookup failed for CIK {cik}: {e}", flush=True)
+        return None
 
 
 def get_edgar_departure_history(cik, exclude_accession="", months=12):

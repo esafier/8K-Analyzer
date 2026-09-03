@@ -1,125 +1,108 @@
 # HANDOFF — read me first (session continuity)
 
-**Purpose:** This file catches a new Claude Code chat up on work that spanned a
-previous session. If you are a fresh session, read this top-to-bottom before
-acting. It records state that lives in Render + past conversation, NOT in code.
+**Purpose:** catch a new session up on state that lives in Render, GitHub, and
+past conversation rather than in code.
 
-**Last updated:** 2026-07-07
-**Working branch:** `claude/project-improvement-review-ne5ryf` (all work below is here; `main` is the untouched original)
-
----
-
-## 1. What this project is (and the user's goals)
-
-8K Analyzer is a **buy-side signal scanner** over SEC 8-K filings — not a news
-reader. The user backfills date ranges and **scans a pre-scored triage inbox**
-on the Render webapp to generate stock ideas. They hunt two signals:
-
-- **BEARISH — insiders losing confidence:** sudden C-suite departures (CEO/CFO/CAO
-  matter most), **no successor named**, terminations for cause, **departure
-  clusters** (2+ at a company in 24mo), and the loudest tell — an executive who
-  **forfeits unvested comp** to leave (walking away from money).
-- **BULLISH — board conviction via comp design:** **market-based vesting hurdles**
-  (stock-price / market-cap / TSR targets requiring big appreciation vs current
-  price), **spring-loaded grant timing**, comp shifted to long-vesting at-risk equity.
-
-Priorities: maximum **signal-to-noise**, fast scanning. Routine noise (equity-plan
-housekeeping like share-pool increases; pure financing/dilution filings) should be
-rated PASS, not surfaced as signal. NOTE: user explicitly decided **do NOT hide
-PASS by default** — leave the dashboard default as "All verdicts".
+**Last updated:** 2026-09-03
+**Working branch:** `feature/signal-first` (the signal-first rebuild; `main` is
+still the pre-rebuild version)
 
 ---
 
-## 2. What shipped this session (14 commits on the branch)
+## 1. What happened and why
 
-All committed + pushed to `origin/claude/project-improvement-review-ne5ryf`, 151 tests passing.
+The user stopped using the tool around July 2026. Their words: they still had
+to click into many filings, the triage score "is not very helpful", and it
+"feels like a way to read 8-Ks with a certain item code".
 
-1. **Exhibit fetching** (`fetcher.py`) — the LLM now reads EX-17/EX-10/EX-99
-   exhibits (separation agreements, resignation letters, press releases), where
-   the actual forfeiture/severance/hurdle numbers live. Was body-only before.
-2. **Departure-history integrity** (`fetcher.py`, `departures.py`) — EDGAR
-   failures return `None` (retryable) instead of stamping a false "0 departures";
-   full Item 5.02 section extracted (not first 800 chars).
-3. **Page handling** (`app.py`, `templates/index.html`) — no more 500s on bad
-   `?page=`, clamps to valid range, filter query string built once + URL-encoded.
-4. **Queryable bearish signals** (`database.py`, `summary_utils.py`) — new columns
-   `forfeited_comp` + `has_successor` derived from v3 output; dashboard filters for
-   Direction (BEARISH/BULLISH/MIXED/NEUTRAL), "Forfeits comp", "Dep cluster";
-   row badges FORFEITS COMP / NO SUCCESSOR.
-5. **% appreciation on price hurdles** (`market_targets.py`) — 🎯 badge shows
-   "+100%" (target vs current price); detail page shows per-tier breakdown.
-6. **Dilution glossary in prompts** (`prompts/prompt_v3.txt`, `_signal_analysis_v2`)
-   — pre-funded warrants / ownership blockers / ATM translated to plain English,
-   pure financing defaults to PASS.
-7. **Dashboard scan density** — MONITOR collapses to one-line signal (PASS already
-   did); score is a color chip; fixed CSS collision where FORFEITS COMP rows lost
-   the unread indicator; watchlist cards carry verdict/score/badges.
-8. **Keyword recall** (`filter.py`) — keyword misses on 5.02/1.01/1.02 now get an
-   LLM look (8.01-only misses still dropped — too high-volume).
-9. **DB startup hardening** (`database.py`) — concurrent-worker migrations can't
-   crash a gunicorn worker; SQLite gets WAL + busy_timeout.
-10. **Self-review fixes** — 9 real bugs caught by an adversarial multi-agent review
-    of this branch (price regex `$1000`→100.0, false NO-SUCCESSOR substring match,
-    5.02 truncation on "incorporated by reference", EX-101/104 mis-classified as
-    material agreements, dashboard 500 on non-object JSON, migration rollback wiping
-    the read_at backfill, etc.). See commit `c09f1b1`.
-11. **Model upgrade** — default daily model `gpt-4o-mini` → `gpt-5.4-nano`;
-    premium → `gpt-5.4`; signal analysis → `gpt-5.4`; backfill dropdowns offer
-    nano/mini/full tiers. Model IDs are **env-overridable** (`LLM_MODEL`,
-    `LLM_MODEL_PREMIUM`, `LLM_MODEL_SIGNAL`) so they can be changed from the Render
-    dashboard with no redeploy.
+Diagnosis (see `docs/superpowers/specs/2026-09-02-signal-first-design.md`):
 
----
+1. The funnel never narrowed — `prompt_v3` biased toward inclusion and the
+   relevance gate asked "is this about an executive?", not "is this
+   interesting?", so the dashboard was the raw 5.02 feed with badges.
+2. Triage scored filings blind — no price, cadence, earnings date, or
+   departure history. Nearly every signal the user hunts is *relative*, so
+   scores bunched in the middle.
+3. The best analysis (`signal_analyze`) ran only after a click.
+4. Nothing learned: stars, notes, and tags were never read back.
+5. Nothing ran automatically — `scheduler.py` existed but nothing invoked it.
+6. Form 4 was never ingested, so "off-cycle" and "oversized" were undetectable.
 
-## 3. LIVE DEPLOY STATE (this is the part not in the repo)
+## 2. What the rebuild does
 
-- **Render web service** `8k-analyzer` (`srv-d5ttphaqcgvc73ev08f0`) is CURRENTLY
-  POINTED AT THE TRIAL BRANCH `claude/project-improvement-review-ne5ryf`, not
-  `main`. Deploy `dep-d96gdc6rnols73bdqmag` went live 2026-07-07 ~14:02 UTC.
-  Boot logs confirmed the `forfeited_comp`/`has_successor` migration ran cleanly
-  and the concurrent-worker hardening worked (second worker skipped, no crash).
-- **Postgres** `8k-analyzer-db` (`dpg-d5ttp9aqcgvc73ev04dg-a`): **4,118 filings
-  intact**; 1,586 have `structured_summary` (retrofit-eligible).
-- URL: https://eightk-analyzer.onrender.com
-- All schema changes are **additive** → rolling back to `main` loses no data.
+`EDGAR → universe gate → dedupe → extract (cheap) → context → typed detectors
+→ judge (strong, ~1 in 4) → ranked inbox + digest → labels → evaluation`
 
-### Rollback (if the user wants the original back)
-Render dashboard → service Settings → Build & Deploy → **Branch** → set back to
-`main` → Save (auto-redeploys the original). Or Deploys tab → any prior deploy →
-Rollback. The MCP `update_web_service` tool CANNOT change the branch — this is a
-manual dashboard action only (confirmed this session).
+Read `CLAUDE.md` for the architecture and the rules that came out of it. The
+single most important one: **there is one analysis path**
+(`pipeline.analyze_filing`). Three used to exist and they drifted.
 
----
+## 3. Ground truth measured this session (not estimated)
 
-## 4. OPEN DECISIONS (pending user input — do not assume)
+- Live day 2026-08-27: 185 filings → 116 (item codes) → 72 (universe;
+  10 no-ticker, 6 unknown cap, 28 below the $50M floor) → 52 analyzed.
+- Judge gate opens on ~30% of analyzed filings.
+- Extraction ≈ $0.28 per 100 filings (gpt-5.6-luna). Judge ≈ $0.03/filing
+  (gpt-5.6-terra). A 200-filing backtest estimated $1.17.
+- 408 tests pass locally (SQLite); 14 Postgres parity tests run only in CI.
 
-1. **Run the retrofit?** The "Run Retrofit" button on `/backfill` (POST
-   `/retrofit-market-targets`) will populate `forfeited_comp`/`has_successor` and
-   market-target %s on the 1,586 structured rows — free, no LLM. Not yet run.
-2. **Pin the daily model?** Whether to set `LLM_MODEL=gpt-4o-mini` as a Render env
-   var to trial the pipeline on the known-good old model, OR leave it on
-   `gpt-5.4-nano` (requires confirming that model ID is enabled on the user's
-   OpenAI account, or the 7am job's LLM calls fail). Not yet decided.
-3. **Keep or roll back** after the trial — user is evaluating.
-4. **Merge to `main`** — only after the user is happy. `main` auto-deploys on push.
+## 4. Four false-positive patterns found by running REAL filings
 
----
+Unit tests with hand-built fixtures could not have caught any of these. Each
+is now both a prompt rule and a code guard, with a regression test.
 
-## 5. DEFERRED WORK — signal outcome tracker (scoped, not started)
+1. **Disagreement boilerplate.** Item 5.02 requires companies to address
+   whether a departure involved a disagreement, so nearly every one contains
+   "was not the result of any disagreement". The extractor set the flag true
+   on the first real filing tested.
+2. **"Cause" defined vs. invoked.** Every employment agreement defines Cause
+   as a contractual term. Fired on 4 of 20 filings against a real base rate
+   nearer 1–2%.
+3. **COMP_MIX_TO_EQUITY on 27% of filings** — that is simply what an annual
+   PSU grant looks like at any large company.
+4. **Lone Friday-night filings** produced inbox rows whose entire thesis was
+   "Accepted by SEC after Friday's close".
 
-User wants this eventually but paused it. Plan: record each DEEP_LOOK/MONITOR
-filing's stock price at ingest, re-mark at 7/30/90 days vs SPY, and a `/scorecard`
-page showing hit rates by signal type (direction-aware: bearish "hits" when the
-stock lags SPY). New `signal_outcomes` table; daily marking job in the scheduler;
-prospective-only (API serves current prices, not historical, so it scores from
-deploy day forward). ~4 commits. Zero LLM cost. Full plan is in this session's
-history if resumed.
+**If you add a detector, run it over ≥30 stored filings and look at what
+fires before believing it.**
 
----
+## 5. What still needs the user (nothing blocks the build)
 
-## 6. Env / test notes
+1. **Render → `8k-analyzer` → Settings → Build & Deploy → Branch** — confirm
+   it is `main`. An older handoff said it was pointed at
+   `claude/project-improvement-review-ne5ryf`; if that is still true, merging
+   to `main` deploys nothing.
+2. **GitHub secrets** (repo → Settings → Secrets and variables → Actions):
+   - `DATABASE_URL` — Render → `8k-analyzer-db` → *External* Database URL
+   - `SECRET_KEY` — must be the SAME value as on Render; it signs the digest's
+     label links, which the web app has to verify
+   - `OPENAI_API_KEY`, `API_NINJAS_KEY`
+   - Optional: `DIGEST_SMTP_USER` / `DIGEST_SMTP_PASS` / `DIGEST_TO` (Gmail
+     app password), or `DIGEST_SLACK_WEBHOOK`. Without them the digest
+     dry-runs to the job log.
+3. **Label ~100–150 filings** in `/review` after deploy. Everything in
+   `evaluate.py` and the judge's few-shot examples depends on them.
 
-- Local dev uses SQLite; prod uses Postgres. `sqlite3.Row` supports `row["k"]`
-  but NOT `.get()` — convert rows to real dicts before `.get()` (see `CLAUDE.md`).
-- Tests: `python -m pytest tests/ -q` (151 passing). No network/LLM needed — all mocked.
-- Render MCP loses workspace selection on reconnect; re-select `tea-d5ttm7fgi27c73ebtjvg` (only workspace).
+`RENDER_API_KEY` was NOT set in this session's environment, so the Render MCP
+returned "unauthorized" and no production state could be read or changed.
+Setting it (`setx RENDER_API_KEY ...`, then relaunch) removes items 1–2.
+
+## 6. Deployment shape
+
+- Web service on Render, auto-deploys from `main`. Migrations are additive and
+  run at boot, so a rollback loses no data.
+- The daily job runs on **GitHub Actions**, not Render — the free tier spins
+  the web service down. `.github/workflows/daily.yml`, weekday 11:30 UTC, plus
+  `workflow_dispatch`.
+- `.github/workflows/tests.yml` runs the suite on SQLite *and* against a real
+  Postgres service container.
+
+## 7. Deferred (Phase 2)
+
+- **Form 4 daily scan** (`form4.py`): insider buys and off-cycle C-suite
+  grants as their own inbox rows. Grant *cadence* already works via the API
+  Ninjas insider endpoint (`context._grant_cadence`), which is what
+  OFF_CYCLE_GRANT and OVERSIZED_GRANT need; the daily scan is additive.
+- **Outcome tracking** (`outcomes.py` + `/scorecard`): 7/30/90-day return vs.
+  SPY per signal type — learning from the market, not only from the user.
+- **Judge-panel spot check** of the top-30 ranked filings.

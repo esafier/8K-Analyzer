@@ -5,7 +5,26 @@
 import json
 import os
 from openai import OpenAI
-from config import OPENAI_API_KEY, LLM_MODEL, LLM_MODEL_PREMIUM, PROMPTS_DIR, ACTIVE_PROMPT
+from config import (
+    OPENAI_API_KEY, LLM_MODEL, LLM_MODEL_PREMIUM, LLM_MODEL_JUDGE,
+    PROMPTS_DIR, ACTIVE_PROMPT, MODELS_WITHOUT_TEMPERATURE, MAX_JUDGE_CHARS,
+)
+
+
+def _chat_kwargs(model, json_mode=True):
+    """Build the call kwargs for a model, minus anything it rejects.
+
+    The GPT-5.6 family returns a hard 400 for an explicit temperature — only
+    its default is allowed. Encoding that here means the pipeline can move
+    between model generations by changing an env var, instead of discovering
+    the incompatibility as a run of failed extractions in production.
+    """
+    kwargs = {"model": model}
+    if not str(model).startswith(MODELS_WITHOUT_TEMPERATURE):
+        kwargs["temperature"] = 0
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    return kwargs
 
 
 def _load_prompt(prompt_file=None):
@@ -49,12 +68,8 @@ def classify_and_summarize(filing_text, prompt_file=None, model=None):
         client = OpenAI(api_key=OPENAI_API_KEY)
 
         response = client.chat.completions.create(
-            model=use_model,
-            temperature=0,  # Deterministic output for consistent classifications
-            response_format={"type": "json_object"},  # Force valid JSON output
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
+            messages=[{"role": "user", "content": prompt}],
+            **_chat_kwargs(use_model),
         )
 
         # Parse the JSON response
@@ -71,6 +86,44 @@ def classify_and_summarize(filing_text, prompt_file=None, model=None):
         # Include model, text length, and full error repr so Render logs reveal
         # whether it's a 400 (bad model/params), 401 (auth), 429 (rate/quota), etc.
         print(f"    LLM call failed [model={use_model}, text_len={len(filing_text)}]: {type(e).__name__}: {e!r}", flush=True)
+        return None
+
+
+def judge_filing(payload, model=None, prompt_file="prompt_judge.txt"):
+    """Weigh an already-detected filing and write the investor's one-liner.
+
+    This runs only on filings the detectors already flagged, which is what
+    keeps it affordable: it explains and ranks, it does not discover. It gets
+    the facts, the market context, the typed signals, the user's standing
+    rules, and a few of their past labels — everything the old on-demand
+    "signal analysis" got, except automatically and before the user looks.
+
+    Args:
+        payload: the JSON-serializable dict rendered into the prompt.
+        model: override (default LLM_MODEL_JUDGE).
+
+    Returns the parsed judgment dict with token counts attached, or None on
+    failure — callers fall back to the detector-derived verdict rather than
+    dropping the filing.
+    """
+    use_model = model or LLM_MODEL_JUDGE
+    template = _load_prompt(prompt_file)
+    prompt = template.replace("{payload}", json.dumps(payload, indent=2, default=str))
+
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            **_chat_kwargs(use_model),
+        )
+        result = json.loads(response.choices[0].message.content)
+        usage = response.usage
+        result["_tokens_in"] = usage.prompt_tokens
+        result["_tokens_out"] = usage.completion_tokens
+        result["_model"] = use_model
+        return result
+    except Exception as e:
+        print(f"    Judge call failed [model={use_model}]: {type(e).__name__}: {e!r}", flush=True)
         return None
 
 
@@ -99,11 +152,8 @@ def deep_analyze(filing_text, model=None):
         client = OpenAI(api_key=OPENAI_API_KEY)
 
         response = client.chat.completions.create(
-            model=use_model,
-            temperature=0,
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
+            messages=[{"role": "user", "content": prompt}],
+            **_chat_kwargs(use_model, json_mode=False),
         )
 
         usage = response.usage
@@ -212,11 +262,8 @@ def signal_analyze(filing_text, context_block, model=None, prompt_version="v1"):
 
         # Chat Completions — all context is already in the prompt, no tools needed
         response = client.chat.completions.create(
-            model=use_model,
-            temperature=0,
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
+            messages=[{"role": "user", "content": prompt}],
+            **_chat_kwargs(use_model, json_mode=False),
         )
 
         usage = response.usage
@@ -251,10 +298,11 @@ def extract_departures(filing_snippet, filed_date, model=None):
 
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
+        # No json_mode: this prompt asks for a bare JSON array, which the
+        # object-only json_object mode would reject.
         response = client.chat.completions.create(
-            model=use_model,
-            temperature=0,
             messages=[{"role": "user", "content": prompt}],
+            **_chat_kwargs(use_model, json_mode=False),
         )
         raw = response.choices[0].message.content or ""
         usage = response.usage

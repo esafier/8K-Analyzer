@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
+  <div>
+    <h2 class="mb-1">Signals</h2>
+    <div class="text-muted small">
+      {{ total }} filing{{ '' if total == 1 else 's' }} worth attention in the last {{ current_days }} days
+      {%- if not current_include_pass %} · routine filings hidden{% endif %}
+      {%- if last_backfill %} · updated {{ last_backfill.time | format_timestamp }}{% endif %}
+    </div>
+  </div>
+  <div class="d-flex gap-2 align-items-center flex-wrap">
+    {% if review_remaining %}
+    <a href="/review" class="btn btn-primary btn-sm">
+      Review {{ review_remaining }} unlabelled
+    </a>
+    {% endif %}
+    <a href="/all" class="btn btn-outline-secondary btn-sm">All filings</a>
+  </div>
+</div>
+
+<!-- Filters: deliberately few. The inbox is a work queue, not a query builder. -->
+<form method="GET" action="/" class="row g-2 align-items-end mb-4">
+  <div class="col-auto">
+    <label class="form-label small mb-1">Window</label>
+    {# A hand-typed ?days= that isn't one of the presets used to leave the
+       select showing "Today" while the page displayed a year of filings —
+       the control contradicting the header. Add the actual value as an
+       option so the two always agree. #}
+    {% set presets = [1, 3, 7, 30, 90, 365] %}
+    {% set labels = {1: 'Today', 3: '3 days', 7: '7 days', 30: '30 days', 90: '90 days', 365: '1 year'} %}
+    <select name="days" class="form-select form-select-sm" onchange="this.form.submit()">
+      {% for d in (presets + ([current_days] if current_days not in presets else []))|sort %}
+      <option value="{{ d }}" {{ 'selected' if current_days == d }}>{{ labels.get(d, d ~ ' days') }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <label class="form-label small mb-1">Direction</label>
+    <select name="direction" class="form-select form-select-sm" onchange="this.form.submit()">
+      <option value="">Both</option>
+      <option value="BEARISH" {{ 'selected' if current_direction == 'BEARISH' }}>&#9660; Bearish</option>
+      <option value="BULLISH" {{ 'selected' if current_direction == 'BULLISH' }}>&#9650; Bullish</option>
+      <option value="MIXED" {{ 'selected' if current_direction == 'MIXED' }}>&#9670; Mixed</option>
+    </select>
+  </div>
+  <div class="col-auto">
+    <label class="form-label small mb-1">Min score</label>
+    <select name="min_score" class="form-select form-select-sm" onchange="this.form.submit()">
+      {% for s in [0, 4, 6, 7, 8] %}
+      <option value="{{ s }}" {{ 'selected' if current_min_score == s }}>{{ s if s else 'Any' }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <label class="form-label small mb-1">Signal</label>
+    <select name="signal_type" class="form-select form-select-sm" onchange="this.form.submit()">
+      <option value="">All signals</option>
+      {% for t, n in signal_counts.items() %}
+      <option value="{{ t }}" {{ 'selected' if current_signal_type == t }}>{{ t.replace('_', ' ')|title }} ({{ n }})</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <div class="form-check form-check-inline">
+      <input type="checkbox" name="unlabeled" value="1" class="form-check-input" id="unlabeledCheck"
+             {{ 'checked' if current_unlabeled }} onchange="this.form.submit()">
+      <label class="form-check-label small" for="unlabeledCheck">Unlabelled</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input type="checkbox" name="include_pass" value="1" class="form-check-input" id="passCheck"
+             {{ 'checked' if current_include_pass }} onchange="this.form.submit()">
+      <label class="form-check-label small" for="passCheck">Show routine</label>
+    </div>
+  </div>
+</form>
+
+{% if filings %}
+<div class="signal-list">
+  {% for filing in filings %}
+  <div class="signal-card dir-{{ (filing.signal_direction or 'neutral')|lower }}"
+       data-filing-id="{{ filing.id }}">
+
+    <div class="signal-card-head">
+      <span class="score-badge dir-{{ (filing.signal_direction or 'neutral')|lower }}"
+            title="Signal strength {{ filing.signal_score }}/10">
+        {%- if filing.signal_direction == 'BEARISH' %}&#9660;
+        {%- elif filing.signal_direction == 'BULLISH' %}&#9650;
+        {%- elif filing.signal_direction == 'MIXED' %}&#9670;
+        {%- endif %} {{ filing.signal_score if filing.signal_score is not none else '–' }}</span>
+
+      <div class="signal-card-title">
+        <a href="/filing/{{ filing.id }}?back=/" class="company-link">{{ filing.company }}</a>
+        <span class="ticker">{{ filing.ticker or '—' }}</span>
+        {% if filing.ticker and market_caps.get(filing.ticker) %}
+        <span class="meta">{{ market_caps[filing.ticker] | format_market_cap }}</span>
+        {% endif %}
+        {% if filing.ticker and stock_prices.get(filing.ticker) %}
+        <span class="meta">${{ "%.2f"|format(stock_prices[filing.ticker]) }}</span>
+        {% endif %}
+        <span class="meta">{{ filing.filed_date }}</span>
+        {% if filing.triage_verdict == 'DEEP_LOOK' %}
+        <span class="verdict-badge">DEEP LOOK</span>
+        {% elif filing.triage_verdict == 'PASS' %}
+        <span class="verdict-badge pass">ROUTINE</span>
+        {% endif %}
+      </div>
+
+      <div class="signal-card-actions">
+        <button class="label-btn" data-filing-id="{{ filing.id }}" data-label="signal"
+                title="Real signal — teaches the ranker">&#10003;</button>
+        <button class="label-btn noise" data-filing-id="{{ filing.id }}" data-label="noise"
+                title="Noise — teaches the ranker">&#10005;</button>
+        <a href="{{ filing.filing_document_url or filing.filing_url }}" target="_blank"
+           class="btn btn-sm btn-outline-primary" rel="noopener">Filing</a>
+      </div>
+    </div>
+
+    {# The thesis line. This is the whole product: enough to decide from
+       without opening anything. #}
+    {% if filing.top_signal %}
+    <div class="thesis">{{ filing.top_signal }}</div>
+    {% endif %}
+
+    <div class="chips">
+      {% set signals = filing._signals %}
+      {% include '_signal_chips.html' %}
+      {% if (filing.departure_count_24mo or 0) >= 2 %}
+      <span class="sig-chip sig-bearish sev-3" title="Departures at this company in the last 24 months (per SEC EDGAR)">{{ filing.departure_count_24mo }} DEP / 24MO</span>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if total_pages > 1 %}
+<nav class="mt-4">
+  <ul class="pagination justify-content-center flex-wrap">
+    <li class="page-item {{ 'disabled' if current_page == 1 }}">
+      <a class="page-link" href="?page={{ current_page - 1 }}&{{ filter_qs }}">Previous</a>
+    </li>
+    {% for p in range(1, total_pages + 1) %}
+      {% if p == 1 or p == total_pages or (p >= current_page - 2 and p <= current_page + 2) %}
+      <li class="page-item {{ 'active' if p == current_page }}">
+        <a class="page-link" href="?page={{ p }}&{{ filter_qs }}">{{ p }}</a>
+      </li>
+      {% elif p == current_page - 3 or p == current_page + 3 %}
+      <li class="page-item disabled"><span class="page-link">…</span></li>
+      {% endif %}
+    {% endfor %}
+    <li class="page-item {{ 'disabled' if current_page == total_pages }}">
+      <a class="page-link" href="?page={{ current_page + 1 }}&{{ filter_qs }}">Next</a>
+    </li>
+  </ul>
+</nav>
+{% endif %}
+
+{% else %}
+<div class="text-center py-5">
+  <h4 class="text-muted mb-2">Nothing flagged in this window</h4>
+  <p class="text-muted mb-3">
+    A quiet inbox is the system working — routine filings are analyzed and hidden, not skipped.
+    Widen the window, or show routine filings, to see everything that was reviewed.
+  </p>
+  <a href="/?days=30" class="btn btn-outline-primary btn-sm">Last 30 days</a>
+  <a href="/all" class="btn btn-outline-secondary btn-sm">All filings</a>
+</div>
+{% endif %}
+
+<script>
+// Inline labelling. Every tap is training data, so the interaction has to be
+// cheaper than the thought behind it — one click, no page load, no dialog.
+document.querySelectorAll('.label-btn').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    var card = btn.closest('.signal-card');
+    fetch('/api/label', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filing_id: parseInt(btn.dataset.filingId, 10),
+        label: btn.dataset.label
+      })
+    }).then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.success) return;
+        card.classList.add('labelled');
+        card.querySelectorAll('.label-btn').forEach(function (b) {
+          b.classList.toggle('active', b === btn);
+        });
+      })
+      .catch(function () { /* a failed label is not worth interrupting a scan */ });
+  });
+});
+</script>
+
+{% endblock %}

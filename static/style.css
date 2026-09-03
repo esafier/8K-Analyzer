@@ -399,3 +399,175 @@ tr.pass-row td { padding-top: 8px; padding-bottom: 8px; }
         width: 100%;
     }
 }
+
+/* ============================================================
+   Signal inbox — the new default view.
+
+   The old dashboard was a table because it was an archive: every row
+   equal, sorted by date, scanned left to right. The inbox is a queue,
+   so it's a card list ranked by score — the eye should land on the
+   strongest signal without reading anything.
+   ============================================================ */
+
+.signal-list { display: flex; flex-direction: column; gap: 10px; }
+
+.signal-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ink-faint);
+  border-radius: var(--r-inner);
+  box-shadow: var(--shadow-sm);
+  padding: 12px 14px;
+  transition: box-shadow .15s ease, border-color .15s ease;
+}
+.signal-card:hover { box-shadow: var(--shadow-md); }
+/* Direction is carried by the left edge — readable at a glance while
+   scrolling, without another badge competing for attention. */
+.signal-card.dir-bearish { border-left-color: #d9342b; }
+.signal-card.dir-bullish { border-left-color: #1a9e5c; }
+.signal-card.dir-mixed   { border-left-color: #b8860b; }
+.signal-card.labelled    { opacity: 0.55; }
+
+.signal-card-head { display: flex; align-items: flex-start; gap: 12px; }
+.signal-card-title { flex: 1 1 auto; min-width: 0; }
+.signal-card-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+
+/* Tabular figures so the score column never jitters between rows. */
+.score-badge {
+  flex: 0 0 auto;
+  min-width: 42px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  padding: 5px 7px;
+  border-radius: var(--r-badge);
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  border: 1px solid var(--line);
+}
+.score-badge.dir-bearish { background: #fdecea; color: #a11a13; border-color: #f5c6c2; }
+.score-badge.dir-bullish { background: #e8f6ee; color: #14663d; border-color: #bfe3cf; }
+.score-badge.dir-mixed   { background: #fdf5e2; color: #82620a; border-color: #ecd9a4; }
+
+.company-link { font-weight: 620; color: var(--ink); text-decoration: none; }
+.company-link:hover { color: var(--accent); }
+.signal-card-title .ticker {
+  font-weight: 600; color: var(--ink-soft); margin-left: 7px;
+  font-variant-numeric: tabular-nums;
+}
+.signal-card-title .meta {
+  color: var(--ink-faint); font-size: 12px; margin-left: 7px;
+  font-variant-numeric: tabular-nums;
+}
+.verdict-badge {
+  margin-left: 7px; font-size: 10px; font-weight: 700; letter-spacing: .04em;
+  padding: 2px 6px; border-radius: var(--r-badge);
+  background: var(--ink); color: #fff;
+}
+.verdict-badge.pass { background: var(--surface-2); color: var(--ink-faint); border: 1px solid var(--line); }
+
+/* The thesis line — the sentence that should make opening the filing
+   unnecessary. Given room to breathe accordingly. */
+.thesis, .review-thesis {
+  margin: 8px 0 6px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+.review-thesis { font-size: 16px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.sig-chip {
+  font-size: 10px; font-weight: 700; letter-spacing: .03em;
+  padding: 2px 7px; border-radius: var(--r-pill);
+  border: 1px solid transparent; cursor: help;
+}
+.sig-chip.sig-bearish { background: #fdecea; color: #a11a13; border-color: #f3c9c5; }
+.sig-chip.sig-bullish { background: #e8f6ee; color: #14663d; border-color: #c4e5d3; }
+/* Severity shows as weight, not as another colour — the palette is already
+   carrying direction. */
+.sig-chip.sev-1, .sig-chip.sev-2 { opacity: .72; }
+.sig-chip.sev-5 { box-shadow: 0 0 0 1px currentColor inset; }
+
+.label-btn {
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r-inner); width: 30px; height: 30px;
+  font-size: 14px; line-height: 1; color: var(--ink-faint);
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease, scale .12s ease;
+}
+.label-btn:hover { background: #e8f6ee; color: #14663d; }
+.label-btn.noise:hover { background: #fdecea; color: #a11a13; }
+.label-btn:active { scale: 0.94; }
+.label-btn.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+/* ---------- Review page: one filing, two keys ---------- */
+.review-wrap { max-width: 760px; margin: 0 auto; }
+
+.review-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--ink-faint);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-md);
+  padding: 20px;
+}
+.review-card.dir-bearish { border-left-color: #d9342b; }
+.review-card.dir-bullish { border-left-color: #1a9e5c; }
+.review-card.dir-mixed   { border-left-color: #b8860b; }
+
+.review-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.review-company { font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+.review-why { margin: 0 0 10px 0; padding-left: 18px; color: var(--ink-soft); font-size: 13px; }
+.review-why li { margin-bottom: 3px; }
+.review-anti {
+  font-size: 13px; color: var(--ink-soft);
+  background: var(--surface-2); border-left: 3px solid var(--line);
+  padding: 8px 10px; border-radius: var(--r-badge);
+}
+.review-links { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.review-actions { display: flex; gap: 10px; }
+.review-btn {
+  flex: 1 1 0;
+  padding: 14px 10px;
+  border-radius: var(--r-inner);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  font-weight: 600; font-size: 14px; color: var(--ink);
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease, scale .12s ease;
+}
+.review-btn:active { scale: 0.97; }
+.review-btn.signal:hover { background: #e8f6ee; border-color: #9ed3b6; color: #14663d; }
+.review-btn.noise:hover  { background: #fdecea; border-color: #efb3ad; color: #a11a13; }
+.review-btn.meh:hover    { background: var(--surface-2); border-color: var(--ink-faint); }
+.review-btn kbd {
+  display: inline-block; margin-right: 6px; padding: 1px 6px;
+  font-size: 11px; border-radius: 5px;
+  background: var(--surface); border: 1px solid var(--line); color: var(--ink-soft);
+}
+
+.guideline-list { list-style: none; padding-left: 0; font-size: 13px; }
+.guideline-list li {
+  padding: 6px 10px; margin-bottom: 4px;
+  background: var(--surface-2); border-radius: var(--r-badge);
+  border: 1px solid var(--line);
+}
+
+.label-done { max-width: 520px; margin: 48px auto; text-align: center; }
+.label-done-thesis {
+  font-size: 14px; color: var(--ink); text-wrap: pretty;
+  background: var(--surface-2); border-radius: var(--r-inner);
+  padding: 12px 14px; margin: 14px 0;
+}
+
+/* On a phone the card head stacks; the label buttons stay reachable with a
+   thumb rather than sliding off the right edge. */
+@media (max-width: 640px) {
+  .signal-card-head { flex-wrap: wrap; }
+  .signal-card-actions { width: 100%; justify-content: flex-end; margin-top: 6px; }
+  .review-btn { padding: 16px 8px; }
+}

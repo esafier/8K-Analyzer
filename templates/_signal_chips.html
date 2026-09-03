@@ -1,0 +1,11 @@
+{# Signal chips for a filing row.
+   Expects `signals` — the parsed signals_json list.
+
+   The chip carries the signal's NAME; its tooltip carries the evidence
+   sentence. That split is the point of the whole rebuild: the old dashboard
+   showed a bare number, so the only way to learn why a filing was ranked
+   highly was to open it. #}
+{% for s in signals %}
+  <span class="sig-chip sig-{{ s.direction|lower }} sev-{{ s.severity }}"
+        title="{{ s.evidence }}">{{ s.type.replace('_', ' ') }}</span>
+{% endfor %}

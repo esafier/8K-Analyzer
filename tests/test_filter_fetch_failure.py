@@ -11,6 +11,8 @@ Summaries" can find it later, and the counts stay honest.
 """
 from unittest.mock import patch
 
+import pytest
+
 
 def _meta(items, company="Blocked Corp", accession="0001-26-000042"):
     return [{
@@ -27,11 +29,21 @@ def _fetch_blocked(url, cik, accession):
     return "", None
 
 
+@pytest.fixture(autouse=True)
+def _stub_analysis(monkeypatch):
+    monkeypatch.setattr("pipeline._build_context", lambda filing: {})
+    monkeypatch.setattr("pipeline._judge", lambda *a, **k: None)
+
+
+def _filter(metadata, fetch):
+    from filter import filter_filings
+    return filter_filings(metadata, fetch_text_func=fetch,
+                          apply_universe=False, skip_existing=False)
+
+
 def test_502_fetch_failure_is_kept_for_retry():
     """The original behavior, still intact."""
-    from filter import filter_filings
-
-    result = filter_filings(_meta(["5.02"]), fetch_text_func=_fetch_blocked)
+    result = _filter(_meta(["5.02"]), _fetch_blocked)
 
     assert len(result) == 1
     assert result[0]["raw_text"] == ""
@@ -41,9 +53,7 @@ def test_502_fetch_failure_is_kept_for_retry():
 
 def test_101_fetch_failure_is_no_longer_silently_dropped():
     """The bug: an in-scope 1.01 filing vanished entirely when SEC blocked us."""
-    from filter import filter_filings
-
-    result = filter_filings(_meta(["1.01"]), fetch_text_func=_fetch_blocked)
+    result = _filter(_meta(["1.01"]), _fetch_blocked)
 
     assert len(result) == 1, "in-scope filing was dropped instead of parked for retry"
     assert result[0]["raw_text"] == ""
@@ -51,9 +61,7 @@ def test_101_fetch_failure_is_no_longer_silently_dropped():
 
 
 def test_102_fetch_failure_is_kept_for_retry():
-    from filter import filter_filings
-
-    result = filter_filings(_meta(["1.02"]), fetch_text_func=_fetch_blocked)
+    result = _filter(_meta(["1.02"]), _fetch_blocked)
 
     assert len(result) == 1
     assert result[0]["summary"] == "SEC rate-limited — pending retry"
@@ -63,19 +71,15 @@ def test_801_only_fetch_failure_is_still_dropped():
     """8.01 is the high-volume, low-hit-rate catch-all. A textless 8.01-only
     filing is dropped on success too — keeping it would flood the retry queue
     with rows that are worthless even once fetched."""
-    from filter import filter_filings
-
-    result = filter_filings(_meta(["8.01"]), fetch_text_func=_fetch_blocked)
+    result = _filter(_meta(["8.01"]), _fetch_blocked)
 
     assert result == []
 
 
 def test_fetch_failure_never_calls_the_llm():
     """No text means nothing to classify — don't burn tokens on an empty string."""
-    from filter import filter_filings
-
-    with patch("filter.classify_and_summarize") as mock_llm:
-        filter_filings(_meta(["5.02", "1.01"]), fetch_text_func=_fetch_blocked)
+    with patch("llm.classify_and_summarize") as mock_llm:
+        _filter(_meta(["5.02", "1.01"]), _fetch_blocked)
 
     mock_llm.assert_not_called()
 
@@ -83,9 +87,7 @@ def test_fetch_failure_never_calls_the_llm():
 def test_fetch_failure_is_reported_in_the_logs(capsys):
     """The count that used to be invisible must now be loud — it's the cue to
     press "Retry Missing Summaries"."""
-    from filter import filter_filings
-
-    filter_filings(_meta(["5.02"]), fetch_text_func=_fetch_blocked)
+    _filter(_meta(["5.02"]), _fetch_blocked)
 
     out = capsys.readouterr().out
     assert "Stage 2 WARNING" in out
@@ -93,12 +95,10 @@ def test_fetch_failure_is_reported_in_the_logs(capsys):
 
 
 def test_no_warning_when_every_fetch_succeeds(capsys):
-    from filter import filter_filings
-
     def _fetch_ok(url, cik, accession):
         return "The CFO submitted his resignation effective immediately.", "https://sec.gov/d.htm"
 
-    with patch("filter.classify_and_summarize", return_value=None):
-        filter_filings(_meta(["5.02"]), fetch_text_func=_fetch_ok)
+    with patch("llm.classify_and_summarize", return_value=None):
+        _filter(_meta(["5.02"]), _fetch_ok)
 
     assert "Stage 2 WARNING" not in capsys.readouterr().out
