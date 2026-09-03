@@ -37,6 +37,21 @@ def _add(accession, score=8, company="Acme Corp", filed_date=None, verdict="DEEP
     return database.get_filing_by_accession(accession)["id"]
 
 
+def _fake_filter(rows):
+    """Stand-in for filter_filings that honours the incremental-store callback.
+
+    ingest_range no longer loops over the returned list — it stores each
+    filing the moment it is analyzed, so a run killed mid-way keeps what it
+    already paid for. A fake that ignores on_analyzed would store nothing.
+    """
+    def _filter(*args, on_analyzed=None, stats=None, **kwargs):
+        for row in rows:
+            if on_analyzed:
+                on_analyzed(row)
+        return rows
+    return _filter
+
+
 # ---------------------------------------------------------------------------
 # The ingest window
 # ---------------------------------------------------------------------------
@@ -47,31 +62,93 @@ def test_first_run_covers_yesterday_and_today(tmp_sqlite_db):
     assert (start, end) == ("2026-09-01", "2026-09-02")
 
 
-def test_monday_run_covers_the_whole_weekend_including_friday(tmp_sqlite_db):
-    """The bug a naive 'yesterday..today' window has every single week:
-    Monday asks for Sunday..Monday, and Friday's filings are never ingested."""
-    ingest.mark_ingested("2026-08-27")          # Thursday
+def test_the_day_just_processed_is_re_covered_next_run(tmp_sqlite_db):
+    """The job runs in the morning, so "today" has barely started — EDGAR
+    holds only what was accepted overnight. Claiming today as covered would
+    skip every filing made during business hours, forever. So the watermark
+    records the last COMPLETE day and the next run re-covers today in full."""
+    ingest.mark_ingested("2026-09-02")          # a run whose window ended today
+    assert database.get_app_status(ingest.WATERMARK_KEY) == "2026-09-01"
+
+    start, end = ingest.pending_window(today="2026-09-03")
+    assert start == "2026-09-02"                # yesterday is re-covered, not skipped
+    assert end == "2026-09-03"
+
+
+def test_business_hours_filings_are_never_skipped(tmp_sqlite_db):
+    """The concrete failure: an 8-K filed at 2pm on the 2nd, after that
+    morning's run. It must be picked up on the 3rd."""
+    ingest.mark_ingested("2026-09-02")
+    start, end = ingest.pending_window(today="2026-09-03")
+    assert start <= "2026-09-02" <= end
+
+
+def test_monday_run_covers_friday(tmp_sqlite_db):
+    """A weekday-only cron plus a naive window loses every Friday: Monday
+    would ask for Sunday..Monday."""
+    ingest.mark_ingested("2026-08-28")          # Friday morning's run
     start, end = ingest.pending_window(today="2026-08-31")  # Monday
-    assert start == "2026-08-28"                # Friday, not Sunday
+    assert start == "2026-08-28"                # Friday, in full
     assert end == "2026-08-31"
 
 
-def test_consecutive_runs_do_not_overlap(tmp_sqlite_db):
-    """Overlapping windows re-fetch and re-analyze filings at full price
-    before discarding them as duplicates at insert."""
-    ingest.mark_ingested("2026-09-01")
-    start, _ = ingest.pending_window(today="2026-09-02")
-    assert start == "2026-09-02"
+def test_re_coverage_costs_nothing_because_of_dedupe(tmp_sqlite_db, monkeypatch):
+    """Re-covering a day is only affordable because Stage 1c drops filings
+    already stored BEFORE any fetch or model call."""
+    from filter import filter_filings
+
+    database.insert_filing({
+        "accession_no": "seen-1", "company": "Already Stored", "ticker": "AAA",
+        "cik": "1", "filed_date": "2026-09-02", "item_codes": "5.02",
+        "filing_url": "u", "raw_text": "already has text",
+    })
+    meta = [{"accession_no": "seen-1", "company": "Already Stored", "ticker": "AAA",
+             "cik": "1", "filed_date": "2026-09-02", "item_codes": "5.02",
+             "filing_url": "u", "items_list": ["5.02"]}]
+
+    fetched = []
+    result = filter_filings(meta, fetch_text_func=lambda *a: fetched.append(1) or ("x", None),
+                            apply_universe=False)
+    assert result == []
+    assert fetched == []
+
+
+def test_a_row_parked_without_text_is_retried_not_deduped(tmp_sqlite_db):
+    """The rows a SEC block parks are exactly the ones the next run must
+    re-fetch. Treating them as duplicates would strand them permanently —
+    invisible to the inbox, and only fixable by a button in the web UI that a
+    scheduled job never presses."""
+    from filter import filter_filings
+
+    database.insert_filing({
+        "accession_no": "parked-1", "company": "Rate Limited", "ticker": "AAA",
+        "cik": "1", "filed_date": "2026-09-02", "item_codes": "5.02",
+        "filing_url": "u", "raw_text": "",
+        "summary": "SEC rate-limited — pending retry",
+    })
+    meta = [{"accession_no": "parked-1", "company": "Rate Limited", "ticker": "AAA",
+             "cik": "1", "filed_date": "2026-09-02", "item_codes": "5.02",
+             "filing_url": "u", "items_list": ["5.02"]}]
+
+    fetched = []
+
+    def fetch(*args):
+        fetched.append(1)
+        return "", None
+
+    filter_filings(meta, fetch_text_func=fetch, apply_universe=False)
+    assert fetched, "a parked row must be re-fetched, not skipped as a duplicate"
 
 
 def test_nothing_to_do_when_already_current(tmp_sqlite_db):
-    ingest.mark_ingested("2026-09-02")
+    """After a run whose window ended tomorrow, today is already covered."""
+    ingest.mark_ingested("2026-09-03")
     assert ingest.pending_window(today="2026-09-02") == (None, None)
 
 
 def test_long_outage_is_capped(tmp_sqlite_db):
     """A month down shouldn't produce one enormous catch-up run."""
-    ingest.mark_ingested("2026-01-01")
+    ingest.mark_ingested("2026-01-02")
     start, end = ingest.pending_window(today="2026-09-02", max_days=10)
     assert start == "2026-08-23"
 
@@ -95,7 +172,7 @@ def test_mostly_textless_run_raises_rather_than_reporting_success(tmp_sqlite_db,
     blocked = [dict(m, raw_text="", summary="SEC rate-limited — pending retry") for m in metadata]
 
     monkeypatch.setattr(ingest, "fetch_filings", lambda s, e: metadata)
-    monkeypatch.setattr(ingest, "filter_filings", lambda *a, **k: blocked)
+    monkeypatch.setattr(ingest, "filter_filings", _fake_filter(blocked))
 
     with pytest.raises(ingest.IngestBlocked):
         ingest.ingest_range("2026-09-02", "2026-09-02", enrich=False)
@@ -109,7 +186,7 @@ def test_partial_results_are_still_stored_when_a_run_is_blocked(tmp_sqlite_db, m
     rows = [dict(m, raw_text="" if i > 1 else "real text") for i, m in enumerate(metadata)]
 
     monkeypatch.setattr(ingest, "fetch_filings", lambda s, e: metadata)
-    monkeypatch.setattr(ingest, "filter_filings", lambda *a, **k: rows)
+    monkeypatch.setattr(ingest, "filter_filings", _fake_filter(rows))
 
     with pytest.raises(ingest.IngestBlocked):
         ingest.ingest_range("2026-09-02", "2026-09-02", enrich=False)
@@ -124,7 +201,7 @@ def test_a_healthy_run_does_not_raise(tmp_sqlite_db, monkeypatch):
     rows = [dict(m, raw_text="real text") for m in metadata]
 
     monkeypatch.setattr(ingest, "fetch_filings", lambda s, e: metadata)
-    monkeypatch.setattr(ingest, "filter_filings", lambda *a, **k: rows)
+    monkeypatch.setattr(ingest, "filter_filings", _fake_filter(rows))
 
     stats = ingest.ingest_range("2026-09-02", "2026-09-02", enrich=False)
     assert stats["new"] == 10
@@ -135,15 +212,17 @@ def test_daily_does_not_advance_the_watermark_after_a_block(tmp_sqlite_db, monke
     """Otherwise the blocked window is skipped forever."""
     import daily
 
-    ingest.mark_ingested("2026-09-01")
+    ingest.mark_ingested("2026-09-02")   # watermark becomes 2026-09-01
+    before = database.get_app_status(ingest.WATERMARK_KEY)
+
     monkeypatch.setattr(daily, "ingest_range",
                         lambda *a, **k: (_ for _ in ()).throw(ingest.IngestBlocked("blocked")))
-    monkeypatch.setattr(daily, "pending_window", lambda: ("2026-09-02", "2026-09-02"))
+    monkeypatch.setattr(daily, "pending_window", lambda: ("2026-09-02", "2026-09-03"))
 
     with pytest.raises(ingest.IngestBlocked):
         daily.run(send_digest=False)
 
-    assert database.get_app_status(ingest.WATERMARK_KEY) == "2026-09-01"
+    assert database.get_app_status(ingest.WATERMARK_KEY) == before
 
 
 # ---------------------------------------------------------------------------
@@ -288,3 +367,57 @@ def test_evaluation_on_an_empty_database_does_not_crash(tmp_sqlite_db):
     result = evaluate.evaluate()
     assert result["labeled_total"] == 0
     assert result["precision_at"][10] == (None, 0)
+
+
+def test_a_dead_market_cap_provider_fails_the_run(tmp_sqlite_db, monkeypatch):
+    """The universe gate fails closed on an unknown cap — right for one
+    ticker, catastrophic for all of them. Without this the run reports
+    success, the watermark advances, and an entire day is lost with only a log
+    line to show for it."""
+    metadata = [{"accession_no": f"a-{i}", "company": f"Co {i}", "ticker": "AAA",
+                 "cik": "1", "filed_date": "2026-09-02", "item_codes": "5.02",
+                 "filing_url": "u", "items_list": ["5.02"]} for i in range(10)]
+
+    def dead_provider(*args, on_analyzed=None, stats=None, **kwargs):
+        if stats is not None:
+            stats["screened"] = 10
+            stats["unknown_market_cap"] = 10
+        return []
+
+    monkeypatch.setattr(ingest, "fetch_filings", lambda s, e: metadata)
+    monkeypatch.setattr(ingest, "filter_filings", dead_provider)
+
+    with pytest.raises(ingest.IngestBlocked, match="market cap"):
+        ingest.ingest_range("2026-09-02", "2026-09-02", enrich=False)
+
+
+def test_a_genuinely_quiet_day_does_not_fail(tmp_sqlite_db, monkeypatch):
+    """Everything screened out for real reasons (below the floor, no ticker)
+    is a normal day, not an outage."""
+    metadata = [{"accession_no": f"a-{i}", "company": f"Co {i}", "ticker": "AAA",
+                 "cik": "1", "filed_date": "2026-09-02", "item_codes": "5.02",
+                 "filing_url": "u", "items_list": ["5.02"]} for i in range(10)]
+
+    def quiet(*args, on_analyzed=None, stats=None, **kwargs):
+        if stats is not None:
+            stats["screened"] = 10
+            stats["unknown_market_cap"] = 1   # the rest were below the floor
+        return []
+
+    monkeypatch.setattr(ingest, "fetch_filings", lambda s, e: metadata)
+    monkeypatch.setattr(ingest, "filter_filings", quiet)
+
+    stats = ingest.ingest_range("2026-09-02", "2026-09-02", enrich=False)
+    assert stats["analyzed"] == 0
+
+
+def test_a_digest_only_printed_to_the_log_is_not_recorded_as_sent(tmp_sqlite_db):
+    """Otherwise the first real email after configuring SMTP would open by
+    skipping its own backlog — every filing already 'sent' to a log nobody
+    read."""
+    filing_id = _add("a-1")
+    result = digest.send(days=7)
+
+    assert result["sent"] is False
+    assert result["channel"] == "stdout"
+    assert filing_id not in database.get_recently_digested_ids(days=7)

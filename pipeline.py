@@ -386,4 +386,15 @@ def persist(filing_id, result):
             "top_signal": existing.get("top_signal"),
         })
 
+    # Never overwrite a market snapshot that already exists. Re-analysis
+    # happens long after ingest — a 90-day backtest builds context from
+    # TODAY's price, so re-running it would replace the price the signal was
+    # actually formed against with one from months later. That is precisely
+    # the look-ahead contamination price_at_ingest exists to prevent, and it
+    # would quietly corrupt any later outcome study.
+    if existing:
+        for column in ("price_at_ingest", "market_cap_at_ingest"):
+            if existing.get(column) is not None:
+                fields.pop(column, None)
+
     return update_filing_fields(filing_id, **fields)

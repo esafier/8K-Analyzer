@@ -275,6 +275,30 @@ def _disagreement_denied(text):
     return any(phrase in lowered for phrase in _DISAGREEMENT_DENIALS)
 
 
+# The same negation trap on the other half of this detector. Separation
+# agreements overwhelmingly describe termination "other than for Cause" or
+# "without Cause" — a substring test for "for cause" matches both, and would
+# stamp a severity-5 signal (and the URGENT badge) on a routine negotiated
+# exit. The phrase these filings use to say the OPPOSITE contains the phrase.
+_FOR_CAUSE_DENIALS = (
+    "other than for cause",
+    "not for cause",
+    "without cause",
+    "not been terminated for cause",
+    "was not for cause",
+    "no cause",
+    "other than a termination for cause",
+)
+
+
+def _for_cause_stated(text):
+    """True only when the filing says someone WAS terminated for cause."""
+    lowered = str(text or "").lower()
+    if "for cause" not in lowered:
+        return False
+    return not any(phrase in lowered for phrase in _FOR_CAUSE_DENIALS)
+
+
 def _detect_for_cause(facts, context):
     """Termination for cause, or an acknowledged disagreement with the company.
 
@@ -292,7 +316,7 @@ def _detect_for_cause(facts, context):
         disagreement = _truthy(dep.get("disagreement_disclosed")) or _truthy(dep.get("mentions_disagreement"))
         if disagreement and _disagreement_denied(reason):
             disagreement = False  # the filing denied it; the flag misread the boilerplate
-        for_cause = "for cause" in reason or "terminated for cause" in reason
+        for_cause = _for_cause_stated(reason)
         if not (for_cause or disagreement):
             continue
         label = "terminated for cause" if for_cause else "departed citing a disagreement with the company"

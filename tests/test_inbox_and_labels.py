@@ -246,17 +246,57 @@ def test_signing_refuses_an_unset_secret(monkeypatch):
     assert labels.signing_available() is False
 
 
-def test_label_link_records_without_a_login(client, signing_secret, monkeypatch):
-    """The whole point of the email path: a tap on a phone, no session."""
+def test_label_link_confirms_before_writing(client, signing_secret, monkeypatch):
+    """GET must not write. Corporate mail scanners (SafeLinks, Gmail prefetch)
+    request every URL in an email before the recipient sees it, and a digest
+    row carries BOTH a Signal and a Noise link — so a silent write would let a
+    scanner label the whole digest, last link winning."""
     monkeypatch.setenv("TRIAL_CODE", "SOME-CODE")
     filing_id = _add("a-1")
 
     resp = client.get(f"/label/{labels.make_token(filing_id, 'noise')}")
 
     assert resp.status_code == 200
+    assert "Mark this as noise?" in resp.get_data(as_text=True)
+    assert database.get_judgment(filing_id) is None, "GET wrote a label"
+
+
+def test_a_scanner_fetching_both_links_labels_nothing(client, signing_secret, monkeypatch):
+    """The exact sequence an email scanner performs."""
+    monkeypatch.setenv("TRIAL_CODE", "SOME-CODE")
+    filing_id = _add("a-1")
+
+    client.get(f"/label/{labels.make_token(filing_id, 'signal')}")
+    client.get(f"/label/{labels.make_token(filing_id, 'noise')}")
+
+    assert database.get_judgment(filing_id) is None
+
+
+def test_confirming_records_the_label_without_a_login(client, signing_secret, monkeypatch):
+    """The point of the email path survives: one tap in the mail client, one
+    tap on the page, no session required."""
+    monkeypatch.setenv("TRIAL_CODE", "SOME-CODE")
+    filing_id = _add("a-1")
+
+    resp = client.post(f"/label/{labels.make_token(filing_id, 'noise')}")
+
+    assert resp.status_code == 200
     assert "Marked as noise" in resp.get_data(as_text=True)
     assert database.get_judgment(filing_id)["label"] == "noise"
     assert database.get_judgment(filing_id)["source"] == "digest_link"
+
+
+def test_confirm_page_warns_before_replacing_a_deliberate_label(client, signing_secret):
+    """A 30-day token re-opened after a considered /review label would
+    otherwise overwrite it — and wipe the note with it."""
+    filing_id = _add("a-1")
+    database.upsert_judgment(filing_id, "signal", note="real forfeiture",
+                             source="review_ui")
+
+    body = client.get(f"/label/{labels.make_token(filing_id, 'noise')}").get_data(as_text=True)
+    assert "Currently labelled" in body
+    assert "real forfeiture" in body
+    assert database.get_judgment(filing_id)["label"] == "signal"
 
 
 def test_other_pages_still_require_the_trial_code(client, monkeypatch):
@@ -268,8 +308,8 @@ def test_other_pages_still_require_the_trial_code(client, monkeypatch):
 def test_label_link_undo(client, signing_secret):
     filing_id = _add("a-1")
     token = labels.make_token(filing_id, "noise")
-    client.get(f"/label/{token}")
-    resp = client.get(f"/label/{token}?undo=1")
+    client.post(f"/label/{token}")
+    resp = client.post(f"/label/{token}", data={"action": "undo"})
     assert "Undone" in resp.get_data(as_text=True)
     assert database.get_judgment(filing_id) is None
 

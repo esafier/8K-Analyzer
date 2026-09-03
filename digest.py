@@ -162,6 +162,7 @@ def send(days=1, min_score=MIN_SCORE, dry_run=False, base_url=None):
 
     channel, ok, error = _deliver(subject, html, text)
     try:
+        # Only a real delivery suppresses a filing from later digests.
         record_digest(channel, ids, status="sent" if ok else "failed")
     except Exception as e:
         print(f"[DIGEST] Could not record digest: {e}", flush=True)
@@ -169,7 +170,7 @@ def send(days=1, min_score=MIN_SCORE, dry_run=False, base_url=None):
     if ok:
         print(f"[DIGEST] Sent {len(ids)} item(s) via {channel}", flush=True)
     else:
-        print(f"[DIGEST] Delivery failed via {channel}: {error}", flush=True)
+        print(f"[DIGEST] Not delivered via {channel}: {error}", flush=True)
     return {"channel": channel, "count": len(ids), "sent": ok, "error": error}
 
 
@@ -193,10 +194,13 @@ def _deliver(subject, html, text):
         except Exception as e:
             return "slack", False, str(e)
 
-    # Nothing configured — print it rather than failing. The job stays
-    # runnable before the user has set up credentials.
+    # Nothing configured — print it rather than failing, so the job stays
+    # runnable before credentials exist.
     print(f"--- DIGEST (no channel configured) ---\nSubject: {subject}\n\n{text}", flush=True)
-    return "stdout", True, None
+    # Reported as NOT sent: a log line nobody read is not a delivery. Marking
+    # it sent would suppress those filings from the first real email once SMTP
+    # is configured — the digest would open by skipping its own backlog.
+    return "stdout", False, "no delivery channel configured"
 
 
 def _send_email(subject, html, text, user, password, recipient):

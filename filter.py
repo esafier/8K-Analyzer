@@ -47,6 +47,23 @@ def _build_legacy_summary(llm_result):
     return "; ".join(parts) if parts else (llm_result.get("summary") or "")
 
 
+def _keep(filing, collected, on_analyzed):
+    """Record a filing that passed, storing it immediately when asked.
+
+    The callback exists so a run that is killed mid-way (a SEC block can push
+    the job past its CI timeout) still leaves behind every filing it already
+    paid to analyze, instead of discarding the lot.
+    """
+    collected.append(filing)
+    if on_analyzed is None:
+        return
+    try:
+        on_analyzed(filing)
+    except Exception as e:
+        print(f"    WARN: could not store {filing.get('company', 'unknown')}: "
+              f"{type(e).__name__}: {e}", flush=True)
+
+
 def stage1_item_code_filter(filing_metadata):
     """Stage 1: Check if the filing has any of our target item codes.
 
@@ -218,7 +235,8 @@ def determine_subcategory(text_lower, matched_keywords):
 
 
 def filter_filings(filings_metadata, fetch_text_func=None, model=None,
-                   judge_model=None, apply_universe=True, skip_existing=True):
+                   judge_model=None, apply_universe=True, skip_existing=True,
+                   on_analyzed=None, stats=None):
     """Run the ingest funnel over a list of filings.
 
     Stage 1 runs on metadata only (fast).
@@ -256,30 +274,47 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None,
     # Stage 1b: universe + dedupe, before we spend anything on a document.
     if apply_universe and stage1_passed:
         from universe import screen_filings, summarize_skips
+        screened_count = len(stage1_passed)
         stage1_passed, out_of_universe = screen_filings(stage1_passed)
         if out_of_universe:
-            print(f"  Stage 1b (universe): {len(out_of_universe)} skipped "
-                  f"{summarize_skips(out_of_universe)}", flush=True)
+            skip_counts = summarize_skips(out_of_universe)
+            print(f"  Stage 1b (universe): {len(out_of_universe)} skipped {skip_counts}",
+                  flush=True)
+            # Reported upward so the caller can tell "nothing qualified today"
+            # from "the market-cap provider is down and rejected everything".
+            if stats is not None:
+                stats["screened"] = screened_count
+                stats["unknown_market_cap"] = skip_counts.get("unknown_market_cap", 0)
 
     if skip_existing and stage1_passed:
         # Deduplication used to happen only at insert_filing() — i.e. after the
         # SEC fetch and the model call had already been paid for. Re-running an
         # overlapping date range charged full price for rows that were then
         # thrown away.
-        from database import filing_exists
+        #
+        # A stored row with no text is the exception: those are the ones a SEC
+        # block parked for retry. Skipping them here would mean the daily job
+        # could never rescue them — it would re-cover the window and drop
+        # exactly the rows that needed re-fetching.
+        from database import get_filing_by_accession
         fresh = []
-        already = 0
+        already = retryable = 0
         for filing in stage1_passed:
             try:
-                seen = filing_exists(filing.get("accession_no"))
+                existing = get_filing_by_accession(filing.get("accession_no"))
             except Exception:
-                seen = False  # DB unavailable — better to re-fetch than to drop
-            if seen:
-                already += 1
-            else:
+                existing = None  # DB unavailable — better to re-fetch than to drop
+            if existing is None:
                 fresh.append(filing)
-        if already:
-            print(f"  Stage 1c (dedupe): {already} already in the database", flush=True)
+            elif not (dict(existing).get("raw_text") or "").strip():
+                filing["_existing_id"] = dict(existing)["id"]
+                fresh.append(filing)
+                retryable += 1
+            else:
+                already += 1
+        if already or retryable:
+            print(f"  Stage 1c (dedupe): {already} already stored, "
+                  f"{retryable} parked without text — retrying", flush=True)
         stage1_passed = fresh
 
     if not fetch_text_func:
@@ -388,7 +423,7 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None,
             # Don't overwrite that with "" — leaves the dashboard ambiguous.
             filing.setdefault("summary", "")
             filing.setdefault("source", "8-K")
-            final_passed.append(filing)
+            _keep(filing, final_passed, on_analyzed)
             continue
 
         print(f"  Stage 3: analyzing {i + 1}/{len(all_for_llm)} — {company}", flush=True)
@@ -407,7 +442,7 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None,
             print(f"    ANALYSIS FAILED ({result.error}) — falling back to keywords", flush=True)
             filing["summary"] = extract_summary(text, filing.get("matched_keywords", "").split(","))
             filing.setdefault("source", "8-K")
-            final_passed.append(filing)
+            _keep(filing, final_passed, on_analyzed)
             continue
 
         if not result.relevant:
@@ -416,7 +451,7 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None,
             continue
 
         apply_to_filing(filing, result)
-        final_passed.append(filing)
+        _keep(filing, final_passed, on_analyzed)
 
         tokens = result.tokens_in + result.tokens_out
         badge = ",".join(result.signal_types) or "no signals"

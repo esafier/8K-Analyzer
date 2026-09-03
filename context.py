@@ -115,7 +115,16 @@ def _company_profile(cik, ticker, refresh=False):
 
     if cik:
         try:
-            upsert_company_profile(cik, **{k: v for k, v in profile.items() if v is not None})
+            # Write every field, including the None ones. Filtering them out
+            # looks tidy but diverges by engine: SQLite's INSERT OR REPLACE
+            # blanks the omitted columns while Postgres' ON CONFLICT DO UPDATE
+            # leaves them untouched. So a failed price lookup would drop the
+            # stale price locally and PRESERVE it on Render — where
+            # refreshed_at is bumped too, making a dead quote look fresh for
+            # another day. Hurdle percentages would then be computed against a
+            # price nobody could see: a confident wrong answer, in production
+            # only, invisible to the SQLite test suite.
+            upsert_company_profile(cik, **profile)
         except Exception as e:
             print(f"[CONTEXT] Could not cache profile for CIK {cik}: {e}", flush=True)
 
@@ -160,6 +169,33 @@ def _next_earnings(ticker):
 # SEC submissions — item calendar + IPO proxy
 # ---------------------------------------------------------------------------
 
+_submissions_cache = {}
+
+
+def _submissions(cik):
+    """Fetch a company's submissions JSON at most once per process run.
+
+    Both _sec_history and _accepted_at need it, so without memoising, every
+    filing costs two SEC requests instead of none-after-the-first. That
+    matters most exactly when things are going wrong: during a rate-limit
+    block each request burns a multi-minute cooldown, so halving the call
+    count halves how fast a blocked run walks into its CI timeout.
+
+    Failures are cached as None too — a company whose submissions are
+    unavailable shouldn't be retried once per filing.
+    """
+    if cik in _submissions_cache:
+        return _submissions_cache[cik]
+    try:
+        from fetcher import fetch_company_submissions
+        data = fetch_company_submissions(cik)
+    except Exception as e:
+        print(f"[CONTEXT] Submissions fetch failed for CIK {cik}: {e}", flush=True)
+        data = None
+    _submissions_cache[cik] = data
+    return data
+
+
 def _sec_history(cik):
     """Recent 8-K item calendar, last earnings date, and first-filing date.
 
@@ -170,12 +206,7 @@ def _sec_history(cik):
     if not cik:
         return empty
 
-    try:
-        from fetcher import fetch_company_submissions
-        data = fetch_company_submissions(cik)
-    except Exception as e:
-        print(f"[CONTEXT] Submissions fetch failed for CIK {cik}: {e}", flush=True)
-        return empty
+    data = _submissions(cik)
     if not data:
         return empty
 
@@ -240,11 +271,7 @@ def _accepted_at(cik, accession_no):
     """
     if not cik or not accession_no:
         return None
-    try:
-        from fetcher import fetch_company_submissions
-        data = fetch_company_submissions(cik)
-    except Exception:
-        return None
+    data = _submissions(cik)
     if not data:
         return None
 
@@ -372,9 +399,25 @@ def _fetch_insider_transactions(ticker, start_date, limit=250):
 def _departures_24mo(filing):
     """Deduped 24-month departure count for this company.
 
-    Prefers the value enrichment already stamped on the row. Returns None —
-    not 0 — when unknown, so a failed EDGAR lookup can't be read as "nobody
-    left"; that mistake silently suppresses the cluster signal forever.
+    Three sources, cheapest first:
+
+      1. The count EDGAR enrichment already stamped on the row.
+      2. The stored departure_history JSON.
+      3. A local-database count of prior Item 5.02 filings from the same CIK.
+
+    Source 3 exists because of an ordering problem: on first ingest, EDGAR
+    enrichment runs AFTER analysis, so neither of the first two exists yet and
+    the cluster signal could never fire on the day it mattered. A third CFO
+    exit in eighteen months scored exactly like a first one, while the
+    dashboard chip beside it read "3 DEP / 24MO" — the badge contradicting the
+    verdict.
+
+    The local count is a floor, not the truth (it only sees filings already
+    ingested), but a floor available at analysis time beats a precise number
+    that arrives too late. Enrichment still refines it afterward.
+
+    Returns None — never 0 — when nothing is known, so a failed lookup can't
+    be read as "nobody left".
     """
     count = filing.get("departure_count_24mo")
     if isinstance(count, int):
@@ -392,7 +435,30 @@ def _departures_24mo(filing):
                 })
         except (ValueError, TypeError):
             pass
-    return None
+
+    return _local_departure_count(filing)
+
+
+def _local_departure_count(filing):
+    """Prior Item 5.02 filings from this CIK already in our database.
+
+    Free (no network) and available during analysis. Counts filings rather
+    than people, which understates a multi-executive 8-K — deliberately, since
+    the alternative at this point in the pipeline is knowing nothing.
+    """
+    cik = str(filing.get("cik") or "").strip()
+    if not cik:
+        return None
+    try:
+        from database import get_departure_history
+        prior = get_departure_history(cik, filing.get("accession_no") or "", months=24)
+    except Exception as e:
+        print(f"[CONTEXT] Local departure lookup failed for CIK {cik}: {e}", flush=True)
+        return None
+    if not prior:
+        return None
+    # +1 for the filing under analysis, which is itself a departure.
+    return len(prior) + 1
 
 
 # ---------------------------------------------------------------------------

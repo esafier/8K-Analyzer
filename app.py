@@ -904,39 +904,47 @@ def api_label():
     return jsonify({"success": True, "label": label, "remaining": count_review_queue()})
 
 
-@app.route("/label/<token>")
+@app.route("/label/<token>", methods=["GET", "POST"])
 def label_from_token(token):
-    """One-tap labelling from a digest email — no login, no app.
+    """Labelling from a digest email — no login, no app.
 
     Exempt from the trial gate (see check_trial_access): the signed token is
-    the credential. Renders a small confirmation page with an Undo link
-    rather than acting silently, because mail clients and link scanners fetch
-    URLs on their own and a silent write would let a scanner label filings.
+    the credential.
+
+    **GET never writes.** Corporate mail scanners (Outlook SafeLinks, Gmail's
+    prefetch) request every URL in an email before the recipient sees it. A
+    digest row carries both a Signal and a Noise link, so a scanner would
+    fetch both and the last one would win — quietly filling the training set
+    with labels nobody chose, and overwriting deliberate ones made in
+    /review. So GET renders a confirm page and the POST does the work: one
+    tap in the mail client, one tap on the page.
     """
     from labels import read_token, record, undo
-
-    if request.args.get("undo") == "1":
-        filing_id, _ = read_token(token)
-        if filing_id:
-            undo(filing_id)
-            return render_template("label_done.html", filing=get_filing_by_id(filing_id),
-                                   label=None, undone=True, token=token)
-        return render_template("label_done.html", filing=None, label=None,
-                               undone=False, token=None, invalid=True)
 
     filing_id, label = read_token(token)
     if not filing_id or not label:
         return render_template("label_done.html", filing=None, label=None,
-                               undone=False, token=None, invalid=True), 400
+                               state="invalid", token=None), 400
 
     filing = get_filing_by_id(filing_id)
     if filing is None:
         return render_template("label_done.html", filing=None, label=None,
-                               undone=False, token=None, invalid=True), 404
+                               state="invalid", token=None), 404
+    filing = dict(filing)
+
+    if request.method == "GET":
+        return render_template("label_done.html", filing=filing, label=label,
+                               state="confirm", token=token,
+                               existing=get_judgment(filing_id))
+
+    if request.form.get("action") == "undo":
+        undo(filing_id)
+        return render_template("label_done.html", filing=filing, label=None,
+                               state="undone", token=token)
 
     record(filing_id, label, source="digest_link")
-    return render_template("label_done.html", filing=dict(filing), label=label,
-                           undone=False, token=token)
+    return render_template("label_done.html", filing=filing, label=label,
+                           state="saved", token=token)
 
 
 @app.route("/guidelines", methods=["POST"])

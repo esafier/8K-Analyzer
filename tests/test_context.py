@@ -13,6 +13,8 @@ Two properties matter most here:
 """
 import json
 
+import pytest
+
 import context
 
 
@@ -43,6 +45,15 @@ SUBMISSIONS = {
         "files": [{"filingFrom": "2021-11-04"}],
     }
 }
+
+
+@pytest.fixture(autouse=True)
+def _clear_submissions_cache():
+    """context memoises submissions per process to halve SEC calls. That cache
+    would otherwise carry one test's stub into the next."""
+    context._submissions_cache.clear()
+    yield
+    context._submissions_cache.clear()
 
 
 def _stub_sec(monkeypatch, submissions=SUBMISSIONS):
@@ -313,3 +324,71 @@ def test_accepted_timestamp_parsing_tolerates_junk():
     assert context._parse_accepted("garbage") is None
     assert context._parse_accepted(None) is None
     assert context._parse_accepted("2026-08-28T18:42:00.000Z") is not None
+
+
+# ---------------------------------------------------------------------------
+# Departure clusters must be knowable AT analysis time
+# ---------------------------------------------------------------------------
+
+def test_local_history_supplies_a_cluster_count_on_first_ingest(tmp_sqlite_db, monkeypatch):
+    """EDGAR enrichment runs AFTER analysis, so on the day a filing arrives
+    neither the stamped count nor the stored history exists yet. Without a
+    local fallback the cluster signal could never fire when it mattered: a
+    third CFO exit in 18 months scored like a first one, while the dashboard
+    chip beside it read "3 DEP / 24MO"."""
+    import database
+    from datetime import datetime, timedelta
+
+    _stub_sec(monkeypatch)
+    _stub_markets(monkeypatch)
+
+    recent = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+    for i in range(2):
+        database.insert_filing({
+            "accession_no": f"prior-{i}", "company": "Acme Corp", "ticker": "ACME",
+            "cik": "0001234567", "filed_date": recent, "item_codes": "5.02",
+            "filing_url": "u", "raw_text": "t", "summary": "departure",
+        })
+
+    ctx = context.build_context(_filing(accession_no="new-1"))
+    assert ctx["departures_24mo"] == 3   # two priors plus this filing
+
+
+def test_no_prior_filings_leaves_the_count_unknown(tmp_sqlite_db, monkeypatch):
+    """Still None, never 0 — a company we have never seen is not a company
+    where nobody left."""
+    _stub_sec(monkeypatch)
+    _stub_markets(monkeypatch)
+    assert context.build_context(_filing())["departures_24mo"] is None
+
+
+def test_submissions_are_fetched_once_per_company(tmp_sqlite_db, monkeypatch):
+    """Both the item calendar and the acceptance timestamp need this document.
+    Two calls per filing doubles SEC load exactly when a rate-limit block
+    makes each call cost minutes."""
+    calls = []
+    monkeypatch.setattr("fetcher.fetch_company_submissions",
+                        lambda cik: calls.append(cik) or SUBMISSIONS)
+    _stub_markets(monkeypatch)
+
+    context.build_context(_filing())
+    assert len(calls) == 1
+
+
+def test_profile_cache_writes_nulls_so_both_engines_agree(tmp_sqlite_db, monkeypatch):
+    """Omitting None fields diverges by engine: SQLite's INSERT OR REPLACE
+    blanks them, Postgres' ON CONFLICT DO UPDATE keeps the old value AND bumps
+    refreshed_at — so a dead price lookup would leave a stale quote looking
+    fresh, and hurdle percentages would be computed against a price nobody
+    could see."""
+    import database
+
+    _stub_sec(monkeypatch)
+    _stub_markets(monkeypatch, price=10.0)
+    context.build_context(_filing())
+    assert database.get_company_profile("0001234567")["price"] == 10.0
+
+    context._submissions_cache.clear()
+    _stub_markets(monkeypatch, price=None)
+    context.build_context(_filing(), refresh=True)
+    assert database.get_company_profile("0001234567")["price"] is None

@@ -26,6 +26,11 @@ WATERMARK_KEY = "ingested_through"
 # lie the logs would carry forever.
 FETCH_FAILURE_THRESHOLD = 0.20
 
+# Likewise for the universe gate. It fails closed on an unknown market cap,
+# which is right for one ticker and catastrophic for all of them: a dead
+# market-data provider would silently reject an entire day.
+UNKNOWN_CAP_THRESHOLD = 0.50
+
 
 class IngestBlocked(RuntimeError):
     """Raised when SEC refused enough of the run to make it meaningless."""
@@ -54,17 +59,37 @@ def ingest_range(start_date, end_date, model=None, judge_model=None,
         complete_backfill_run(run_id, fetched=0, filtered=0, new=0, skipped=0)
         return stats
 
-    matched = filter_filings(metadata, fetch_text_func=fetch_filing_text,
-                             model=model, judge_model=judge_model)
-    stats["analyzed"] = len(matched)
-
-    for filing in matched:
+    # Store each filing the moment it is analyzed, rather than accumulating a
+    # list and inserting at the end. A SEC block partway through a run costs
+    # ~18 minutes per remaining filing in cooldowns, so the job can hit the
+    # Actions timeout and be SIGKILLed — discarding every extraction and
+    # judgment already paid for. Incremental writes mean a killed run still
+    # leaves everything it got.
+    def store(filing):
         if not filing.get("raw_text"):
             stats["no_text"] += 1
         if insert_filing(filing):
             stats["new"] += 1
         else:
             stats["skipped"] += 1
+
+    matched = filter_filings(metadata, fetch_text_func=fetch_filing_text,
+                             model=model, judge_model=judge_model,
+                             on_analyzed=store, stats=stats)
+    stats["analyzed"] = len(matched)
+
+    # A day where the universe gate rejected almost everything for want of a
+    # market cap is a dead data provider, not a quiet market. Without this the
+    # run reports success, the watermark advances, and the day is lost with
+    # only a log line to show for it.
+    unknown = stats.get("unknown_market_cap", 0)
+    screened = stats.get("screened", 0)
+    if screened and unknown / screened > UNKNOWN_CAP_THRESHOLD:
+        raise IngestBlocked(
+            f"{unknown} of {screened} in-scope filings had no market cap — the "
+            f"market-data provider is almost certainly down. Refusing to record "
+            f"this window as covered."
+        )
 
     complete_backfill_run(run_id, fetched=stats["fetched"], filtered=stats["analyzed"],
                           new=stats["new"], skipped=stats["skipped"])
@@ -155,4 +180,23 @@ def pending_window(today=None, max_days=10):
 
 
 def mark_ingested(through_date):
-    set_app_status(WATERMARK_KEY, through_date)
+    """Record the last date whose coverage we can actually vouch for.
+
+    Deliberately claims one day LESS than the window just processed. The job
+    runs in the morning, so "today" has barely started: EDGAR holds only the
+    filings accepted overnight, and the bulk of the day — everything filed
+    between the run and the 17:30 ET cutoff — does not exist yet.
+
+    Claiming today would mean tomorrow's window starts after it, and every
+    business-hours filing would be skipped forever. Claiming yesterday makes
+    tomorrow re-cover today in full; the Stage 1c dedupe means the filings
+    already stored cost nothing the second time.
+    """
+    last_complete = _parse(through_date) - timedelta(days=1)
+    set_app_status(WATERMARK_KEY, last_complete.strftime("%Y-%m-%d"))
+
+
+def _parse(value):
+    if isinstance(value, str):
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    return value

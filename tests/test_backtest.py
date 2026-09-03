@@ -139,3 +139,50 @@ def test_a_failing_filing_does_not_stop_the_run(tmp_sqlite_db):
         stats = backtest.run(days=3650, workers=1)
 
     assert stats["failed"] == 3  # one worker error + two extraction failures
+
+
+def test_backtest_never_overwrites_the_original_market_snapshot(tmp_sqlite_db):
+    """price_at_ingest exists so a signal can be audited against the price it
+    was formed at. A 90-day backtest builds context from TODAY's price, so
+    letting it write would replace what the analyst saw with a number from
+    months later — precisely the look-ahead contamination the column prevents,
+    and it would quietly corrupt any later outcome study."""
+    filing_id = _add("a-1")
+    database.update_filing_fields(filing_id, price_at_ingest=8.00,
+                                  market_cap_at_ingest=200_000_000)
+
+    facts = {
+        "relevant": True, "top_level_category": "Management Change",
+        "subcategories": ["CFO Departure"], "reasoning": "one event",
+        "departures": [{"name": "Jane Doe", "title": "CFO", "role_class": "CFO",
+                        "effective_immediately": True, "days_notice": 0,
+                        "stated_reason": "resigned", "is_retirement": False,
+                        "is_merger_related": False, "successor_named": False,
+                        "successor_info": "search underway",
+                        "forfeiture_flag": "forfeited", "comp_impact": "forfeits $4M"}],
+        "appointments": [], "comp_events": [], "insider_transactions": [],
+        "other": [], "filing_flags": {}, "_tokens_in": 100, "_tokens_out": 50,
+    }
+    with patch("llm.classify_and_summarize", return_value=facts), \
+         patch("pipeline._build_context", return_value={"price": 25.00,
+                                                        "market_cap": 900_000_000}), \
+         patch("pipeline._judge", return_value=None):
+        backtest.run(days=3650, workers=1)
+
+    row = database.get_filing_by_id(filing_id)
+    assert row["price_at_ingest"] == 8.00
+    assert row["market_cap_at_ingest"] == 200_000_000
+
+
+def test_a_first_analysis_does_record_the_snapshot(tmp_sqlite_db):
+    filing_id = _add("a-1")
+    facts = {"relevant": True, "top_level_category": "Other", "subcategories": [],
+             "reasoning": "", "departures": [], "appointments": [], "comp_events": [],
+             "insider_transactions": [], "other": [], "filing_flags": {},
+             "_tokens_in": 10, "_tokens_out": 5}
+    with patch("llm.classify_and_summarize", return_value=facts), \
+         patch("pipeline._build_context", return_value={"price": 25.00}), \
+         patch("pipeline._judge", return_value=None):
+        backtest.run(days=3650, workers=1)
+
+    assert database.get_filing_by_id(filing_id)["price_at_ingest"] == 25.00

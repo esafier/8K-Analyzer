@@ -858,3 +858,21 @@ def test_a_lone_lowest_severity_signal_does_not_reach_the_inbox():
     result = signals.detect(facts(), {"is_after_hours_friday": True})
     assert signals.detector_verdict(result) == "PASS"
     assert signals.detector_score(result) == 0
+
+
+def test_termination_other_than_for_cause_does_not_fire():
+    """The negation trap on the for-cause half. Separation agreements
+    overwhelmingly say "other than for Cause" or "without Cause" — a substring
+    test for "for cause" matches the phrase that means the OPPOSITE, and would
+    stamp severity 5 plus an URGENT badge on a routine negotiated exit."""
+    for phrasing in ("terminated other than for Cause",
+                     "termination without Cause under the Employment Agreement",
+                     "the Company terminated Ms. Doe not for cause"):
+        result = signals.detect(facts(departures=[departure(stated_reason=phrasing)]))
+        assert "FOR_CAUSE_OR_DISAGREEMENT" not in types_of(result), phrasing
+
+
+def test_a_real_for_cause_termination_still_fires():
+    result = signals.detect(facts(departures=[
+        departure(stated_reason="terminated for Cause following an internal investigation")]))
+    assert "FOR_CAUSE_OR_DISAGREEMENT" in types_of(result)
