@@ -64,20 +64,34 @@ def _parse_database_url():
 
 
 def _create_pg_connection():
-    """Create a fresh PostgreSQL connection."""
+    """Create a fresh PostgreSQL connection.
+
+    Tries SSL first, because the hosted database requires it, then falls back
+    to a plain connection when the server refuses. Without the fallback the
+    code can only ever talk to Render: a local or CI Postgres has SSL turned
+    off and rejects the handshake outright, so there was no way to run the
+    suite — or reproduce a production bug — against a real Postgres.
+
+    Encryption is never silently downgraded on a server that supports it; the
+    fallback only happens when the server itself says no.
+    """
     user, password, host, port, dbname = _parse_database_url()
+
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
 
-    return pg8000.dbapi.connect(
-        user=user,
-        password=password,
-        host=host,
-        port=port,
-        database=dbname,
-        ssl_context=ssl_context
-    )
+    params = {"user": user, "password": password, "host": host,
+              "port": port, "database": dbname}
+
+    try:
+        return pg8000.dbapi.connect(ssl_context=ssl_context, **params)
+    except Exception as e:
+        if "refuses ssl" not in str(e).lower():
+            raise
+        print("[DB] Server refuses SSL — connecting without it "
+              "(expected for a local or CI PostgreSQL)", flush=True)
+        return pg8000.dbapi.connect(ssl_context=None, **params)
 
 
 def _get_pg_connection():
