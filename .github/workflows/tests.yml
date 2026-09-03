@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, "feature/**", "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  sqlite:
+    name: pytest (SQLite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m pytest tests/ -q
+
+  postgres:
+    # The local fixture is SQLite-only, so every Postgres-specific difference
+    # — %s placeholders, RETURNING, INTERVAL syntax, rows that are tuples
+    # rather than sqlite3.Row — is invisible to it. Those bugs have reached
+    # production in this project more than once; this job is the net.
+    name: pytest (PostgreSQL)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: filings_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Schema boots cleanly on PostgreSQL
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/filings_test
+        run: python -m pytest tests/test_postgres_parity.py -q

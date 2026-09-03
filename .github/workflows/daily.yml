@@ -1,0 +1,70 @@
+name: Daily 8-K signals
+
+# The job that turns this from a tool you must remember to open into a system
+# that arrives. Every day of data used to depend on someone clicking Backfill;
+# when that stopped, the feed died silently.
+
+on:
+  schedule:
+    # 11:30 UTC = 7:30am ET (6:30 during standard time). After SEC's overnight
+    # dissemination, before the market opens.
+    - cron: "30 11 * * 1-5"
+  # Manual trigger, and a hedge: GitHub disables scheduled workflows on public
+  # repos after 60 days of inactivity, so having a button matters.
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Force a window of the last N days (blank = use the watermark)"
+        required: false
+      dry_run:
+        description: "Print the digest instead of sending it"
+        type: boolean
+        default: false
+
+concurrency:
+  # Never let two runs ingest the same window at once. Not cancel-in-progress:
+  # a half-finished ingest that gets killed leaves the watermark unadvanced
+  # and wastes the model calls it already paid for.
+  group: daily-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120   # SEC rate-limit cooldowns are measured in minutes
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run the daily job
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          API_NINJAS_KEY: ${{ secrets.API_NINJAS_KEY }}
+          # Must match the value on Render: it signs the digest's label links,
+          # which the web app then has to be able to verify.
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          APP_BASE_URL: ${{ vars.APP_BASE_URL || 'https://eightk-analyzer.onrender.com' }}
+          DIGEST_SMTP_USER: ${{ secrets.DIGEST_SMTP_USER }}
+          DIGEST_SMTP_PASS: ${{ secrets.DIGEST_SMTP_PASS }}
+          DIGEST_TO: ${{ secrets.DIGEST_TO }}
+          DIGEST_SLACK_WEBHOOK: ${{ secrets.DIGEST_SLACK_WEBHOOK }}
+        run: |
+          python daily.py \
+            ${{ github.event.inputs.days && format('--days {0}', github.event.inputs.days) || '' }} \
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+
+      # Runs even when the job failed: a blocked run exits non-zero on purpose,
+      # and the evaluation is exactly what you want to see when it does.
+      - name: Ranking quality against the user's labels
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python evaluate.py || true
