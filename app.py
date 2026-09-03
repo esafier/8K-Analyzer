@@ -74,6 +74,27 @@ def format_earnings_date(earnings_info):
 app.jinja_env.filters["format_earnings_date"] = format_earnings_date
 
 
+def format_timestamp(value):
+    """Render a datetime as 'Sep 02, 7:30 PM'.
+
+    Uses only strftime directives that exist on every platform. The obvious
+    way to drop the hour's leading zero is '%-I', which works on Linux and
+    raises ValueError on Windows — and because it's inside a template, the
+    failure surfaces as a 500 on the page rather than anything traceable.
+    Strip the zero in Python instead.
+    """
+    if not value:
+        return ""
+    try:
+        formatted = value.strftime("%b %d, %I:%M %p")
+    except (AttributeError, ValueError):
+        return str(value)
+    # "Sep 02, 07:30 PM" -> "Sep 02, 7:30 PM"
+    return formatted.replace(", 0", ", ", 1) if ", 0" in formatted else formatted
+
+app.jinja_env.filters["format_timestamp"] = format_timestamp
+
+
 # --- Jinja filters for v3 structured summary ---
 from summary_utils import parse_subcategories, structured_summary_for_display
 

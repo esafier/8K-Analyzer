@@ -295,3 +295,54 @@ def test_signal_type_counts_aggregate_across_filings(tmp_sqlite_db):
     counts = database.get_signal_type_counts(days=30)
     assert counts["FORFEITURE_EXIT"] == 2
     assert counts["NO_SUCCESSOR"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Header timestamp — the platform trap
+# ---------------------------------------------------------------------------
+
+def test_inbox_renders_the_last_updated_timestamp(client):
+    """This 500'd in real use and passed every test, because the tests never
+    recorded a backfill so the branch never ran. The template used '%-I' to
+    drop the hour's leading zero — a Linux-only strftime directive that raises
+    ValueError on Windows, surfacing as a 500 on the page."""
+    _add("a-1")
+    database.update_last_backfill("scheduled")
+
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "updated" in resp.get_data(as_text=True)
+
+
+def test_timestamp_filter_is_platform_safe():
+    from datetime import datetime
+    from app import format_timestamp
+
+    assert format_timestamp(datetime(2026, 9, 2, 7, 30)) == "Sep 02, 7:30 AM"
+    assert format_timestamp(datetime(2026, 9, 2, 19, 5)) == "Sep 02, 7:05 PM"
+    assert format_timestamp(datetime(2026, 9, 2, 11, 45)) == "Sep 02, 11:45 AM"
+    assert format_timestamp(None) == ""
+    assert format_timestamp("not a datetime") == "not a datetime"
+
+
+def test_window_control_reflects_a_custom_value(client):
+    """A hand-typed ?days= that isn't a preset used to leave the select
+    showing "Today" while the page listed a much longer window — the control
+    contradicting the header right next to it."""
+    _add("a-1")
+    body = client.get("/?days=45").get_data(as_text=True)
+    assert '<option value="45" selected>45 days</option>' in body
+
+
+def test_out_of_range_window_is_clamped_and_shown_honestly(client):
+    """days=400 clamps to the 365 maximum, and the control must show 365 —
+    not fall back to the first option."""
+    _add("a-1")
+    body = client.get("/?days=400").get_data(as_text=True)
+    assert '<option value="365" selected>1 year</option>' in body
+
+
+def test_preset_windows_still_select_correctly(client):
+    _add("a-1")
+    body = client.get("/?days=30").get_data(as_text=True)
+    assert '<option value="30" selected>30 days</option>' in body
