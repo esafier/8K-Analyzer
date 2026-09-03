@@ -1,6 +1,32 @@
 # config.py — Settings for the 8-K Filing Analyzer
 # Change these values to customize what filings you're looking for
 
+import sys
+
+
+def _make_console_unicode_safe():
+    """Stop a stray non-ASCII character in a log line from killing the process.
+
+    Windows consoles default to cp1252, which cannot encode a check mark, an
+    arrow, or an emoji. Any print() containing one raises UnicodeEncodeError —
+    and because these calls sit at module import time and inside long
+    background jobs, the failure lands somewhere unrelated to its cause. A
+    single tick in a boot message was enough to make every command-line entry
+    point (daily.py, evaluate.py, digest.py) die before doing anything.
+
+    Errors that matter must still be loud; a decorative glyph must never be
+    one of them. So encoding failures degrade to a replacement character
+    rather than an exception.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # already fine, or not a real stream (pytest capture, pipes)
+
+
+_make_console_unicode_safe()
+
 # Load .env file so we can read API keys from it locally
 from dotenv import load_dotenv
 load_dotenv()

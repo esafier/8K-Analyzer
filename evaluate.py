@@ -194,4 +194,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate ranking against the user's labels")
     parser.add_argument("--json", action="store_true", help="Machine-readable output")
     args = parser.parse_args()
+
+    # Bring the schema up to date first. Migrations are additive and
+    # idempotent, and without this the command crashes with a bare "no such
+    # table: judgments" against any database that predates the rebuild —
+    # which is every existing one.
+    from database import initialize_database
+    initialize_database()
+
     report(as_json=args.json)

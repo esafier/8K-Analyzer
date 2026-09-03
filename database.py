@@ -13,7 +13,7 @@ from config import DATABASE_PATH
 try:
     import pg8000.dbapi
     HAS_PG = True
-    print("[BOOT] pg8000 is installed ✓")
+    print("[BOOT] pg8000 is installed")
 except ImportError:
     HAS_PG = False
     print("[BOOT] pg8000 is NOT installed — PostgreSQL unavailable")

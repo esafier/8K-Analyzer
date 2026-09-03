@@ -232,5 +232,10 @@ if __name__ == "__main__":
     parser.add_argument("--base-url", default=None)
     args = parser.parse_args()
 
+    # Additive, idempotent — and without it this crashes on "no such table:
+    # digests" against any database created before the rebuild.
+    from database import initialize_database
+    initialize_database()
+
     send(days=args.days, min_score=args.min_score,
          dry_run=args.dry_run, base_url=args.base_url)
