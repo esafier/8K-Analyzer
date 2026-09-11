@@ -37,6 +37,21 @@ EDGAR search → universe filter → dedupe → fetch text + exhibits
         judgments → evaluate.py → few-shot + guidelines → judge
 ```
 
+**Form 4s enter at stage 2.** `form4.py` reads the XML (already structured —
+no extraction model), builds facts, and calls `pipeline.analyze_facts`, the
+same function 8-Ks use after extraction. Only open-market buys ≥ $50K by
+officers/directors and top-officer grants are scored; rows are stored only
+when a detector fires.
+
+**Two feedback loops close the system:** `judgments` (the user's labels, read
+by `evaluate.py` and fed to the judge as examples) and `outcomes` (price vs.
+SPY at 7/30/90 days, shown on `/scorecard`). Both are updated by the daily
+job; `outcomes` is prospective only because the price feed has no history.
+
+**After changing a detector, run `rescore.py`.** It re-ranks every stored
+filing from its stored facts and context with zero model calls. Detectors are
+deterministic; paying to re-extract to test a threshold change is waste.
+
 **Never add a second analysis path.** filter.py, app.run_resummarize and
 app.run_retry_missing_summaries each used to carry their own copy of the field
 mapping. They drifted, and the retry path silently lost market-target
@@ -68,6 +83,15 @@ Both instances of this pattern produced false positives on 20%+ of filings:
 Name extraction fields for the event (`disagreement_disclosed`,
 `terminated_for_cause`), never for the mention — and guard in code too.
 
+### A signal needs its event in THIS filing
+Context signals (departure clusters, company grant history) describe the
+company, not the filing. In week one, DEPARTURE_CLUSTER fired on appointment-
+only filings and director retirements purely because the company had
+history, and OFF_CYCLE_GRANT fired on every new-hire package and severance
+payment. 40% of analyzed filings landed in MONITOR. A context signal must be
+anchored to an event actually disclosed here — an officer exit, a
+discretionary equity grant — or it is company trivia, not a reason to read.
+
 ### null ≠ false
 In extraction output, `null` means the filing was silent and `false` means the
 filing said no. Detectors must not fire on silence — asserting "no successor
@@ -97,8 +121,10 @@ decorative glyph must never be one of them.
 ## Verifying a change
 
 ```bash
-python -m pytest tests/ -q                   # 390 tests, SQLite
+python -m pytest tests/ -q                   # ~500 tests, SQLite (Postgres in CI)
+python rescore.py --dry-run                  # re-rank stored filings after a detector change — free
 python backtest.py --days 30 --dry-run       # cost estimate first, always
+python form4.py --date YYYY-MM-DD --dry-run --no-judge   # Form 4 scan, no spend
 python evaluate.py                           # ranking quality vs. the user's labels
 python daily.py --date YYYY-MM-DD --dry-run  # one real day, end to end
 ```
