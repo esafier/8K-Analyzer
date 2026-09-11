@@ -140,6 +140,31 @@ app.jinja_env.filters["render_deep_analysis"] = render_deep_analysis
 # ============================================================
 
 @app.before_request
+def reject_cross_site_posts():
+    """Refuse state-changing requests that come from another website.
+
+    The app has no login when TRIAL_CODE is unset, so without this any page on
+    the internet could submit a hidden form to /guidelines and plant a
+    standing rule in every future judge prompt, or clear the database.
+    Browsers attach an Origin (or Referer) header to form posts; when one is
+    present and names a different host, the request is refused.
+
+    Requests with neither header (curl, the test client, some privacy
+    extensions) are allowed through — this blocks drive-by forms from other
+    sites, not deliberate calls from a trusted client.
+    """
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    source = request.headers.get("Origin") or request.headers.get("Referer")
+    if not source:
+        return None
+    from urllib.parse import urlparse
+    if urlparse(source).netloc != request.host:
+        return ("Cross-site request refused", 403)
+    return None
+
+
+@app.before_request
 def check_trial_access():
     """Block unauthenticated visitors when a trial code is configured."""
     trial_code = os.environ.get("TRIAL_CODE")
@@ -981,6 +1006,33 @@ def seed_labels():
     return redirect(url_for("review"))
 
 
+@app.route("/scorecard")
+def scorecard():
+    """What the stock did after each signal type fired, net of SPY.
+
+    Labels measure whether the user agreed with the ranking; this measures
+    whether the market did. A detector that the user likes but the market
+    ignores is worth knowing about, and so is the reverse.
+    """
+    import outcomes as outcome_tracker
+    from database import OUTCOME_HORIZONS, get_all_outcomes
+
+    rows = get_all_outcomes()
+    table = outcome_tracker.scorecard(rows)
+    # "All" first, then signal types by how many 30-day marks back them.
+    order = (["ALL"] if "ALL" in table else []) + sorted(
+        (k for k in table if k != "ALL"),
+        key=lambda k: -max((cell["n"] for cell in table[k].values()), default=0),
+    )
+    return render_template(
+        "scorecard.html",
+        table=table,
+        order=order,
+        horizons=OUTCOME_HORIZONS,
+        counts=outcome_tracker.pending_counts(rows),
+    )
+
+
 @app.route("/api/filings/mark-read", methods=["POST"])
 def api_mark_filings_read():
     """Batch-mark filings as read.
@@ -1226,9 +1278,17 @@ def resummarize():
     thread.start()
 
     date_label = f"{date_from} to {date_to}" if date_from else "most recent filings"
-    model_label = model or "GPT-5.4-nano"
-    flash(f"Re-summarize started for {date_label} using {model_label}. Refresh the main page to see updated summaries.", "success")
+    model_label = model or "the default model"
+    flash(f"Re-analysis started for {date_label} using {model_label} "
+          f"(capped at {RESUMMARIZE_MAX_FILINGS} filings per click). "
+          f"Refresh the main page to see updated summaries.", "success")
     return redirect(url_for("index"))
+
+
+# One click re-extracts and re-judges every filing in the chosen range. The
+# backtest has a budget guard; this button had none, so a wide date range was
+# an unbounded spend. At ~$0.006 per filing, 300 caps a click near $2.
+RESUMMARIZE_MAX_FILINGS = 300
 
 
 def run_resummarize(date_from=None, date_to=None, model=None):
@@ -1247,6 +1307,10 @@ def run_resummarize(date_from=None, date_to=None, model=None):
     if not filings:
         print("No filings found to re-analyze.", flush=True)
         return
+    if len(filings) > RESUMMARIZE_MAX_FILINGS:
+        print(f"{len(filings)} filings in range — capping at the most recent "
+              f"{RESUMMARIZE_MAX_FILINGS} to bound the spend.", flush=True)
+        filings = filings[:RESUMMARIZE_MAX_FILINGS]  # query is newest-first
 
     print(f"Found {len(filings)} filings to re-analyze", flush=True)
 

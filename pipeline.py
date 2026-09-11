@@ -101,6 +101,21 @@ def analyze_filing(filing, text=None, model=None, judge_model=None, allow_judge=
             fields={"relevant_reason": facts.get("relevant_reason")},
         )
 
+    return analyze_facts(filing, facts, judge_model=judge_model, allow_judge=allow_judge,
+                         tokens_in=tokens_in, tokens_out=tokens_out)
+
+
+def analyze_facts(filing, facts, judge_model=None, allow_judge=True,
+                  tokens_in=0, tokens_out=0):
+    """Stages 2-5 for facts that are already structured.
+
+    8-K text needs a model to turn prose into facts; a Form 4 does not — its
+    XML already says who traded what, when, at what price. Both then take
+    exactly this path, so insider transactions are ranked, judged and stored
+    by the same code as everything else rather than by a second pipeline.
+    """
+    filing = dict(filing or {})
+
     # 2. Context — the relative data the filing text cannot contain.
     context = _build_context(filing)
 

@@ -65,6 +65,27 @@ def run(date=None, days=None, model=None, judge_model=None,
             traceback.print_exc()
             raise
 
+    # Form 4s for the same window: insider buys and top-officer grants at
+    # companies already in the database. Same window as the 8-K ingest, so a
+    # morning run re-covers yesterday in full and dedupe keeps it free.
+    if start:
+        try:
+            stats["form4"] = [
+                {k: day[k] for k in ("date", "qualified", "stored") if k in day}
+                for day in __import__("form4").scan_range(start, end)
+            ]
+        except Exception as e:
+            print(f"[DAILY] Form 4 scan failed (8-K ingest still succeeded): {e}", flush=True)
+
+    # Outcome tracking: start rows for newly flagged filings and price the
+    # ones that reached 7/30/90 days. It has to run every day — the price
+    # source serves current quotes only, so a skipped day is a mark taken late.
+    # Never allowed to fail the job: the ingest above is what matters.
+    try:
+        stats["outcomes"] = __import__("outcomes").run()
+    except Exception as e:
+        print(f"[DAILY] Outcome tracking failed (ingest still succeeded): {e}", flush=True)
+
     # The digest still goes out after a blocked ingest: whatever was analyzed
     # is worth seeing, and silence would be the wrong signal on a bad day.
     if send_digest:

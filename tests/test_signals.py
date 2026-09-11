@@ -285,7 +285,8 @@ def test_single_departure_in_24mo_is_not_a_cluster():
 def test_finance_seat_cluster_outranks_general_churn():
     finance = signals.detect(facts(departures=[departure(role_class="CFO")]),
                              {"departures_24mo": 3})
-    general = signals.detect(facts(departures=[departure(role_class="OTHER")]),
+    general = signals.detect(facts(departures=[departure(role_class="OTHER_CSUITE",
+                                                         title="Chief Growth Officer")]),
                              {"departures_24mo": 3})
     fin_sev = next(s.severity for s in finance.signals if s.type == "DEPARTURE_CLUSTER")
     gen_sev = next(s.severity for s in general.signals if s.type == "DEPARTURE_CLUSTER")

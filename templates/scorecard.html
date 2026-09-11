@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
+  <div>
+    <h2 class="mb-1">Scorecard</h2>
+    <div class="text-muted small">
+      What the stock did after each signal, net of SPY and signed by the call's direction.
+      A bearish call scores when the stock lags the market; a bullish call when it leads.
+    </div>
+  </div>
+  <a href="/" class="btn btn-outline-secondary btn-sm">Back to signals</a>
+</div>
+
+<div class="d-flex gap-3 mb-4 flex-wrap small text-muted">
+  <span><strong class="text-body">{{ counts.tracked }}</strong> flagged filings tracked</span>
+  {% for h in horizons %}
+  <span><strong class="text-body">{{ counts[h] }}</strong> marked at {{ h }} days</span>
+  {% endfor %}
+</div>
+
+{% if not table %}
+<div class="text-center py-5">
+  <h4 class="text-muted mb-2">Nothing to score yet</h4>
+  <p class="text-muted">
+    Tracking starts when a filing is flagged. The first 7-day marks appear a week after that,
+    30-day marks a month after — this page fills in on its own as the daily job runs.
+  </p>
+</div>
+{% else %}
+<div class="card">
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 scorecard-table">
+        <thead>
+          <tr>
+            <th>Signal</th>
+            {% for h in horizons %}
+            <th class="text-end">{{ h }}d hit rate</th>
+            <th class="text-end">{{ h }}d avg vs SPY</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for key in order %}
+          {% set row = table[key] %}
+          <tr class="{{ 'fw-semibold' if key == 'ALL' }}">
+            <td>{{ 'All flagged filings' if key == 'ALL' else key.replace('_', ' ').title() }}</td>
+            {% for h in horizons %}
+              {% set cell = row.get(h) %}
+              {% if cell %}
+              <td class="text-end">{{ '%.0f' % (cell.hit_rate * 100) }}% <span class="text-muted">({{ cell.n }})</span></td>
+              <td class="text-end {{ 'text-success' if cell.avg_signed_excess > 0 else 'text-danger' }}">
+                {{ '%+.1f' % cell.avg_signed_excess }}%</td>
+              {% else %}
+              <td class="text-end text-muted">—</td><td class="text-end text-muted">—</td>
+              {% endif %}
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<p class="text-muted small mt-3">
+  Small samples mislead. A row with fewer than ~20 marks is an anecdote, not a hit rate.
+  Marks are taken on the first daily run at or after each horizon.
+</p>
+{% endif %}
+
+{% endblock %}

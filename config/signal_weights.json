@@ -18,7 +18,8 @@
     "OFF_CYCLE_GRANT": 3,
     "OVERSIZED_GRANT": 3,
     "PRE_EARNINGS_GRANT": 3,
-    "COMP_MIX_TO_EQUITY": 2
+    "COMP_MIX_TO_EQUITY": 2,
+    "INSIDER_BUY": 3
   },
 
   "thresholds": {
@@ -36,7 +37,9 @@
     "retention_award_min_usd": 1000000,
     "insider_sale_near_grant_days": 30,
     "planned_retirement_min_days": 60,
-    "long_vesting_years": 3
+    "long_vesting_years": 3,
+    "insider_buy_min_usd": 50000,
+    "insider_buy_large_usd": 250000
   },
 
   "judge_gate": {

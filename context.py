@@ -419,10 +419,10 @@ def _departures_24mo(filing):
     Returns None — never 0 — when nothing is known, so a failed lookup can't
     be read as "nobody left".
     """
-    count = filing.get("departure_count_24mo")
-    if isinstance(count, int):
-        return count
-
+    # The stored history is preferred over the stamped count because it can
+    # be filtered to EXECUTIVES. The stamped number counts everyone who left,
+    # directors included, so a company with a routine board refresh read as
+    # a "5 departures in 24 months" cluster.
     history = filing.get("departure_history")
     if history:
         try:
@@ -432,11 +432,38 @@ def _departures_24mo(filing):
                     " ".join(str(d.get("person") or "").lower().split())
                     for d in parsed
                     if isinstance(d, dict) and d.get("person") and not d.get("_error")
+                    and _is_executive_position(d.get("position"))
                 })
         except (ValueError, TypeError):
             pass
 
+    count = filing.get("departure_count_24mo")
+    if isinstance(count, int):
+        return count
+
     return _local_departure_count(filing)
+
+
+# Words that mark a position as an officer role even when "director" appears
+# in it ("Managing Director", "Director of Finance").
+_OFFICER_WORDS = ("chief", "officer", "president", "ceo", "cfo", "coo", "cao",
+                  "vice president", "vp", "counsel", "treasurer", "controller",
+                  "secretary", "head of")
+
+
+def _is_executive_position(position):
+    """True unless the position is a board seat and nothing else.
+
+    Board turnover is a separate, much weaker story than officer turnover;
+    folding it into the cluster count is what made the signal fire on
+    companies with nothing more than a routine director rotation.
+    """
+    text = str(position or "").lower()
+    if not text:
+        return True  # unknown role: keep it rather than silently shrink the count
+    if "director" not in text and "board" not in text and "chair" not in text:
+        return True
+    return any(word in text for word in _OFFICER_WORDS)
 
 
 def _local_departure_count(filing):
@@ -455,10 +482,25 @@ def _local_departure_count(filing):
     except Exception as e:
         print(f"[CONTEXT] Local departure lookup failed for CIK {cik}: {e}", flush=True)
         return None
-    if not prior:
+    # Item 5.02 covers appointments and board changes as well as exits, so
+    # counting every prior 5.02 overstated clusters. Keep only filings whose
+    # subcategories recorded an officer departure.
+    exits = [row for row in (prior or []) if _records_officer_exit(row.get("auto_subcategory"))]
+    if not exits:
         return None
     # +1 for the filing under analysis, which is itself a departure.
-    return len(prior) + 1
+    return len(exits) + 1
+
+
+def _records_officer_exit(subcategory):
+    """True when a stored subcategory string names a non-board departure."""
+    text = str(subcategory or "").lower()
+    if "departure" not in text:
+        return False
+    # "Board Member Departure" alone is a board rotation; any other departure
+    # label ("CFO Departure", "Executive Departure") is an officer exit.
+    labels = [part.strip().strip('"[]') for part in text.split(",")]
+    return any("departure" in label and "board" not in label for label in labels)
 
 
 # ---------------------------------------------------------------------------

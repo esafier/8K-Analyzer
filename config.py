@@ -168,7 +168,7 @@ ACTIVE_PROMPT = os.environ.get("ACTIVE_PROMPT", "prompt_v4.txt")
 # Stamped onto every filing the pipeline analyzes. Bump it whenever a prompt
 # or the signal weights change, so a ranking regression can be traced to the
 # generation that produced it instead of being argued about.
-PIPELINE_VERSION = "v4.1-signals"
+PIPELINE_VERSION = "v4.2-signals"
 
 # Filing text is capped before it reaches a model. Exhibits push documents to
 # 120k characters; the judge does not need all of it and paying for it on

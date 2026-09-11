@@ -204,3 +204,27 @@ def test_pipeline_persist_against_postgres(pg):
     row = pg.get_filing_by_id(filing_id)
     assert "FORFEITURE_EXIT" in row["signal_types"]
     assert json.loads(row["legacy_triage_json"])["signal_score"] == 4
+
+
+def test_outcome_lifecycle_on_postgres(pg):
+    """INSERT ... ON CONFLICT DO NOTHING and the dynamic price_<n> columns
+    differ from SQLite's INSERT OR IGNORE — exercise the whole round trip."""
+    filing_id = _insert(pg, "pg-outcome", triage_verdict="MONITOR", signal_score=6,
+                        signal_direction="BEARISH", signal_types="FORFEITURE_EXIT",
+                        pipeline_version="v4.2-signals", price_at_ingest=10.0,
+                        filed_date="2026-06-01")
+
+    assert any(r["id"] == filing_id for r in pg.get_filings_needing_baseline())
+    pg.insert_outcome_baseline(filing_id, "PGSQL", "BEARISH", "FORFEITURE_EXIT",
+                               "2026-06-01", 10.0, 500.0)
+    pg.insert_outcome_baseline(filing_id, "PGSQL", "BEARISH", "FORFEITURE_EXIT",
+                               "2026-06-01", 99.0, 999.0)   # duplicate: ignored
+
+    due = pg.get_outcomes_due(7, "2026-06-10")
+    assert len(due) == 1
+    pg.mark_outcome(due[0]["id"], 7, 9.0, 505.0)
+
+    row = next(r for r in pg.get_all_outcomes() if r["filing_id"] == filing_id)
+    assert row["price_0"] == 10.0
+    assert row["price_7"] == 9.0
+    assert pg.get_outcomes_due(7, "2026-06-10") == []

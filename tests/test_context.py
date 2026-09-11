@@ -348,6 +348,7 @@ def test_local_history_supplies_a_cluster_count_on_first_ingest(tmp_sqlite_db, m
             "accession_no": f"prior-{i}", "company": "Acme Corp", "ticker": "ACME",
             "cik": "0001234567", "filed_date": recent, "item_codes": "5.02",
             "filing_url": "u", "raw_text": "t", "summary": "departure",
+            "auto_subcategory": '["CFO Departure"]',
         })
 
     ctx = context.build_context(_filing(accession_no="new-1"))

@@ -438,6 +438,17 @@ def _detect_departure_cluster(facts, context):
     that is invisible filing-by-filing, which is exactly why the tool should
     be the one to notice it.
     """
+    # A cluster is context on an EXIT. It is not a reason to read a filing in
+    # which nobody senior is leaving. Measured over the first week in
+    # production, this detector fired on appointment-only filings, audit-
+    # committee seat changes and director retirements, simply because the
+    # company had history — and it was the main reason ~40% of analyzed
+    # filings landed in MONITOR.
+    leaving = [d for d in _list(facts, "departures")
+               if _role(d) in CSUITE_ROLES and not _truthy(d.get("is_merger_related"))]
+    if not leaving:
+        return []
+
     count = _num((context or {}).get("departures_24mo"))
     if count is None or count < THRESHOLDS["cluster_min_departures"]:
         return []
@@ -643,6 +654,70 @@ def _detect_friday_night(facts, context):
 # Bullish detectors
 # ---------------------------------------------------------------------------
 
+def _as_list(value):
+    """A list field the model may have returned as a bare string or scalar.
+
+    Iterating a string like "$25.00" yields characters, which would become
+    hurdle prices of 2.0 and 5.0 — a confident, wrong percentage on the
+    dashboard. A scalar is wrapped instead; anything else is empty.
+    """
+    if isinstance(value, list):
+        return value
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        # Pull dollar figures out of free text ("$20, $25 and $30").
+        import re
+        return [m.replace(",", "") for m in re.findall(r"\d[\d,]*\.?\d*", value)]
+    return [value]
+
+
+# Grant rationales that are dated by an event the board doesn't pick. A
+# new-hire package lands on the start date, a promotion on the promotion —
+# "off-cycle" by construction, and carrying no view about the price. In the
+# first production week these made up most OFF_CYCLE_GRANT hits.
+_NON_DISCRETIONARY_RATIONALES = (
+    "new hire", "new-hire", "hire", "hiring", "inducement", "sign-on", "signing",
+    "appointment", "appointed", "promotion", "promoted", "commencement",
+    "joining", "start date", "offer letter", "employment agreement",
+    "severance", "separation", "termination",
+)
+
+# Only equity has the price exposure that makes grant timing informative.
+# Severance, cash bonuses and salary changes were being flagged "off-cycle"
+# simply because they are not annual grants.
+_EQUITY_WORDS = ("rsu", "restricted", "psu", "performance share", "performance stock",
+                 "option", "stock award", "share award", "equity", "sar", "stock unit")
+
+
+def _is_equity_grant(event):
+    grant_type = str(event.get("grant_type") or "").lower()
+    return any(word in grant_type for word in _EQUITY_WORDS)
+
+
+def _name_tokens(value):
+    """Lowercase word tokens of a name, ignoring punctuation and initials.
+
+    Order-insensitive on purpose: Form 4s write names surname-first ("Fulk
+    Jennifer") while 8-Ks write them naturally ("Jennifer Fulk"), and the two
+    must be recognised as the same person.
+    """
+    import re
+    return {t for t in re.findall(r"[a-z]+", str(value or "").lower()) if len(t) > 1}
+
+
+def _is_hiring_package(event, appointee_names):
+    rationale = str(event.get("grant_rationale") or "").lower()
+    if any(word in rationale for word in _NON_DISCRETIONARY_RATIONALES):
+        return True
+    executive = _name_tokens(event.get("executive"))
+    for name in appointee_names:
+        tokens = _name_tokens(name)
+        if len(tokens) >= 2 and tokens <= executive:
+            return True
+    return False
+
+
 def _detect_hurdle_conviction(facts, context):
     """Vesting hurdles that require the stock to appreciate materially.
 
@@ -661,7 +736,7 @@ def _detect_hurdle_conviction(facts, context):
 
     out = []
     for event in _list(facts, "comp_events"):
-        prices = [p for p in (_num(v) for v in (event.get("hurdle_prices") or [])) if p]
+        prices = [p for p in (_num(v) for v in _as_list(event.get("hurdle_prices"))) if p]
         if not prices:
             continue
         top = max(prices)
@@ -713,8 +788,11 @@ def _detect_off_cycle_grant(facts, context):
     out = []
     cadence = (context or {}).get("grant_cadence") or {}
     annual_months = cadence.get("_annual_months") if isinstance(cadence, dict) else None
+    appointees = {_cadence_key(a.get("name")) for a in _list(facts, "appointments")}
 
     for event in _list(facts, "comp_events"):
+        if not _is_equity_grant(event) or _is_hiring_package(event, appointees):
+            continue
         explicit = event.get("is_annual_cycle")
         off_cycle = False
         why = ""
@@ -880,6 +958,48 @@ def _detect_comp_mix_to_equity(facts, context):
     return out
 
 
+def _detect_insider_buy(facts, context):
+    """Officers or directors buying stock with their own money.
+
+    The cleanest bullish tell there is: comp is given, a purchase is chosen.
+    Scored by size and by breadth — two insiders buying the same week says
+    more than one buying twice as much. Purchases under a pre-arranged Rule
+    10b5-1 plan are marked down: the date was fixed months earlier, so it
+    carries no view about the price today.
+    """
+    buys = [t for t in _list(facts, "insider_transactions")
+            if str(t.get("type") or "").lower() == "open_market_buy"]
+    if not buys:
+        return []
+
+    total = sum(_num(t.get("value_usd")) or 0 for t in buys)
+    if total < THRESHOLDS["insider_buy_min_usd"]:
+        return []
+
+    buyers = sorted({_name(t, "person") for t in buys})
+    severity = SEVERITIES["INSIDER_BUY"]
+    if total >= THRESHOLDS["insider_buy_large_usd"]:
+        severity += 1
+    if len(buyers) >= 2:
+        severity += 1
+    scheduled = all(_truthy(t.get("ten_b5_1")) for t in buys)
+    if scheduled:
+        severity -= 1
+
+    who = ", ".join(buyers[:3]) + (f" and {len(buyers) - 3} more" if len(buyers) > 3 else "")
+    titles = {str(t.get("title") or "").strip() for t in buys} - {""}
+    role = f" ({', '.join(sorted(titles))})" if titles and len(buyers) == 1 else ""
+    plan = " under a pre-set 10b5-1 plan" if scheduled else ", discretionary"
+    return [Signal(
+        type="INSIDER_BUY",
+        direction="BULLISH",
+        severity=_clamp(severity),
+        evidence=f"{who}{role} bought {_money(total)} on the open market{plan}",
+        data={"buyers": buyers, "total_usd": total, "ten_b5_1": scheduled,
+              "transactions": len(buys)},
+    )]
+
+
 DETECTORS = (
     _detect_forfeiture_exit,
     _detect_for_cause,
@@ -897,6 +1017,7 @@ DETECTORS = (
     _detect_oversized_grant,
     _detect_pre_earnings_grant,
     _detect_comp_mix_to_equity,
+    _detect_insider_buy,
 )
 
 

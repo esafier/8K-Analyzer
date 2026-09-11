@@ -301,6 +301,10 @@ def initialize_database():
     _create_company_profiles_table(conn)
     _create_digests_table(conn)
 
+    # What happened to the stock after each signal — the market's verdict on
+    # the detectors, as opposed to the user's.
+    _create_outcomes_table(conn)
+
     # Log which database we're using and how many filings are stored
     # This helps us debug data loss issues on Render
     cursor.execute("SELECT COUNT(*) FROM filings")
@@ -2702,6 +2706,119 @@ def upsert_company_profile(cik, **fields):
 # ============================================================
 # DIGESTS
 # ============================================================
+
+def _create_outcomes_table(conn):
+    """One row per flagged filing: the price when the signal fired, and the
+    price at 7, 30 and 90 days, each paired with SPY so the move can be read
+    net of the market.
+
+    Prospective only. The price source serves current quotes, not history, so
+    a row can only be marked on the day it comes due — which is why the daily
+    job marks outcomes every run rather than reconstructing them later.
+    """
+    cursor = conn.cursor()
+    id_col = "id SERIAL PRIMARY KEY" if _using_postgres() else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS outcomes (
+            {id_col},
+            filing_id INTEGER NOT NULL UNIQUE,
+            ticker TEXT,
+            direction TEXT,
+            signal_types TEXT,
+            ingest_date TEXT,
+            price_0 REAL, spy_0 REAL,
+            price_7 REAL, spy_7 REAL,
+            price_30 REAL, spy_30 REAL,
+            price_90 REAL, spy_90 REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (filing_id) REFERENCES filings(id) ON DELETE CASCADE
+        )
+    """)
+    conn.commit()
+    print("[STARTUP] Outcomes table ready")
+
+
+OUTCOME_HORIZONS = (7, 30, 90)
+
+
+def get_filings_needing_baseline(limit=200):
+    """Flagged filings (non-PASS, analyzed by the new pipeline) with a ticker
+    and no outcome row yet."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(f"""
+        SELECT id, ticker, signal_direction, signal_types, filed_date, price_at_ingest
+        FROM filings
+        WHERE pipeline_version IS NOT NULL
+          AND triage_verdict IN ('DEEP_LOOK', 'MONITOR')
+          AND ticker IS NOT NULL AND ticker <> ''
+          AND id NOT IN (SELECT filing_id FROM outcomes)
+        ORDER BY filed_date DESC
+        LIMIT {p}
+    """, (limit,))
+    rows = [dict(r) for r in _dict_rows(cursor.fetchall(), cursor)]
+    conn.close()
+    return rows
+
+
+def insert_outcome_baseline(filing_id, ticker, direction, signal_types,
+                            ingest_date, price_0, spy_0):
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    verb = "INSERT" if _using_postgres() else "INSERT OR IGNORE"
+    suffix = " ON CONFLICT (filing_id) DO NOTHING" if _using_postgres() else ""
+    cursor.execute(
+        f"{verb} INTO outcomes (filing_id, ticker, direction, signal_types, ingest_date, "
+        f"price_0, spy_0) VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}){suffix}",
+        (filing_id, ticker, direction, signal_types, ingest_date, price_0, spy_0),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_outcomes_due(horizon, today):
+    """Outcome rows at least `horizon` days old whose mark is still empty."""
+    from datetime import datetime, timedelta
+    if horizon not in OUTCOME_HORIZONS:
+        raise ValueError(f"unknown horizon {horizon}")
+    cutoff = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=horizon)).strftime("%Y-%m-%d")
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(
+        f"SELECT id, ticker FROM outcomes WHERE price_{horizon} IS NULL "
+        f"AND price_0 IS NOT NULL AND ingest_date <= {p}",
+        (cutoff,),
+    )
+    rows = [dict(r) for r in _dict_rows(cursor.fetchall(), cursor)]
+    conn.close()
+    return rows
+
+
+def mark_outcome(outcome_id, horizon, price, spy):
+    if horizon not in OUTCOME_HORIZONS:
+        raise ValueError(f"unknown horizon {horizon}")
+    conn = get_connection()
+    cursor = conn.cursor()
+    p = _placeholder()
+    cursor.execute(
+        f"UPDATE outcomes SET price_{horizon} = {p}, spy_{horizon} = {p} WHERE id = {p}",
+        (price, spy, outcome_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_all_outcomes():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM outcomes")
+    rows = [dict(r) for r in _dict_rows(cursor.fetchall(), cursor)]
+    conn.close()
+    return rows
+
 
 def record_digest(channel, filing_ids, status="sent"):
     import json as _json
