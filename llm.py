@@ -11,6 +11,27 @@ from config import (
 )
 
 
+# Seconds to wait on a single API request before giving up and retrying.
+# Without this the SDK inherits an effectively unbounded socket wait: a gap
+# backfill once sat inside one hung request for 16 hours, mid-batch, with no
+# error and no progress. A stalled call must fail loudly, not park the run.
+OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "180"))
+OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "3"))
+
+
+def _client():
+    """The one place an OpenAI client is constructed.
+
+    Every call site shares the same timeout and retry budget, so a network
+    stall costs one filing instead of the whole run.
+    """
+    return OpenAI(
+        api_key=OPENAI_API_KEY,
+        timeout=OPENAI_TIMEOUT_SECONDS,
+        max_retries=OPENAI_MAX_RETRIES,
+    )
+
+
 def _chat_kwargs(model, json_mode=True):
     """Build the call kwargs for a model, minus anything it rejects.
 
@@ -65,7 +86,7 @@ def classify_and_summarize(filing_text, prompt_file=None, model=None):
     prompt = template.replace("{filing_text}", filing_text)
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = _client()
 
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -111,7 +132,7 @@ def judge_filing(payload, model=None, prompt_file="prompt_judge.txt"):
     prompt = template.replace("{payload}", json.dumps(payload, indent=2, default=str))
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = _client()
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             **_chat_kwargs(use_model),
@@ -149,7 +170,7 @@ def deep_analyze(filing_text, model=None):
     prompt = template.replace("{filing_text}", filing_text)
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = _client()
 
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -209,7 +230,7 @@ def web_search_context(company, ticker):
     )
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = _client()
 
         response = client.responses.create(
             model=LLM_MODEL_WEB_SEARCH,
@@ -258,7 +279,7 @@ def signal_analyze(filing_text, context_block, model=None, prompt_version="v1"):
     prompt = prompt.replace("{context_block}", context_block)
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = _client()
 
         # Chat Completions — all context is already in the prompt, no tools needed
         response = client.chat.completions.create(
@@ -297,7 +318,7 @@ def extract_departures(filing_snippet, filed_date, model=None):
     prompt = template.replace("{filing_text}", filing_snippet or "").replace("{filed_date}", filed_date or "")
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = _client()
         # No json_mode: this prompt asks for a bare JSON array, which the
         # object-only json_object mode would reject.
         response = client.chat.completions.create(
