@@ -30,7 +30,7 @@ and the rules it paid for are in `CLAUDE.md`.
   watermark window of 8-Ks, scans Form 4s for the same window, records and
   marks outcomes, then sends the digest. Green every weekday since 2026-09-04.
 - **Database:** Render Postgres `dpg-d5ttp9aqcgvc73ev04dg-a` (basic_256mb, no
-  expiry). ~4,900 filings, Jan 29 – present, with a hole 2026-07-11 → 08-19.
+  expiry). ~5,350 filings, Jan 29 – present, with a hole 2026-07-11 → 08-19.
   The 08-20 → 09-03 backfill was re-run on 2026-09-12 via
   `.github/workflows/backfill.yml` after two local attempts stalled (see
   below). Gap backfills belong on Actions now — `backfill.py` and
@@ -61,6 +61,15 @@ and the rules it paid for are in `CLAUDE.md`.
   Alphatec $1.0M, Celsius $494K).
 - Cost: extraction ≈ $0.28 per 100 8-Ks; judge ≈ $0.03 per candidate; Form 4s
   need no extraction.
+- The 08-20 → 09-03 backfill, run 34714621088 (2h25m on Actions): 2,046 8-Ks
+  fetched → 1,279 in item scope → 521 dropped by the universe gate (185 no
+  ticker, 305 below the $50M floor, 31 unknown cap) → 466 analyzed → **294
+  stored**, plus **121 Form 4 rows**. 2.75M tokens.
+- Precision in that window, and why the headline MONITOR number misleads:
+  8-Ks were 266 PASS / 68 MONITOR / 12 DEEP_LOOK — 19% MONITOR, in line with
+  week one. Form 4s were 36 PASS / 82 MONITOR / 3 DEEP_LOOK, because a
+  qualifying insider buy is a MONITOR by construction. Read the two sources
+  separately before concluding a detector is over-firing.
 
 ## 4. Still waiting on the user
 
