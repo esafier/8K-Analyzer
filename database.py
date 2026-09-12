@@ -1445,18 +1445,34 @@ def _create_backfill_runs_table(conn):
     print("[STARTUP] Backfill runs table ready")
 
 
-def _cleanup_stuck_backfill_runs(conn):
-    """Mark any 'running' backfill_runs as 'failed' on app boot.
+# How long a backfill may sit at 'running' before a boot is allowed to call it
+# orphaned. Must exceed the longest legitimate run: the Actions backfill job
+# has a 330-minute timeout, so anything under ~6 hours would reap live runs.
+STUCK_BACKFILL_HOURS = 12
 
-    Backfills run as daemon threads inside the gunicorn worker. When the worker
-    is killed (Render restart, idle spin-down, deploy, OOM), the thread dies
-    without ever updating its status row — so it appears stuck at 'running'
-    forever. If we're booting up and a row says 'running', that worker is gone."""
+
+def _cleanup_stuck_backfill_runs(conn):
+    """Mark long-abandoned 'running' backfill_runs as 'failed' on boot.
+
+    Backfills used to run only as daemon threads inside the gunicorn worker.
+    When the worker was killed (Render restart, idle spin-down, deploy, OOM),
+    the thread died without updating its status row, leaving it stuck at
+    'running' forever — so a boot reaping every 'running' row was safe.
+
+    It is not safe any more. daily.py, backfill.py, form4.py, rescore.py and
+    outcomes.py all call initialize_database(), and they run on GitHub Actions
+    and on laptops against the same database. An unqualified reap marked a
+    live Actions backfill as failed seconds after it started, every time any
+    other process opened the database. Only rows older than the longest
+    possible run can be assumed dead.
+    """
     cursor = conn.cursor()
+    cutoff = (f"NOW() - INTERVAL '{STUCK_BACKFILL_HOURS} hours'" if _using_postgres()
+              else f"datetime('now', '-{STUCK_BACKFILL_HOURS} hours')")
     cursor.execute(
         "UPDATE backfill_runs "
         "SET status = 'failed', completed_at = CURRENT_TIMESTAMP "
-        "WHERE status = 'running'"
+        f"WHERE status = 'running' AND started_at < {cutoff}"
     )
     affected = cursor.rowcount
     conn.commit()

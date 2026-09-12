@@ -151,6 +151,49 @@ def test_create_backfill_run_uses_returning(pg):
     assert any(r["id"] == run_id for r in pg.get_recent_backfill_runs())
 
 
+def _age_run(pg, run_id, hours):
+    """Backdate a run's start — Postgres INTERVAL, which SQLite cannot test."""
+    conn = pg.get_connection()
+    cursor = conn.cursor()
+    p = pg._placeholder()
+    cursor.execute(
+        f"UPDATE backfill_runs SET started_at = NOW() - INTERVAL '{hours} hours' "
+        f"WHERE id = {p}",
+        (run_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _status(pg, run_id):
+    conn = pg.get_connection()
+    cursor = conn.cursor()
+    p = pg._placeholder()
+    cursor.execute(f"SELECT status FROM backfill_runs WHERE id = {p}", (run_id,))
+    status = cursor.fetchone()[0]
+    conn.close()
+    return status
+
+
+def test_boot_does_not_reap_a_live_run(pg):
+    """Every entry point boots the schema; several run against this database
+    at once. Reaping unconditionally marked a live Actions backfill failed."""
+    run_id = pg.create_backfill_run("gap_backfill", "2026-08-20", "2026-09-03", "default")
+
+    pg.initialize_database()
+
+    assert _status(pg, run_id) == "running"
+
+
+def test_boot_reaps_a_long_abandoned_run(pg):
+    run_id = pg.create_backfill_run("gap_backfill", "2026-08-20", "2026-09-03", "default")
+    _age_run(pg, run_id, pg.STUCK_BACKFILL_HOURS + 1)
+
+    pg.initialize_database()
+
+    assert _status(pg, run_id) == "failed"
+
+
 def test_form4_rows_are_excluded_from_repair_queries(pg):
     _insert(pg, "pg-8k", raw_text="")
     _insert(pg, "pg-f4", raw_text="", source="FORM4")
