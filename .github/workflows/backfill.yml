@@ -1,0 +1,75 @@
+name: Backfill a date range
+
+# Gap backfills belong here, not on a laptop. The first attempt at
+# 2026-08-20 -> 09-03 ran locally and was lost twice: once to an OpenAI
+# request with no timeout, once to the machine entering Modern Standby
+# mid-run. Actions has the secrets, stays awake, and logs the whole run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "First filed_date to ingest (YYYY-MM-DD)"
+        required: true
+      end:
+        description: "Last filed_date to ingest (YYYY-MM-DD, inclusive)"
+        required: true
+      skip_form4:
+        description: "8-Ks only — skip the Form 4 scan"
+        type: boolean
+        default: false
+      reanalyze:
+        description: "Also re-run the pipeline on rows in range that were never scored"
+        type: boolean
+        default: true
+
+concurrency:
+  # Shares the daily job's group on purpose. Both hit the same SEC rate limit,
+  # and two concurrent runs would spend their time in each other's cooldowns.
+  group: daily-ingest
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330   # a two-week range is hours of fetches and model calls
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Backfill ${{ github.event.inputs.start }} to ${{ github.event.inputs.end }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          API_NINJAS_KEY: ${{ secrets.API_NINJAS_KEY }}
+        run: |
+          python backfill.py \
+            --start "${{ github.event.inputs.start }}" \
+            --end "${{ github.event.inputs.end }}" \
+            ${{ github.event.inputs.skip_form4 == 'true' && '--no-form4' || '' }}
+
+      # Rows already stored by an older pipeline version are invisible to the
+      # ingest above — dedupe skips them — so they need their own pass.
+      - name: Score rows the pipeline never saw
+        if: ${{ github.event.inputs.reanalyze == 'true' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          API_NINJAS_KEY: ${{ secrets.API_NINJAS_KEY }}
+        run: |
+          python reanalyze.py \
+            --since "${{ github.event.inputs.start }}" \
+            --until "${{ github.event.inputs.end }}"
+
+      - name: Ranking quality against the user's labels
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python evaluate.py || true

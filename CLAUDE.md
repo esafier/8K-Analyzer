@@ -123,6 +123,7 @@ decorative glyph must never be one of them.
 ```bash
 python -m pytest tests/ -q                   # ~500 tests, SQLite (Postgres in CI)
 python rescore.py --dry-run                  # re-rank stored filings after a detector change — free
+python reanalyze.py --since YYYY-MM-DD --dry-run  # find rows the pipeline never scored
 python backtest.py --days 30 --dry-run       # cost estimate first, always
 python form4.py --date YYYY-MM-DD --dry-run --no-judge   # Form 4 scan, no spend
 python evaluate.py                           # ranking quality vs. the user's labels
@@ -132,6 +133,21 @@ python daily.py --date YYYY-MM-DD --dry-run  # one real day, end to end
 Detector changes must be validated on **real filings**, not only fixtures.
 Three false-positive patterns that unit tests could not have caught were found
 by running 50 stored filings through detection and looking at what fired.
+
+## Backfills run on Actions, not on a laptop
+
+`backfill.py --start --end` fills a hole (8-Ks then Form 4s); `reanalyze.py`
+scores rows an older pipeline version stored, which a backfill *cannot* reach
+because Stage 1c dedupe skips accession numbers already stored with text.
+Both are wired into `.github/workflows/backfill.yml` (workflow_dispatch,
+sharing the daily job's concurrency group so the two never fight for SEC's
+rate limit).
+
+Run them there. The 2026-08-20 → 09-03 window was lost twice locally: once to
+an OpenAI request with no timeout (now `llm._client()`, 180s, 3 retries), once
+to the machine entering Modern Standby mid-run, which freezes the process on
+a database socket the server has already dropped. Both failures look
+identical from the log's last line — compare the file's **mtime** to now.
 
 ## Deploy
 
