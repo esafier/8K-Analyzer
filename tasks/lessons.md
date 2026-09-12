@@ -33,6 +33,10 @@ Patterns from corrections and mistakes on this project. Read at session start.
   work. Every network client needs an explicit timeout and retry budget
   (`llm._client()`), and a long job needs a heartbeat so "stalled" doesn't
   read as "still going".
+- **Don't run hours-long jobs on the user's laptop.** It entered Modern
+  Standby mid-run and froze both jobs for five hours on database sockets the
+  server had already dropped — indistinguishable from working. Long jobs go
+  to GitHub Actions, where the secrets already live and nothing sleeps.
 - **Check log mtime, not just the last line.** A stalled job and a working
   job have identical tails. The file's modification time is what separates
   them; compare it to now before reporting progress.

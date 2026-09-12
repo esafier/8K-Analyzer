@@ -31,8 +31,11 @@ and the rules it paid for are in `CLAUDE.md`.
   marks outcomes, then sends the digest. Green every weekday since 2026-09-04.
 - **Database:** Render Postgres `dpg-d5ttp9aqcgvc73ev04dg-a` (basic_256mb, no
   expiry). ~4,900 filings, Jan 29 – present, with a hole 2026-07-11 → 08-19.
-  The 08-20 → 09-03 backfill was re-run on 2026-09-12 after the first attempt
-  stalled (see below).
+  The 08-20 → 09-03 backfill was re-run on 2026-09-12 via
+  `.github/workflows/backfill.yml` after two local attempts stalled (see
+  below). Gap backfills belong on Actions now — `backfill.py` and
+  `reanalyze.py` are the entry points, and the workflow shares the daily
+  job's concurrency group.
 - **2026-09-03 needed a separate repair.** The first daily run ingested that
   day under the pre-rebuild code: 46 rows have text and a summary but no
   structured_summary, signals, or verdict, so they never appeared in the
