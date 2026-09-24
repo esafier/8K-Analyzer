@@ -101,6 +101,26 @@ filing said no. Detectors must not fire on silence — asserting "no successor
 named" because a filing didn't discuss succession puts a scary badge on a
 filing that never made the claim.
 
+### A run-level failure must stop the run
+From 2026-09-14 the OpenAI account was out of credits. Every extraction was
+caught as an ordinary per-filing failure, stored with a keyword summary and
+no verdict, and the daily job went green for ten days while 273 8-Ks never
+reached the inbox. `llm.OutOfCredits` now propagates through
+`pipeline.analyze_filing` and turns into `IngestBlocked` (red run, watermark
+held). A failure that every later filing will hit too is the run's problem —
+don't catch it per filing.
+
+### Scoring an old filing: context as of its date
+`context.build_context` uses today's quote, market cap, earnings calendar,
+8-K history and grant history. For a filing more than
+`POINT_IN_TIME_AFTER_DAYS` old (a backfill or reanalyze) it rebuilds each of
+those as of the filing date instead, and uses None where it can't — never
+today's value. Without that a backtest scores hindsight: a restatement filed
+months later, grants that hadn't happened, a hurdle measured against a price
+the stock only reached afterwards. Context prices are **nominal**
+(`price_history.closes(..., nominal=True)`) because a hurdle is a dollar
+figure; outcome returns use adjusted closes.
+
 ### Windows console
 `config.py` reconfigures stdout/stderr to UTF-8 with `errors="replace"`. A
 single `✓` in a boot-time print used to kill every CLI with

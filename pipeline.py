@@ -75,8 +75,10 @@ def analyze_filing(filing, text=None, model=None, judge_model=None, allow_judge=
         allow_judge: False runs detectors only. Used by the backtest's
                      dry-run and by anything that must not spend.
 
-    Never raises. A failure at any stage returns a result with `error` set and
-    whatever earlier stages produced — a filing is never lost to an exception.
+    Never raises for a problem with THIS filing: a failure at any stage returns
+    a result with `error` set and whatever earlier stages produced. The one
+    exception is llm.OutOfCredits, which is the run's problem — every filing
+    after it would fail the same way, so it propagates and stops the run.
     """
     from llm import classify_and_summarize
 
@@ -152,9 +154,12 @@ def _build_context(filing):
 
 
 def _judge(filing, facts, context, detection, judge_model):
+    from llm import OutOfCredits
     try:
         from judge import judge as run_judge
         return run_judge(filing, facts, context, detection, model=judge_model)
+    except OutOfCredits:
+        raise
     except Exception as e:
         print(f"[PIPELINE] Judge failed for {filing.get('company', 'unknown')}: "
               f"{type(e).__name__}: {e}", flush=True)

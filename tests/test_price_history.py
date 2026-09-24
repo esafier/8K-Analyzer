@@ -27,7 +27,8 @@ def _split_payload(pre, post, ratio=(1.0, 50.0)):
         "timestamp": [1780320600, 1780407000],                # Jun 1, Jun 2
         "events": {"splits": {"1780407000": {
             "date": 1780407000, "numerator": ratio[0], "denominator": ratio[1]}}},
-        "indicators": {"adjclose": [{"adjclose": [pre, post]}]},
+        "indicators": {"quote": [{"close": [pre, post]}],
+                       "adjclose": [{"adjclose": [pre, post]}]},
     }]}}
 
 
@@ -47,6 +48,37 @@ def test_an_already_adjusted_split_is_not_applied_twice():
 def test_an_unadjusted_forward_split_is_folded_in():
     closes = price_history._parse(_split_payload(200.0, 101.0, ratio=(2.0, 1.0)))
     assert closes["2026-06-01"] == pytest.approx(100.0)
+
+
+def _nominal_payload(quote, ratio=(10.0, 1.0)):
+    """A 10:1 forward split on Jun 2 that Yahoo has already adjusted for."""
+    return {"chart": {"result": [{
+        "meta": {"gmtoffset": -14400},
+        "timestamp": [1780320600, 1780407000],
+        "events": {"splits": {"1780407000": {
+            "date": 1780407000, "numerator": ratio[0], "denominator": ratio[1]}}},
+        "indicators": {"quote": [{"close": quote}],
+                       "adjclose": [{"adjclose": [x * 0.98 for x in quote]}]},
+    }]}}
+
+
+def test_nominal_closes_undo_a_later_split():
+    """A hurdle written as $500 on Jun 1 is compared with the $500 the stock
+    traded at, not the $50 it reads as after a later 10:1 split."""
+    closes = price_history._parse(_nominal_payload([50.0, 51.0]), nominal=True)
+    assert closes["2026-06-01"] == pytest.approx(500.0)
+    assert closes["2026-06-02"] == 51.0
+
+
+def test_nominal_closes_skip_the_dividend_adjustment():
+    closes = price_history._parse(_nominal_payload([50.0, 51.0], ratio=(1.0, 1.0)), nominal=True)
+    assert closes["2026-06-01"] == 50.0
+
+
+def test_nominal_leaves_an_unadjusted_split_alone():
+    """Yahoo hasn't adjusted yet (the NFE case): the quote is already what traded."""
+    closes = price_history._parse(_split_payload(0.33, 12.77), nominal=True)
+    assert closes["2026-06-01"] == 0.33
 
 
 def test_parse_tolerates_an_empty_response():

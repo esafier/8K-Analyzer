@@ -48,6 +48,15 @@ SUBMISSIONS = {
 
 
 @pytest.fixture(autouse=True)
+def _live_clock(monkeypatch):
+    """These fixtures describe filings arriving live in early September 2026.
+    Pin the clock there so they keep exercising the live path; the
+    point-in-time path has its own tests below."""
+    from datetime import date
+    monkeypatch.setattr(context, "_today", lambda: date(2026, 9, 2))
+
+
+@pytest.fixture(autouse=True)
 def _clear_submissions_cache():
     """context memoises submissions per process to halve SEC calls. That cache
     would otherwise carry one test's stub into the next."""
@@ -64,7 +73,7 @@ def _stub_markets(monkeypatch, price=10.0, cap=310_000_000, earnings="2026-09-14
     monkeypatch.setattr(context, "_price", lambda t: price)
     monkeypatch.setattr(context, "_market_cap", lambda t: cap)
     monkeypatch.setattr(context, "_next_earnings", lambda t: earnings)
-    monkeypatch.setattr(context, "_grant_cadence", lambda t, years=3: {})
+    monkeypatch.setattr(context, "_grant_cadence", lambda t, years=3, as_of=None: {})
 
 
 def _filing(**overrides):
@@ -226,7 +235,7 @@ def test_profile_is_fetched_once_per_company(tmp_sqlite_db, monkeypatch):
     monkeypatch.setattr(context, "_price", lambda t: calls.append(t) or 10.0)
     monkeypatch.setattr(context, "_market_cap", lambda t: 310_000_000)
     monkeypatch.setattr(context, "_next_earnings", lambda t: "2026-09-14")
-    monkeypatch.setattr(context, "_grant_cadence", lambda t, years=3: {})
+    monkeypatch.setattr(context, "_grant_cadence", lambda t, years=3, as_of=None: {})
 
     for i in range(5):
         context.build_context(_filing(accession_no=f"0001104659-26-10150{i}"))
@@ -240,7 +249,7 @@ def test_refresh_bypasses_the_cache(tmp_sqlite_db, monkeypatch):
     monkeypatch.setattr(context, "_price", lambda t: calls.append(t) or 10.0)
     monkeypatch.setattr(context, "_market_cap", lambda t: None)
     monkeypatch.setattr(context, "_next_earnings", lambda t: None)
-    monkeypatch.setattr(context, "_grant_cadence", lambda t, years=3: {})
+    monkeypatch.setattr(context, "_grant_cadence", lambda t, years=3, as_of=None: {})
 
     context.build_context(_filing())
     context.build_context(_filing(), refresh=True)
@@ -261,7 +270,7 @@ def _insider_rows(*specs):
 
 
 def test_cadence_finds_the_companys_annual_grant_month(monkeypatch):
-    monkeypatch.setattr(context, "_fetch_insider_transactions", lambda t, s, limit=250: _insider_rows(
+    monkeypatch.setattr(context, "_fetch_insider_transactions", lambda t, s, limit=250, end_date=None: _insider_rows(
         ("Warren B Kanders", "2024-03-12", 40000, "A"),
         ("Warren B Kanders", "2025-03-14", 50000, "A"),
         ("Brad Williams", "2025-03-14", 20000, "A"),
@@ -277,7 +286,7 @@ def test_cadence_finds_the_companys_annual_grant_month(monkeypatch):
 def test_cadence_ignores_sales_and_exercises(monkeypatch):
     """Only code A is a grant. Counting sales would put the 'grant calendar'
     wherever the executive happened to sell."""
-    monkeypatch.setattr(context, "_fetch_insider_transactions", lambda t, s, limit=250: _insider_rows(
+    monkeypatch.setattr(context, "_fetch_insider_transactions", lambda t, s, limit=250, end_date=None: _insider_rows(
         ("Warren B Kanders", "2026-08-26", 44655, "S"),
         ("Brad Williams", "2026-08-19", 42770, "M"),
         ("Warren B Kanders", "2026-03-30", 60000, "A"),
@@ -291,7 +300,7 @@ def test_cadence_ignores_sales_and_exercises(monkeypatch):
 def test_thin_history_yields_no_cadence_baseline(monkeypatch):
     """One or two grants is not a rhythm. Declaring a grant 'off-cycle'
     against a one-observation baseline would manufacture signal."""
-    monkeypatch.setattr(context, "_fetch_insider_transactions", lambda t, s, limit=250: _insider_rows(
+    monkeypatch.setattr(context, "_fetch_insider_transactions", lambda t, s, limit=250, end_date=None: _insider_rows(
         ("Solo Exec", "2026-06-16", 100000, "A"),
     ))
     cadence = context._grant_cadence("NEWCO")
@@ -393,3 +402,128 @@ def test_profile_cache_writes_nulls_so_both_engines_agree(tmp_sqlite_db, monkeyp
     _stub_markets(monkeypatch, price=None)
     context.build_context(_filing(), refresh=True)
     assert database.get_company_profile("0001234567")["price"] is None
+
+
+# ---------------------------------------------------------------------------
+# Point in time — scoring a filing after the fact
+# ---------------------------------------------------------------------------
+#
+# The clock is pinned to 2026-09-02, so a filing dated June is being scored
+# months later (a backfill or reanalyze). Every today-dependent field must be
+# rebuilt as of its filing date, or the scorecard measures hindsight.
+
+HISTORY_SUBMISSIONS = {
+    "filings": {
+        "recent": {
+            "form": ["8-K", "8-K", "8-K", "8-K"],
+            "filingDate": ["2026-08-05", "2026-07-01", "2026-06-01", "2026-05-02"],
+            "items": ["2.02,9.01", "4.02", "5.02", "2.02,9.01"],
+            "accessionNumber": ["a-4", "a-3", "0001104659-26-101500", "a-1"],
+            "acceptanceDateTime": ["2026-08-05T20:05:00.000Z", "2026-07-01T11:00:00.000Z",
+                                   "2026-06-01T14:00:00.000Z", "2026-05-02T20:05:00.000Z"],
+        },
+        "files": [{"filingFrom": "2021-11-04"}],
+    }
+}
+
+
+def _stub_history(monkeypatch, series):
+    import price_history
+    monkeypatch.setattr(price_history, "closes", lambda t, start, end=None, nominal=False: series)
+
+
+def test_an_old_filing_is_priced_on_its_filing_date(tmp_sqlite_db, monkeypatch):
+    """A hurdle 'X% above the current price' is measured against the price
+    when the board set it, not one the stock reached months later."""
+    _stub_sec(monkeypatch, HISTORY_SUBMISSIONS)
+    _stub_markets(monkeypatch, price=10.0, cap=310_000_000)
+    _stub_history(monkeypatch, {"2026-05-29": 8.0, "2026-06-01": 5.0, "2026-06-10": 20.0})
+
+    ctx = context.build_context(_filing(filed_date="2026-06-01"))
+
+    assert ctx["as_of"] == "2026-06-01"
+    assert ctx["price"] == 5.0
+    assert ctx["market_cap"] == pytest.approx(155_000_000)   # today's cap × 5/10
+
+
+def test_an_old_filing_without_price_history_gets_none_not_todays_price(tmp_sqlite_db, monkeypatch):
+    _stub_sec(monkeypatch, HISTORY_SUBMISSIONS)
+    _stub_markets(monkeypatch, price=10.0, cap=310_000_000)
+    _stub_history(monkeypatch, {})
+
+    ctx = context.build_context(_filing(filed_date="2026-06-01"))
+
+    assert ctx["price"] is None
+    assert ctx["market_cap"] is None
+
+
+def test_an_old_filing_does_not_see_later_8ks(tmp_sqlite_db, monkeypatch):
+    """The 4.02 restatement came a month after this filing: it can't be the
+    context the filing was read in. The next 2.02 is the earnings date the
+    market was waiting for."""
+    _stub_sec(monkeypatch, HISTORY_SUBMISSIONS)
+    _stub_markets(monkeypatch, earnings="2026-11-05")   # today's calendar: irrelevant in June
+    _stub_history(monkeypatch, {"2026-06-01": 5.0})
+
+    ctx = context.build_context(_filing(filed_date="2026-06-01"))
+
+    assert "4.02" not in ctx["recent_item_codes"]
+    assert ctx["recent_item_codes"]["2.02"] == ["2026-05-02"]
+    assert ctx["last_earnings_date"] == "2026-05-02"
+    assert ctx["days_since_earnings"] == 30
+    assert ctx["next_earnings_date"] == "2026-08-05"
+    assert ctx["days_to_earnings"] == 65
+
+
+def test_an_old_filings_grant_baseline_stops_at_its_date(monkeypatch):
+    calls = {}
+
+    def fetch(t, s, limit=250, end_date=None):
+        calls["window"] = (s, end_date)
+        return _insider_rows(
+            ("Warren B Kanders", "2023-06-12", 40000, "A"),
+            ("Warren B Kanders", "2024-06-14", 50000, "A"),
+            ("Warren B Kanders", "2025-06-14", 50000, "A"),
+            ("Warren B Kanders", "2025-11-30", 90000, "A"),   # after as_of
+        )
+
+    monkeypatch.setattr(context, "_fetch_insider_transactions", fetch)
+    cadence = context._grant_cadence("CDRE", as_of="2025-07-01")
+
+    assert calls["window"] == ("2022-07-02", "2025-07-01")   # 3 × 365 days, across 2024-02-29
+    assert cadence["warren b kanders"]["grant_count"] == 3
+    assert cadence["_annual_months"] == [6]
+
+
+def test_an_old_filings_cluster_count_ignores_later_departures(tmp_sqlite_db, monkeypatch):
+    import database
+
+    _stub_sec(monkeypatch, HISTORY_SUBMISSIONS)
+    _stub_markets(monkeypatch)
+    _stub_history(monkeypatch, {"2026-06-01": 5.0})
+    for i, filed in enumerate(("2026-04-01", "2026-08-01")):
+        database.insert_filing({
+            "accession_no": f"prior-{i}", "company": "Acme Corp", "ticker": "ACME",
+            "cik": "0001234567", "filed_date": filed, "item_codes": "5.02",
+            "filing_url": "u", "raw_text": "t", "summary": "departure",
+            "auto_subcategory": '["CFO Departure"]',
+        })
+
+    ctx = context.build_context(_filing(accession_no="new-1", filed_date="2026-06-01"))
+    assert ctx["departures_24mo"] == 2   # April's exit plus this one; August's hadn't happened
+
+
+def test_a_live_filing_keeps_todays_context(tmp_sqlite_db, monkeypatch):
+    _stub_sec(monkeypatch)
+    _stub_markets(monkeypatch, price=10.0, cap=310_000_000, earnings="2026-09-14")
+
+    def never(*a, **k):
+        raise AssertionError("a live filing must not need price history")
+
+    import price_history
+    monkeypatch.setattr(price_history, "closes", never)
+
+    ctx = context.build_context(_filing(filed_date="2026-09-01"))
+    assert "as_of" not in ctx
+    assert ctx["price"] == 10.0
+    assert ctx["next_earnings_date"] == "2026-09-14"

@@ -73,9 +73,17 @@ def ingest_range(start_date, end_date, model=None, judge_model=None,
         else:
             stats["skipped"] += 1
 
-    matched = filter_filings(metadata, fetch_text_func=fetch_filing_text,
-                             model=model, judge_model=judge_model,
-                             on_analyzed=store, stats=stats)
+    from llm import OutOfCredits
+    try:
+        matched = filter_filings(metadata, fetch_text_func=fetch_filing_text,
+                                 model=model, judge_model=judge_model,
+                                 on_analyzed=store, stats=stats)
+    except OutOfCredits as e:
+        # Filings analyzed before the money ran out are already stored. The
+        # rest must not be recorded as covered: the watermark stays put and
+        # the next run (with credits) re-covers the window.
+        complete_backfill_run(run_id, status="failed")
+        raise IngestBlocked(str(e)) from e
     stats["analyzed"] = len(matched)
 
     # A day where the universe gate rejected almost everything for want of a

@@ -275,3 +275,18 @@ def test_outcome_lifecycle_on_postgres(pg):
     assert "company" in row
     # Still pending: the 30- and 90-day marks are empty.
     assert any(r["filing_id"] == filing_id for r in pg.get_outcomes_to_price())
+
+
+def test_departure_history_as_of_on_postgres(pg):
+    """The as_of upper bound keeps an old filing's cluster count from seeing
+    departures that came after it — the date comparison must agree on both
+    engines (filed_date is TEXT)."""
+    cik = "0009990001"
+    for acc, filed in (("pg-dep-early", "2026-04-01"), ("pg-dep-late", "2026-08-01")):
+        _insert(pg, acc, cik=cik, filed_date=filed)
+
+    earlier = pg.get_departure_history(cik, "pg-dep-now", months=24, as_of="2026-06-01")
+    assert [r["filed_date"] for r in earlier] == ["2026-04-01"]
+
+    everything = pg.get_departure_history(cik, "pg-dep-now", months=24, as_of="2026-09-01")
+    assert len(everything) == 2
