@@ -5,7 +5,10 @@ stock, within two business days. Two kinds of Form 4 are worth a slot in the
 inbox, and nothing else is:
 
   - **Open-market purchases** by officers or directors. Comp is handed out;
-    a purchase is chosen, with the buyer's own money.
+    a purchase is chosen, with the buyer's own money. OFF by default
+    (config.FORM4_SCORE_BUYS): the user tracks insider buying market-wide in
+    a separate tool, so scoring buys here only duplicated it — ~75% of Form 4
+    rows and most of the Form 4 judge spend.
   - **Equity grants to the CEO, CFO or Chair** — which the existing
     OFF_CYCLE_GRANT and OVERSIZED_GRANT detectors score against the company's
     own grant history. A grant in the usual month at the usual size is
@@ -44,6 +47,8 @@ TOP_OFFICER_WORDS = ("chief executive", "ceo", "chief financial", "cfo",
                      "chair", "president")
 
 MIN_BUY_USD = 50_000
+
+from config import FORM4_SCORE_BUYS  # noqa: E402 — read at call time via the module global
 
 # Transaction codes (SEC Form 4 instructions, Table 1):
 #   P = open-market or private purchase     A = grant/award from the issuer
@@ -215,8 +220,9 @@ def to_facts(parsed):
     """Turn a parsed Form 4 into pipeline facts, or None if it isn't worth
     scoring.
 
-    A filing qualifies with an open-market purchase of at least MIN_BUY_USD
-    by an officer or director, or with an equity grant to a top officer.
+    A filing qualifies with an equity grant to a top officer, or — only when
+    FORM4_SCORE_BUYS is on — an open-market purchase of at least MIN_BUY_USD
+    by an officer or director.
     """
     if not parsed:
         return None
@@ -238,7 +244,7 @@ def to_facts(parsed):
             grants.append(txn)
 
     buy_total = sum(b["value_usd"] for b in buys)
-    if buy_total < MIN_BUY_USD:
+    if buy_total < MIN_BUY_USD or not FORM4_SCORE_BUYS:
         buys = []
     if not buys and not grants:
         return None

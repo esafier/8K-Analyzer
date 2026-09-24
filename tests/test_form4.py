@@ -124,6 +124,31 @@ def test_malformed_xml_returns_none():
 # Which Form 4s qualify
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _buys_on(monkeypatch):
+    """The purchase logic is kept behind FORM4_SCORE_BUYS and these tests pin
+    it; the default (off) has its own tests below."""
+    monkeypatch.setattr(form4, "FORM4_SCORE_BUYS", True)
+
+
+def test_buys_are_not_scored_by_default(monkeypatch):
+    """The user tracks insider buying in a separate tool — here it only
+    duplicated that and paid a judge to say so."""
+    monkeypatch.setattr(form4, "FORM4_SCORE_BUYS", False)
+    assert form4.to_facts(_parsed()) is None
+
+
+def test_a_ceo_grant_still_qualifies_with_buys_off(monkeypatch):
+    monkeypatch.setattr(form4, "FORM4_SCORE_BUYS", False)
+    parsed = _parsed()
+    parsed["transactions"].append({"derivative": True, "security": "Stock Option (right to buy)",
+                                   "date": "2026-06-16", "code": "A", "shares": 500_000,
+                                   "price": 24.0, "acquired": True})
+    facts = form4.to_facts(parsed)
+    assert facts["insider_transactions"] == []          # the buy in the same filing is dropped
+    assert facts["subcategories"] == ["Officer Grant"]
+    assert facts["comp_events"][0]["share_count"] == 500_000
+
 def test_a_large_officer_purchase_qualifies():
     facts = form4.to_facts(_parsed())
     assert facts["insider_transactions"][0]["value_usd"] == pytest.approx(315_000)

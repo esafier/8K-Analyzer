@@ -37,7 +37,7 @@ class IngestBlocked(RuntimeError):
 
 
 def ingest_range(start_date, end_date, model=None, judge_model=None,
-                 backfill_type="scheduled", enrich=True):
+                 backfill_type="scheduled", enrich=True, allow_judge=True):
     """Fetch, screen, analyze, and store every 8-K in a date range.
 
     Returns a stats dict. Raises IngestBlocked when SEC withheld so much of
@@ -77,7 +77,7 @@ def ingest_range(start_date, end_date, model=None, judge_model=None,
     try:
         matched = filter_filings(metadata, fetch_text_func=fetch_filing_text,
                                  model=model, judge_model=judge_model,
-                                 on_analyzed=store, stats=stats)
+                                 on_analyzed=store, stats=stats, allow_judge=allow_judge)
     except OutOfCredits as e:
         # Filings analyzed before the money ran out are already stored. The
         # rest must not be recorded as covered: the watermark stays put and

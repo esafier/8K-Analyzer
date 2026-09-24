@@ -17,13 +17,14 @@ from llm import OutOfCredits
 from database import initialize_database
 
 
-def run(start, end, do_form4=True):
+def run(start, end, do_form4=True, allow_judge=True):
     initialize_database()
 
     stats = {}
     blocked = None
     try:
-        stats = ingest.ingest_range(start, end, backfill_type="gap_backfill")
+        stats = ingest.ingest_range(start, end, backfill_type="gap_backfill",
+                                    allow_judge=allow_judge)
         print(f"8-K STATS: {stats}", flush=True)
     except ingest.IngestBlocked as e:
         # Keep going to the Form 4s, which need neither the market-data
@@ -34,7 +35,7 @@ def run(start, end, do_form4=True):
     stored = 0
     if do_form4:
         try:
-            results = form4.scan_range(start, end)
+            results = form4.scan_range(start, end, allow_judge=allow_judge)
             stored = sum(r.get("stored", 0) for r in results)
             print(f"FORM4 STORED: {stored}", flush=True)
         except OutOfCredits as e:
@@ -51,8 +52,12 @@ def main():
     parser.add_argument("--end", required=True, help="YYYY-MM-DD (inclusive)")
     parser.add_argument("--no-form4", action="store_true",
                         help="8-Ks only, skip the Form 4 scan")
+    parser.add_argument("--no-judge", action="store_true",
+                        help="detectors only — no judge calls (history backfills: "
+                             "cheaper, and grades the detectors on their own)")
     args = parser.parse_args()
-    result = run(args.start, args.end, do_form4=not args.no_form4)
+    result = run(args.start, args.end, do_form4=not args.no_form4,
+                 allow_judge=not args.no_judge)
     # Non-zero so the Actions run goes red: a backfill that stopped halfway
     # must not look like one that finished.
     return 2 if result["blocked"] else 0

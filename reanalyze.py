@@ -48,7 +48,7 @@ def rows_missing_analysis(since=None, until=None, limit=0):
     return rows[:limit] if limit else rows
 
 
-def run(since=None, until=None, limit=0, dry_run=False):
+def run(since=None, until=None, limit=0, dry_run=False, allow_judge=True):
     rows = rows_missing_analysis(since, until, limit)
     print(f"{len(rows)} unscored filings"
           f"{f' since {since}' if since else ''}"
@@ -65,7 +65,7 @@ def run(since=None, until=None, limit=0, dry_run=False):
     for i, row in enumerate(rows, 1):
         company = row.get("company", "Unknown")
         try:
-            result = analyze_filing(row)
+            result = analyze_filing(row, allow_judge=allow_judge)
         except OutOfCredits as e:
             # Every remaining row would fail the same way. Stop with what's
             # scored so far; re-running picks up exactly the rows left.
@@ -111,8 +111,12 @@ def main():
                         help="cap the number of filings (0 = no cap)")
     parser.add_argument("--dry-run", action="store_true",
                         help="list what would be analyzed, spend nothing")
+    parser.add_argument("--no-judge", action="store_true",
+                        help="detectors only — no judge calls. For history: about a "
+                             "third of the cost, and it grades the detectors on their own")
     args = parser.parse_args()
-    stats = run(since=args.since, until=args.until, limit=args.limit, dry_run=args.dry_run)
+    stats = run(since=args.since, until=args.until, limit=args.limit, dry_run=args.dry_run,
+                allow_judge=not args.no_judge)
     return 2 if stats.get("stopped") else 0
 
 
