@@ -443,7 +443,8 @@ def test_an_old_filing_is_priced_on_its_filing_date(tmp_sqlite_db, monkeypatch):
 
     assert ctx["as_of"] == "2026-06-01"
     assert ctx["price"] == 5.0
-    assert ctx["market_cap"] == pytest.approx(155_000_000)   # today's cap × 5/10
+    assert ctx["market_cap"] == 155_000_000                  # today's cap × 5/10, whole dollars
+    assert isinstance(ctx["market_cap"], int)
 
 
 def test_an_old_filing_without_price_history_gets_none_not_todays_price(tmp_sqlite_db, monkeypatch):

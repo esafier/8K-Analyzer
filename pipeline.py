@@ -214,7 +214,7 @@ def build_fields(facts, context, detection, judgment=None):
         "context_json": json.dumps(context, default=str) if context else None,
         "pipeline_version": PIPELINE_VERSION,
         "price_at_ingest": (context or {}).get("price"),
-        "market_cap_at_ingest": (context or {}).get("market_cap"),
+        "market_cap_at_ingest": _whole((context or {}).get("market_cap")),
         "accepted_at": (context or {}).get("accepted_at"),
         # ISO string rather than a datetime object: Python 3.12 deprecated
         # sqlite3's implicit datetime adapter, and Postgres casts the string
@@ -222,6 +222,14 @@ def build_fields(facts, context, detection, judgment=None):
         "judged_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S") if judgment else None,
     }
     return fields
+
+
+def _whole(value):
+    """A BIGINT column's value: whole number or None. Postgres rejects a
+    float there; SQLite doesn't, so only production would find out."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(round(value))
 
 
 def _rank(detection, judgment):

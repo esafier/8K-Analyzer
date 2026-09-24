@@ -102,7 +102,7 @@ def run(since=None, until=None, limit=0, dry_run=False, allow_judge=True,
             return
         company = row.get("company", "Unknown")
         try:
-            result = analyze_filing(row, allow_judge=allow_judge)
+            _work(i, row, company)
         except OutOfCredits as e:
             # Every remaining row would fail the same way. Stop with what's
             # scored so far; re-running picks up exactly the rows left.
@@ -110,7 +110,20 @@ def run(since=None, until=None, limit=0, dry_run=False, allow_judge=True,
             with lock:
                 stopped.append(str(e))
             print(f"  [{i}/{total}] STOPPED: {e}", flush=True)
-            return
+        except Exception as e:
+            # One bad row costs one row, reported, and stays unscored for the
+            # next run. The first parallel run instead failed the whole job
+            # after the fact — on a Postgres type error every relevant row in
+            # the window shared.
+            with lock:
+                counts["failed"] += 1
+                counts.setdefault("errors", {})
+                key = f"{type(e).__name__}: {str(e)[:120]}"
+                counts["errors"][key] = counts["errors"].get(key, 0) + 1
+            print(f"  [{i}/{total}] {company} — ERROR {type(e).__name__}: {e}", flush=True)
+
+    def _work(i, row, company):
+        result = analyze_filing(row, allow_judge=allow_judge)
         with lock:
             counts["tokens_in"] += result.tokens_in
             counts["tokens_out"] += result.tokens_out

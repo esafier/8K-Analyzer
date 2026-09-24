@@ -144,8 +144,11 @@ def _as_of_filing_date(context, filing, profile):
     today_price = profile.get("price")
     today_cap = profile.get("market_cap")
     context["price"] = close
+    # Whole dollars: market_cap_at_ingest is BIGINT on Postgres, and a scaled
+    # float (104234324.4995) is rejected there — while SQLite, which the test
+    # suite runs on, stores it without complaint.
     context["market_cap"] = (
-        today_cap * close / today_price
+        int(round(today_cap * close / today_price))
         if close and isinstance(today_price, (int, float)) and today_price > 0
         and isinstance(today_cap, (int, float)) and today_cap > 0
         else None

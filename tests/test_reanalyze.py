@@ -165,3 +165,19 @@ def test_tokens_are_reported(tmp_sqlite_db, monkeypatch):
     stats = reanalyze.run(since="2026-08-20")
 
     assert stats["tokens_in"] == 100 and stats["tokens_out"] == 20
+
+
+def test_one_bad_row_costs_one_row(tmp_sqlite_db, monkeypatch):
+    """A persist error is reported and counted; the rest of the run goes on,
+    in parallel mode too."""
+    ids = [_insert(f"e-{i}", filed_date=f"2026-09-{10 + i:02d}") for i in range(4)]
+
+    def analyze(row, **k):
+        if row["id"] == ids[1]:
+            raise ValueError("invalid input syntax for type bigint")
+        return _result()
+
+    monkeypatch.setattr("reanalyze.analyze_filing", analyze)
+    stats = reanalyze.run(since="2026-09-01", workers=3)
+    assert stats["scored"] == 3 and stats["failed"] == 1
+    assert list(stats["errors"].values()) == [1]
