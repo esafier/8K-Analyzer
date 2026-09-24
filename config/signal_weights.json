@@ -24,8 +24,8 @@
 
   "thresholds": {
     "abrupt_exit_max_days_notice": 7,
-    "cluster_min_departures": 2,
-    "cluster_high_departures": 3,
+    "cluster_min_departures": 3,
+    "cluster_high_departures": 4,
     "ipo_recent_months": 12,
     "restatement_lookback_days": 180,
     "exit_near_earnings_days": 14,

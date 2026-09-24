@@ -1,0 +1,74 @@
+name: Re-rank (and optionally judge) stored filings
+
+# rescore.py: re-runs today's detectors over every stored filing's facts and
+# context. Free — no model calls. Run it after changing a detector or
+# config/signal_weights.json.
+#
+# With "judge" on, it also sends the judge candidates that were scored
+# detector-only (history re-scored with --no-judge) to the judge: one judge
+# call each, no re-extraction. Dry run first to see how many.
+
+on:
+  workflow_dispatch:
+    inputs:
+      judge:
+        description: "Also judge unjudged candidates (spends one judge call each)"
+        type: boolean
+        default: false
+      since:
+        description: "Judge only filings filed on/after (YYYY-MM-DD, blank = all)"
+        required: false
+      until:
+        description: "Judge only filings filed on/before (YYYY-MM-DD, blank = all)"
+        required: false
+      limit:
+        description: "Judge at most N (0 = all)"
+        required: false
+        default: "0"
+      workers:
+        description: "Judge calls in flight at once"
+        required: false
+        default: "8"
+      dry_run:
+        description: "Report what would change and what would be judged — no writes, no spend"
+        type: boolean
+        default: true
+
+concurrency:
+  # Writes the same rows the daily job and reanalyze write; never overlap.
+  group: daily-ingest
+  cancel-in-progress: false
+
+jobs:
+  rescore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Re-rank${{ github.event.inputs.judge == 'true' && ' and judge' || '' }}${{ github.event.inputs.dry_run == 'true' && ' (dry run)' || '' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python rescore.py --quiet \
+            ${{ github.event.inputs.judge == 'true' && '--judge' || '' }} \
+            ${{ github.event.inputs.since && format('--since {0}', github.event.inputs.since) || '' }} \
+            ${{ github.event.inputs.until && format('--until {0}', github.event.inputs.until) || '' }} \
+            --limit "${{ github.event.inputs.limit || '0' }}" \
+            --workers "${{ github.event.inputs.workers || '8' }}" \
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+
+      - name: Price outcomes for anything newly flagged
+        if: ${{ always() && github.event.inputs.dry_run != 'true' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python outcomes.py
