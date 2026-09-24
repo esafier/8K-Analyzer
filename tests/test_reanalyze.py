@@ -7,21 +7,33 @@ exactly those rows, spend nothing on the ones already scored, and route the
 work through the one analysis path.
 """
 import json
+
+import pytest
 from types import SimpleNamespace
 
 import database
 import reanalyze
 
 
-def _insert(accession, filed_date="2026-09-03", structured=None, raw_text="t"):
+def _insert(accession, filed_date="2026-09-03", structured=None, raw_text="t",
+            pipeline_version=None, ticker="AAA"):
     database.insert_filing({
-        "accession_no": accession, "company": f"Co {accession}", "ticker": "AAA",
+        "accession_no": accession, "company": f"Co {accession}", "ticker": ticker,
         "cik": "1", "filed_date": filed_date, "item_codes": "5.02",
         "filing_url": "u", "raw_text": raw_text,
         "structured_summary": json.dumps(structured) if structured else None,
         "summary": "old-style prose summary",
+        "pipeline_version": pipeline_version,
     })
     return database.get_filing_by_accession(accession)["id"]
+
+
+@pytest.fixture(autouse=True)
+def _everyone_in_universe(monkeypatch):
+    """Offline, no market cap resolves. Treat every test company as in
+    universe; the gate itself has its own test."""
+    monkeypatch.setattr("database.get_cached_market_caps",
+                        lambda tickers, max_age_hours=None: {t: 1e9 for t in tickers})
 
 
 def _result(verdict="DEEP_LOOK", score=8, relevant=True, error=None):
@@ -39,12 +51,31 @@ def _result(verdict="DEEP_LOOK", score=8, relevant=True, error=None):
 
 def test_selects_only_unscored_rows_with_text(tmp_sqlite_db):
     unscored = _insert("a-1")
-    _insert("a-2", structured={"departures": []})        # already scored
+    _insert("a-2", structured={"departures": []}, pipeline_version="v4.2-signals")  # scored
     _insert("a-3", raw_text="")                          # no text to re-analyze
 
     rows = reanalyze.rows_missing_analysis(since="2026-08-20")
 
     assert [row["id"] for row in rows] == [unscored]
+
+
+def test_rows_with_pre_rebuild_facts_are_still_unscored(tmp_sqlite_db):
+    """March-July rows carry facts from the old pipeline in a schema today's
+    detectors can't read, and no verdict."""
+    old = _insert("old", structured={"category": "Management Change"})
+    assert [row["id"] for row in reanalyze.rows_missing_analysis()] == [old]
+
+
+def test_the_universe_gate_applies_to_history(tmp_sqlite_db, monkeypatch):
+    big = _insert("big", ticker="BIG")
+    _insert("tiny", ticker="TINY")
+    monkeypatch.setattr("database.get_cached_market_caps",
+                        lambda tickers, max_age_hours=None: {"BIG": 2e9, "TINY": 10e6})
+    seen = []
+    monkeypatch.setattr("reanalyze.analyze_filing",
+                        lambda row, **k: seen.append(row["id"]) or _result(relevant=False))
+    reanalyze.run()
+    assert seen == [big]
 
 
 def test_date_window_is_honored(tmp_sqlite_db):

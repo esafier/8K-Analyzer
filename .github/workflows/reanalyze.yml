@@ -23,6 +23,10 @@ on:
         description: "Stop after N filings (0 = all). Use 1 to check the API can pay."
         required: false
         default: "0"
+      dry_run:
+        description: "Only count what would be scored — no model calls, no writes"
+        type: boolean
+        default: false
 
 concurrency:
   # Context building calls SEC; never overlap the daily job's rate limit.
@@ -54,10 +58,11 @@ jobs:
             --since "${{ github.event.inputs.since }}" \
             ${{ github.event.inputs.until && format('--until {0}', github.event.inputs.until) || '' }} \
             --limit "${{ github.event.inputs.limit || '0' }}" \
-            ${{ github.event.inputs.no_judge == 'true' && '--no-judge' || '' }}
+            ${{ github.event.inputs.no_judge == 'true' && '--no-judge' || '' }} \
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
 
       - name: Price outcomes for anything newly flagged
-        if: always()
+        if: ${{ always() && github.event.inputs.dry_run != 'true' }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python outcomes.py

@@ -20,12 +20,18 @@ from pipeline import analyze_filing, persist
 
 
 def rows_missing_analysis(since=None, until=None, limit=0):
-    """Rows with text but no structured_summary — never seen by the pipeline."""
+    """Rows with text that the current pipeline never scored.
+
+    Keyed on pipeline_version, not structured_summary: ~2,100 rows from March
+    to July carry facts from the pre-rebuild pipeline, in a schema today's
+    detectors can't read, and no verdict. They are as unscored as a row with
+    no facts at all.
+    """
     conn = db.get_connection()
     cursor = conn.cursor()
     p = db._placeholder()
 
-    where = ["structured_summary IS NULL",
+    where = ["pipeline_version IS NULL",
              "raw_text IS NOT NULL", "raw_text != ''",
              "COALESCE(source, '8-K') = '8-K'"]
     params = []
@@ -48,15 +54,37 @@ def rows_missing_analysis(since=None, until=None, limit=0):
     return rows[:limit] if limit else rows
 
 
-def run(since=None, until=None, limit=0, dry_run=False, allow_judge=True):
-    rows = rows_missing_analysis(since, until, limit)
+def run(since=None, until=None, limit=0, dry_run=False, allow_judge=True,
+        apply_universe=True):
+    rows = rows_missing_analysis(since, until, 0)
     print(f"{len(rows)} unscored filings"
           f"{f' since {since}' if since else ''}"
           f"{f' through {until}' if until else ''}", flush=True)
+    if apply_universe and rows:
+        # The same gate live ingest applies, so history is scored on the same
+        # universe the inbox is. Uses today's market cap — a company that
+        # crossed the floor since is judged by where it is now.
+        #
+        # Cached caps of any age, no refresh: history spans ~2,000 tickers and
+        # a refresh would spend that many API Ninjas calls on a quota the
+        # daily job depends on. A ticker never cached reads as unknown and is
+        # skipped, exactly as the live gate skips it.
+        from database import get_cached_market_caps
+        from universe import screen_filings, summarize_skips
+        tickers = sorted({(r.get("ticker") or "").strip().upper() for r in rows} - {""})
+        caps = get_cached_market_caps(tickers, max_age_hours=None) if tickers else {}
+        rows, skipped = screen_filings(rows, market_caps=caps)
+        print(f"  universe: {len(rows)} in, skipped {summarize_skips(skipped)}", flush=True)
+    if limit:
+        rows = rows[:limit]
 
     if dry_run:
-        for row in rows:
+        for row in rows[:25]:
             print(f"  WOULD ANALYZE {row['filed_date']} {row['company']}", flush=True)
+        if len(rows) > 25:
+            print(f"  ... and {len(rows) - 25} more", flush=True)
+        chars = sum(min(len(row.get("raw_text") or ""), 120_000) for row in rows)
+        print(f"  {chars:,} characters of filing text to extract", flush=True)
         return {"candidates": len(rows), "scored": 0, "dry_run": True}
 
     scored = irrelevant = failed = 0
@@ -111,12 +139,14 @@ def main():
                         help="cap the number of filings (0 = no cap)")
     parser.add_argument("--dry-run", action="store_true",
                         help="list what would be analyzed, spend nothing")
+    parser.add_argument("--all", action="store_true",
+                        help="skip the market-cap universe gate")
     parser.add_argument("--no-judge", action="store_true",
                         help="detectors only — no judge calls. For history: about a "
                              "third of the cost, and it grades the detectors on their own")
     args = parser.parse_args()
     stats = run(since=args.since, until=args.until, limit=args.limit, dry_run=args.dry_run,
-                allow_judge=not args.no_judge)
+                allow_judge=not args.no_judge, apply_universe=not args.all)
     return 2 if stats.get("stopped") else 0
 
 
