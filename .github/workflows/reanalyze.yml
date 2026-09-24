@@ -23,6 +23,10 @@ on:
         description: "Stop after N filings (0 = all). Use 1 to check the API can pay."
         required: false
         default: "0"
+      workers:
+        description: "Filings in flight at once (Flex is slow per call)"
+        required: false
+        default: "8"
       dry_run:
         description: "Only count what would be scored — no model calls, no writes"
         type: boolean
@@ -58,6 +62,7 @@ jobs:
             --since "${{ github.event.inputs.since }}" \
             ${{ github.event.inputs.until && format('--until {0}', github.event.inputs.until) || '' }} \
             --limit "${{ github.event.inputs.limit || '0' }}" \
+            --workers "${{ github.event.inputs.workers || '8' }}" \
             ${{ github.event.inputs.no_judge == 'true' && '--no-judge' || '' }} \
             ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
 
