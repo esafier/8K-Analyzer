@@ -989,7 +989,7 @@ def update_deep_analysis(filing_id, deep_analysis_text):
     conn.close()
 
 
-def get_departure_history(cik, exclude_accession, months=12):
+def get_departure_history(cik, exclude_accession, months=12, as_of=None):
     """Find other Item 5.02 (departure) filings from the same company.
 
     Used by signal analysis to detect departure clustering — multiple
@@ -1001,6 +1001,9 @@ def get_departure_history(cik, exclude_accession, months=12):
         cik: The company's CIK number (10-digit string)
         exclude_accession: Accession number of the current filing (skip it)
         months: How far back to look (default 12 months)
+        as_of: YYYY-MM-DD to look back from (default today). Filings dated
+               after it are excluded, so scoring an old filing never counts
+               departures that happened later.
 
     Returns:
         List of dicts with filed_date, auto_subcategory, summary (truncated)
@@ -1014,7 +1017,9 @@ def get_departure_history(cik, exclude_accession, months=12):
     cursor = conn.cursor()
     p = _placeholder()
 
-    cutoff_date = (datetime.now() - timedelta(days=months * 30)).strftime("%Y-%m-%d")
+    anchor = datetime.strptime(str(as_of)[:10], "%Y-%m-%d") if as_of else datetime.now()
+    cutoff_date = (anchor - timedelta(days=months * 30)).strftime("%Y-%m-%d")
+    upper_date = anchor.strftime("%Y-%m-%d")
 
     cursor.execute(f"""
         SELECT filed_date, auto_subcategory, summary
@@ -1023,8 +1028,9 @@ def get_departure_history(cik, exclude_accession, months=12):
           AND accession_no != {p}
           AND item_codes LIKE '%5.02%'
           AND filed_date >= {p}
+          AND filed_date <= {p}
         ORDER BY filed_date DESC
-    """, (cik, exclude_accession, cutoff_date))
+    """, (cik, exclude_accession, cutoff_date, upper_date))
 
     # Convert to real dicts so .get() works on both SQLite and Postgres
     columns = [desc[0] for desc in cursor.description]

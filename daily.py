@@ -21,6 +21,7 @@ import traceback
 
 from database import initialize_database
 from ingest import IngestBlocked, ingest_range, mark_ingested, pending_window
+from llm import OutOfCredits
 
 
 def run(date=None, days=None, model=None, judge_model=None,
@@ -74,6 +75,10 @@ def run(date=None, days=None, model=None, judge_model=None,
                 {k: day[k] for k in ("date", "qualified", "stored") if k in day}
                 for day in __import__("form4").scan_range(start, end)
             ]
+        except OutOfCredits as e:
+            # Form 4s need no extraction, but the judge still calls the model.
+            blocked = blocked or IngestBlocked(str(e))
+            print(f"[DAILY] Form 4 scan stopped: {e}", flush=True)
         except Exception as e:
             print(f"[DAILY] Form 4 scan failed (8-K ingest still succeeded): {e}", flush=True)
 

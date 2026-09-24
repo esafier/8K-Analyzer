@@ -15,6 +15,7 @@ import argparse
 import sys
 
 import database as db
+from llm import OutOfCredits
 from pipeline import analyze_filing, persist
 
 
@@ -63,7 +64,17 @@ def run(since=None, until=None, limit=0, dry_run=False):
 
     for i, row in enumerate(rows, 1):
         company = row.get("company", "Unknown")
-        result = analyze_filing(row)
+        try:
+            result = analyze_filing(row)
+        except OutOfCredits as e:
+            # Every remaining row would fail the same way. Stop with what's
+            # scored so far; re-running picks up exactly the rows left.
+            print(f"  [{i}/{len(rows)}] STOPPED: {e}", flush=True)
+            stats = {"candidates": len(rows), "scored": scored, "irrelevant": irrelevant,
+                     "failed": failed, "tokens_in": tokens_in, "tokens_out": tokens_out,
+                     "stopped": str(e)}
+            print(f"REANALYZE STOPPED {stats}", flush=True)
+            return stats
         tokens_in += result.tokens_in
         tokens_out += result.tokens_out
 
@@ -101,8 +112,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true",
                         help="list what would be analyzed, spend nothing")
     args = parser.parse_args()
-    run(since=args.since, until=args.until, limit=args.limit, dry_run=args.dry_run)
-    return 0
+    stats = run(since=args.since, until=args.until, limit=args.limit, dry_run=args.dry_run)
+    return 2 if stats.get("stopped") else 0
 
 
 if __name__ == "__main__":

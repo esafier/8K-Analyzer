@@ -4,7 +4,7 @@ Almost every signal this system hunts is *relative*:
 
   "off-cycle"  → relative to the company's own grant months
   "oversized"  → relative to that executive's prior grants
-  "conviction" → relative to today's share price
+  "conviction" → relative to the share price when the filing came out
   "cluster"    → relative to who else left in the last two years
   "buried"     → relative to the market's clock, not the filing's date column
 
@@ -32,6 +32,11 @@ PROFILE_TTL_HOURS = 24
 
 # How far back to look for restatements and prior earnings dates.
 ITEM_HISTORY_DAYS = 400
+
+# A filing older than this is being scored after the fact (a backfill or
+# reanalyze), so its context is rebuilt as of its filing date instead of from
+# today's quotes. See _as_of_filing_date.
+POINT_IN_TIME_AFTER_DAYS = 5
 
 # Item codes worth remembering from a company's recent 8-K history.
 #   2.02 — results announcement; the real earnings date, days before the 10-Q
@@ -79,6 +84,9 @@ def build_context(filing, refresh=False):
         "grant_cadence": _loads(profile.get("grant_cadence_json")) or {},
     }
 
+    if _is_historical(filed_date):
+        _as_of_filing_date(context, filing, profile)
+
     # Acceptance timestamp for THIS filing — needed for Friday-night burial,
     # and only knowable from the company's submissions index.
     accepted = _accepted_at(cik, filing.get("accession_no"))
@@ -91,6 +99,90 @@ def build_context(filing, refresh=False):
     context["departures_24mo"] = _departures_24mo(filing)
 
     return context
+
+
+# ---------------------------------------------------------------------------
+# Point in time — scoring a filing after the fact
+# ---------------------------------------------------------------------------
+
+def _today():
+    """Isolated so tests can pin the clock their fixtures were written for."""
+    return datetime.now().date()
+
+
+def _is_historical(filed_date):
+    day = _parse_date(filed_date)
+    if day is None:
+        return False
+    return (_today() - day).days > POINT_IN_TIME_AFTER_DAYS
+
+
+def _as_of_filing_date(context, filing, profile):
+    """Replace every today-dependent field with its value on the filing date.
+
+    The company profile is today's: today's price, today's market cap, the
+    next earnings date from today, and 8-K and grant history up to today.
+    That is right for a filing that arrived this morning and wrong for one
+    from March, where it hands the detectors information from after the fact:
+    a hurdle measured against a price the stock only reached later, a
+    restatement filed months afterwards, an "off-cycle" judgement made
+    against grants that hadn't happened yet. A scorecard built on that is
+    measuring hindsight.
+
+    A value that can't be rebuilt for the filing date becomes None — never
+    today's number — so the detector that needs it stays silent.
+    """
+    as_of = str(context.get("filed_date"))[:10]
+    ticker = context.get("ticker")
+    cik = context.get("cik")
+    context["as_of"] = as_of
+
+    # Price and market cap. Cap is today's scaled by the price change, which
+    # ignores share-count changes in between — close enough for a threshold
+    # measured in percent of cap.
+    close = _historical_close(ticker, as_of)
+    today_price = profile.get("price")
+    today_cap = profile.get("market_cap")
+    context["price"] = close
+    context["market_cap"] = (
+        today_cap * close / today_price
+        if close and isinstance(today_price, (int, float)) and today_price > 0
+        and isinstance(today_cap, (int, float)) and today_cap > 0
+        else None
+    )
+
+    # Earnings dates and the 8-K item calendar, from SEC's filing history.
+    # The next earnings date is the company's next Item 2.02 after the filing
+    # — the date the market was waiting for, though learned in hindsight.
+    history = _sec_history(cik, as_of=as_of)
+    context["recent_item_codes"] = _loads(history.get("recent_8k_items_json")) or {}
+    context["last_earnings_date"] = history.get("last_202_date")
+    context["days_since_earnings"] = _days_from(history.get("last_202_date"), as_of)
+    context["next_earnings_date"] = history.get("next_202_date")
+    context["days_to_earnings"] = _days_from(as_of, history.get("next_202_date"))
+
+    context["grant_cadence"] = _grant_cadence(ticker, as_of=as_of)
+
+
+def _historical_close(ticker, as_of):
+    """The price the stock traded at on the last session on or before
+    `as_of`, or None.
+
+    Nominal, not adjusted: a hurdle in a filing is a dollar price written on
+    that day. Adjusted history would read low by every dividend since, and
+    by the full ratio of any later split. Fetched through today so a split
+    after `as_of` is inside the window the un-adjustment checks.
+    """
+    if not ticker:
+        return None
+    try:
+        import price_history
+        series = price_history.closes(ticker, price_history.add_days(as_of, -10), nominal=True)
+        found = price_history.close_on_or_before(series, as_of)
+        return found[1] if found else None
+    except Exception as e:
+        print(f"[CONTEXT] Historical price failed for {ticker} on {as_of}: {e}", flush=True)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -196,13 +288,18 @@ def _submissions(cik):
     return data
 
 
-def _sec_history(cik):
+def _sec_history(cik, as_of=None):
     """Recent 8-K item calendar, last earnings date, and first-filing date.
 
     One submissions fetch answers all three. `recent` holds ~1000 filings,
     which for an 8-K-heavy filer is a few years — plenty for a 400-day window.
+
+    With `as_of`, the window ends on that date instead of today, and the
+    result also carries `next_202_date`: the first earnings 8-K after it.
     """
     empty = {"recent_8k_items_json": None, "last_202_date": None, "ipo_date": None}
+    if as_of:
+        empty["next_202_date"] = None
     if not cik:
         return empty
 
@@ -215,9 +312,11 @@ def _sec_history(cik):
     dates = recent.get("filingDate") or []
     items = recent.get("items") or []
 
-    cutoff = (datetime.now() - timedelta(days=ITEM_HISTORY_DAYS)).strftime("%Y-%m-%d")
+    anchor = datetime.strptime(as_of, "%Y-%m-%d") if as_of else datetime.now()
+    cutoff = (anchor - timedelta(days=ITEM_HISTORY_DAYS)).strftime("%Y-%m-%d")
     by_item = {}
     last_202 = None
+    next_202 = None
 
     for i, form in enumerate(forms):
         if form not in ("8-K", "8-K/A"):
@@ -226,17 +325,27 @@ def _sec_history(cik):
         if not filed or filed < cutoff:
             continue
         item_str = items[i] if i < len(items) else ""
+        if as_of and filed > as_of:
+            # After the filing: unknowable then, except as the next earnings date.
+            if "2.02" in (item_str or "") and (next_202 is None or filed < next_202):
+                next_202 = filed
+            continue
         for code in TRACKED_ITEMS:
             if code in (item_str or ""):
                 by_item.setdefault(code, []).append(filed)
                 if code == "2.02" and (last_202 is None or filed > last_202):
                     last_202 = filed
 
-    return {
+    result = {
         "recent_8k_items_json": json.dumps(by_item) if by_item else None,
         "last_202_date": last_202,
         "ipo_date": _earliest_filing_date(data),
     }
+    if as_of:
+        # Not a profile column: the live profile's next date comes from the
+        # earnings calendar, and this one only means anything for `as_of`.
+        result["next_202_date"] = next_202
+    return result
 
 
 def _earliest_filing_date(submissions):
@@ -294,7 +403,7 @@ def _accepted_at(cik, accession_no):
 MIN_GRANTS_FOR_CADENCE = 3
 
 
-def _grant_cadence(ticker, years=3):
+def _grant_cadence(ticker, years=3, as_of=None):
     """Reconstruct this company's grant rhythm from Form 4 history.
 
     Returns per-executive grant sizes plus `_annual_months`: the calendar
@@ -305,13 +414,17 @@ def _grant_cadence(ticker, years=3):
     Uses the API Ninjas insider endpoint rather than walking EDGAR: the same
     history costs one paginated call instead of one document fetch per Form 4,
     which for a serial filer is hundreds of SEC requests.
+
+    With `as_of`, the baseline is the three years before that date; grants
+    reported after it are dropped even if the API returns them.
     """
     if not ticker:
         return {}
 
-    start = (datetime.now() - timedelta(days=365 * years)).strftime("%Y-%m-%d")
+    anchor = datetime.strptime(as_of, "%Y-%m-%d") if as_of else datetime.now()
+    start = (anchor - timedelta(days=365 * years)).strftime("%Y-%m-%d")
     try:
-        rows = _fetch_insider_transactions(ticker, start)
+        rows = _fetch_insider_transactions(ticker, start, end_date=as_of)
     except Exception as e:
         print(f"[CONTEXT] Insider history failed for {ticker}: {e}", flush=True)
         return {}
@@ -329,6 +442,8 @@ def _grant_cadence(ticker, years=3):
         date = str(row.get("filing_date") or "")[:10]
         shares = row.get("shares")
         if not name or not date:
+            continue
+        if as_of and date > as_of:
             continue
 
         entry = by_person.setdefault(name, {"dates": [], "shares": []})
@@ -372,16 +487,21 @@ def _dominant_months(months):
     return sorted(m for m, c in counts.items() if c >= threshold)
 
 
-def _fetch_insider_transactions(ticker, start_date, limit=250):
+def _fetch_insider_transactions(ticker, start_date, limit=250, end_date=None):
     """Fetch Form 4 rows from API Ninjas. Isolated so tests can stub it."""
     import requests
     from config import API_NINJAS_KEY
 
     if not API_NINJAS_KEY:
         return []
+    params = {"ticker": ticker, "start_date": start_date, "limit": limit}
+    if end_date:
+        # Without an upper bound the newest `limit` rows come back, which for
+        # a heavy grantor can crowd out the window before an old filing.
+        params["max_transaction_date"] = end_date
     resp = requests.get(
         "https://api.api-ninjas.com/v1/insidertransactions",
-        params={"ticker": ticker, "start_date": start_date, "limit": limit},
+        params=params,
         headers={"X-Api-Key": API_NINJAS_KEY},
         timeout=15,
     )
@@ -478,7 +598,10 @@ def _local_departure_count(filing):
         return None
     try:
         from database import get_departure_history
-        prior = get_departure_history(cik, filing.get("accession_no") or "", months=24)
+        # Anchored to the filing's own date: scoring an old filing must not
+        # count departures that came after it.
+        prior = get_departure_history(cik, filing.get("accession_no") or "", months=24,
+                                      as_of=filing.get("filed_date"))
     except Exception as e:
         print(f"[CONTEXT] Local departure lookup failed for CIK {cik}: {e}", flush=True)
         return None

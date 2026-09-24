@@ -13,6 +13,7 @@ import sys
 
 import form4
 import ingest
+from llm import OutOfCredits
 from database import initialize_database
 
 
@@ -20,23 +21,28 @@ def run(start, end, do_form4=True):
     initialize_database()
 
     stats = {}
+    blocked = None
     try:
         stats = ingest.ingest_range(start, end, backfill_type="gap_backfill")
         print(f"8-K STATS: {stats}", flush=True)
     except ingest.IngestBlocked as e:
-        # Not a crash: the universe gate refused to call the window covered
-        # because the market-data provider looked dead. Say so and keep going
-        # to the Form 4s, which do not depend on it.
+        # Keep going to the Form 4s, which need neither the market-data
+        # provider nor extraction — but remember it, so the job ends red.
+        blocked = e
         print(f"8-K BLOCKED: {e}", flush=True)
 
     stored = 0
     if do_form4:
-        results = form4.scan_range(start, end)
-        stored = sum(r.get("stored", 0) for r in results)
-        print(f"FORM4 STORED: {stored}", flush=True)
+        try:
+            results = form4.scan_range(start, end)
+            stored = sum(r.get("stored", 0) for r in results)
+            print(f"FORM4 STORED: {stored}", flush=True)
+        except OutOfCredits as e:
+            blocked = blocked or e
+            print(f"FORM4 STOPPED: {e}", flush=True)
 
-    print("BACKFILL DONE", flush=True)
-    return {"filings": stats, "form4_stored": stored}
+    print("BACKFILL DONE" if blocked is None else f"BACKFILL INCOMPLETE: {blocked}", flush=True)
+    return {"filings": stats, "form4_stored": stored, "blocked": str(blocked) if blocked else None}
 
 
 def main():
@@ -46,8 +52,10 @@ def main():
     parser.add_argument("--no-form4", action="store_true",
                         help="8-Ks only, skip the Form 4 scan")
     args = parser.parse_args()
-    run(args.start, args.end, do_form4=not args.no_form4)
-    return 0
+    result = run(args.start, args.end, do_form4=not args.no_form4)
+    # Non-zero so the Actions run goes red: a backfill that stopped halfway
+    # must not look like one that finished.
+    return 2 if result["blocked"] else 0
 
 
 if __name__ == "__main__":

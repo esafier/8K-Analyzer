@@ -39,7 +39,7 @@ def history(monkeypatch):
     """Controllable close history: {ticker: {date: close}}."""
     import price_history
     book = {"SPY": _series("2026-05-25", [500.0] * 120)}
-    monkeypatch.setattr(price_history, "closes", lambda t, start, end=None: book.get(t, {}))
+    monkeypatch.setattr(price_history, "closes", lambda t, start, end=None, nominal=False: book.get(t, {}))
     return book
 
 
@@ -187,7 +187,7 @@ def test_finished_rows_are_not_refetched(tmp_sqlite_db, history, monkeypatch):
     import price_history
     calls = []
     monkeypatch.setattr(price_history, "closes",
-                        lambda t, start, end=None: calls.append(t) or history.get(t, {}))
+                        lambda t, start, end=None, nominal=False: calls.append(t) or history.get(t, {}))
     outcomes.run(today="2026-06-06")       # nothing new is due
     assert calls == []
 

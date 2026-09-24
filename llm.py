@@ -19,6 +19,42 @@ OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "180"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "3"))
 
 
+class OutOfCredits(RuntimeError):
+    """The OpenAI account can't pay for the call.
+
+    Not a per-filing failure, so it must not be handled like one. From
+    2026-09-14 every extraction returned "429 — You have no credits
+    remaining"; each was caught as an ordinary failure, the filing was stored
+    with a keyword summary and no verdict, and the daily job went green for
+    ten days while 273 8-Ks never reached the inbox. Raised instead of
+    returning None so the run stops and fails loudly.
+    """
+
+
+def _is_out_of_credits(error):
+    """True for OpenAI's quota/billing refusal, as opposed to a rate limit
+    that clears on retry. Both arrive as HTTP 429; only the code differs."""
+    codes = {getattr(error, "code", None)}
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        codes.add(body.get("code"))
+        if isinstance(body.get("error"), dict):
+            codes.add(body["error"].get("code"))
+    if "insufficient_quota" in codes:
+        return True
+    text = str(error).lower()
+    return ("insufficient_quota" in text or "no credits remaining" in text
+            or "exceeded your current quota" in text)
+
+
+def _raise_if_out_of_credits(error, model):
+    if _is_out_of_credits(error):
+        raise OutOfCredits(
+            f"OpenAI account is out of credits (model={model}). Add credits at "
+            f"https://platform.openai.com/settings/organization/billing and re-run."
+        ) from error
+
+
 def _client():
     """The one place an OpenAI client is constructed.
 
@@ -76,7 +112,8 @@ def classify_and_summarize(filing_text, prompt_file=None, model=None):
 
     Returns:
         Dictionary with keys: relevant, category, subcategory, summary
-        Returns None if the API call fails
+        Returns None if the API call fails. Raises OutOfCredits when the
+        account can't pay — that is the run's problem, not this filing's.
     """
     # Use the default model from config unless a specific one was requested
     use_model = model or LLM_MODEL
@@ -104,6 +141,7 @@ def classify_and_summarize(filing_text, prompt_file=None, model=None):
         return result
 
     except Exception as e:
+        _raise_if_out_of_credits(e, use_model)
         # Include model, text length, and full error repr so Render logs reveal
         # whether it's a 400 (bad model/params), 401 (auth), 429 (rate/quota), etc.
         print(f"    LLM call failed [model={use_model}, text_len={len(filing_text)}]: {type(e).__name__}: {e!r}", flush=True)
@@ -125,7 +163,7 @@ def judge_filing(payload, model=None, prompt_file="prompt_judge.txt"):
 
     Returns the parsed judgment dict with token counts attached, or None on
     failure — callers fall back to the detector-derived verdict rather than
-    dropping the filing.
+    dropping the filing. Raises OutOfCredits when the account can't pay.
     """
     use_model = model or LLM_MODEL_JUDGE
     template = _load_prompt(prompt_file)
@@ -144,6 +182,7 @@ def judge_filing(payload, model=None, prompt_file="prompt_judge.txt"):
         result["_model"] = use_model
         return result
     except Exception as e:
+        _raise_if_out_of_credits(e, use_model)
         print(f"    Judge call failed [model={use_model}]: {type(e).__name__}: {e!r}", flush=True)
         return None
 
