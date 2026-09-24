@@ -114,8 +114,9 @@ def test_scored_row_gets_its_verdict_written(tmp_sqlite_db, monkeypatch):
     assert row["top_signal"] == "CFO walks from unvested comp."
 
 
-def test_irrelevant_filing_is_left_alone(tmp_sqlite_db, monkeypatch):
-    """The archive keeps it; the inbox still shouldn't rank it."""
+def test_irrelevant_filing_is_kept_passed_and_never_paid_for_twice(tmp_sqlite_db, monkeypatch):
+    """The archive keeps it and the inbox doesn't rank it (PASS) — and it is
+    stamped as seen, so a rerun or the next history chunk doesn't re-extract it."""
     filing_id = _insert("a-1")
     monkeypatch.setattr("reanalyze.analyze_filing",
                         lambda *a, **k: _result(relevant=False))
@@ -123,7 +124,20 @@ def test_irrelevant_filing_is_left_alone(tmp_sqlite_db, monkeypatch):
     stats = reanalyze.run(since="2026-08-20")
 
     assert stats["irrelevant"] == 1 and stats["scored"] == 0
-    assert database.get_filing_by_id(filing_id)["triage_verdict"] is None
+    row = database.get_filing_by_id(filing_id)
+    assert row["triage_verdict"] == "PASS"
+    assert row["raw_text"] == "t"                    # still in the archive
+    assert reanalyze.rows_missing_analysis(since="2026-08-20") == []
+
+
+def test_workers_score_every_row_once(tmp_sqlite_db, monkeypatch):
+    ids = [_insert(f"w-{i}", filed_date=f"2026-09-{10 + i:02d}") for i in range(8)]
+    seen = []
+    monkeypatch.setattr("reanalyze.analyze_filing",
+                        lambda row, **k: seen.append(row["id"]) or _result())
+    stats = reanalyze.run(since="2026-09-01", workers=4)
+    assert sorted(seen) == sorted(ids)
+    assert stats["scored"] == 8
 
 
 def test_a_failure_costs_one_filing_not_the_run(tmp_sqlite_db, monkeypatch):

@@ -152,3 +152,23 @@ def test_reanalyze_stops_at_the_first_refusal(tmp_sqlite_db, monkeypatch):
     stats = reanalyze.run(apply_universe=False)
     assert len(calls) == 1
     assert stats["stopped"] and stats["scored"] == 0
+
+
+def test_reanalyze_workers_stop_dispatching_after_a_refusal(tmp_sqlite_db, monkeypatch):
+    import reanalyze
+    for i in range(12):
+        database.insert_filing({
+            "accession_no": f"p-{i}", "company": f"Co {i}", "ticker": "AAA", "cik": "1",
+            "filed_date": "2026-09-15", "item_codes": "5.02", "filing_url": "u",
+            "raw_text": "t", "summary": "keyword fallback",
+        })
+    calls = []
+
+    def broke(row, **kwargs):
+        calls.append(row["accession_no"])
+        raise llm.OutOfCredits("OpenAI account is out of credits")
+
+    monkeypatch.setattr(reanalyze, "analyze_filing", broke)
+    stats = reanalyze.run(apply_universe=False, workers=3)
+    assert stats["stopped"]
+    assert len(calls) <= 3       # only what was already in flight
