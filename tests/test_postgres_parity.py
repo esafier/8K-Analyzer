@@ -290,3 +290,18 @@ def test_departure_history_as_of_on_postgres(pg):
 
     everything = pg.get_departure_history(cik, "pg-dep-now", months=24, as_of="2026-09-01")
     assert len(everything) == 2
+
+
+def test_a_scaled_market_cap_persists_on_postgres(pg):
+    """Point-in-time context scales today's cap by a price ratio, which is
+    fractional. market_cap_at_ingest is BIGINT on Postgres: a float there
+    failed every relevant row of the first 10-day re-score, while SQLite (the
+    default suite) stored it without complaint."""
+    from pipeline import build_fields
+    filing_id = _insert(pg, "pg-cap-float", filed_date="2026-09-15")
+    fields = build_fields({"departures": []}, {"market_cap": 104234324.49948709, "price": 5.0},
+                          None, None)
+    pg.update_filing_fields(filing_id, **{"market_cap_at_ingest": fields["market_cap_at_ingest"],
+                                          "price_at_ingest": fields["price_at_ingest"]})
+    row = pg.get_filing_by_id(filing_id)
+    assert row["market_cap_at_ingest"] == 104234324
