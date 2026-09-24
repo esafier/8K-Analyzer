@@ -5,100 +5,139 @@ whether the market did. The two disagree in useful ways: a filing the user
 called noise that preceded a 30% drop is the most instructive row in the
 database.
 
-How it works, run once per daily job:
+How it works, run once per daily job (or by hand: `python outcomes.py`):
 
-  1. Every newly flagged filing (DEEP_LOOK or MONITOR) gets a baseline: its
-     price when the signal fired, and SPY at the same moment.
-  2. Each row is re-priced when it turns 7, 30 and 90 days old.
+  1. Every flagged filing (DEEP_LOOK or MONITOR) gets an outcome row.
+  2. Each row is priced from daily closing history (price_history.py): the
+     baseline is the close on the filing date — the next trading day's if it
+     was filed on a weekend or holiday — and each mark is the first close at
+     least 7, 30 and 90 calendar days later. SPY is priced on the same dates.
   3. The scorecard compares the stock's move to SPY's, signed by direction:
      a bearish call is right when the stock lags the market, a bullish call
      when it leads.
 
-Prospective only. The price source returns current quotes, not history, so a
-mark can only be taken on the day it comes due. A missed day is marked late
-(on the next run), which is noted rather than hidden: the horizon is "at
-least N days", not "exactly N".
+Because the marks come from history, a late or skipped run changes nothing:
+the next run prices the row at the right dates. The first version priced
+from live quotes on whatever day the job ran, which gave filings stored by a
+backfill a baseline weeks after they were filed; rows priced that way
+(price_source NULL) are re-priced from history on the next run.
+
+Only completed sessions count — a close dated today is still moving, so a
+mark that lands on today waits for tomorrow's run.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
+import price_history
 from database import (
     OUTCOME_HORIZONS, get_all_outcomes, get_filings_needing_baseline,
-    get_outcomes_due, insert_outcome_baseline, mark_outcome,
+    get_outcomes_to_price, insert_outcome_baseline, set_outcome_prices,
 )
 
 BENCHMARK = "SPY"
 
-
-def _quote(ticker):
-    """Current price, or None. One cached lookup per ticker per hour."""
-    try:
-        from stock_price import get_stock_price
-        return get_stock_price(ticker)
-    except Exception as e:
-        print(f"[OUTCOMES] Price lookup failed for {ticker}: {e}", flush=True)
-        return None
+# How far before the earliest filing to start a history fetch: enough to span
+# a long weekend plus a holiday, so the first row always finds its session.
+_LOOKBACK_DAYS = 7
 
 
-def record_baselines(limit=200):
+def _today():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def record_baselines(limit=2000):
     """Start tracking newly flagged filings. Returns how many were started.
 
-    Uses the price stored at analysis time when there is one. Filings
-    analyzed without a price get today's quote as their baseline — slightly
-    later than the signal, which is the honest best available.
+    Rows are created unpriced; price_rows fills them from history.
     """
-    rows = get_filings_needing_baseline(limit=limit)
-    if not rows:
-        return 0
-
-    spy = _quote(BENCHMARK)
-    if spy is None:
-        # Without the benchmark the move can't be read net of the market, and
-        # a baseline recorded now can't be corrected later. Wait for a day
-        # when SPY resolves.
-        print("[OUTCOMES] No SPY quote — skipping baselines this run", flush=True)
-        return 0
-
     started = 0
-    for row in rows:
-        price = row.get("price_at_ingest") or _quote(row["ticker"])
-        if not price:
+    for row in get_filings_needing_baseline(limit=limit):
+        if not row.get("filed_date"):
             continue
         insert_outcome_baseline(
             row["id"], row["ticker"], row.get("signal_direction"),
-            row.get("signal_types"), row.get("filed_date"), price, spy,
+            row.get("signal_types"), str(row["filed_date"])[:10],
         )
         started += 1
     return started
 
 
-def mark_due(today=None):
-    """Price every outcome row that has reached a horizon. Returns counts."""
-    today = today or datetime.now().strftime("%Y-%m-%d")
-    spy = _quote(BENCHMARK)
-    if spy is None:
-        print("[OUTCOMES] No SPY quote — marks deferred to the next run", flush=True)
-        return {h: 0 for h in OUTCOME_HORIZONS}
+def price_from_history(ingest_date, stock, spy, today):
+    """Baseline and marks for one filing from two close series.
 
-    marked = {}
+    Returns {column: price} with only the columns that could be priced.
+    A mark needs a stock close AND a SPY close on the same session, or it is
+    left out — excess return with the benchmark on a different day is noise.
+    """
+    base = price_history.close_on_or_after(stock, ingest_date, before=today)
+    if not base or base[0] not in spy:
+        return {}
+    base_day, base_price = base
+    prices = {"price_0": base_price, "spy_0": spy[base_day]}
     for horizon in OUTCOME_HORIZONS:
-        count = 0
-        for row in get_outcomes_due(horizon, today):
-            price = _quote(row["ticker"])
-            if price is None:
-                continue  # stays due; tried again next run
-            mark_outcome(row["id"], horizon, price, spy)
-            count += 1
-        marked[horizon] = count
-    return marked
+        mark = price_history.close_on_or_after(
+            stock, price_history.add_days(base_day, horizon), before=today)
+        if mark and mark[0] in spy:
+            prices[f"price_{horizon}"] = mark[1]
+            prices[f"spy_{horizon}"] = spy[mark[0]]
+    return prices
 
 
-def run():
-    """The daily step: start new rows, mark due ones."""
+def _needs_work(row, today):
+    """Whether pricing this row could change anything today."""
+    if row.get("price_source") != "history" or row.get("price_0") is None:
+        return True
+    for horizon in OUTCOME_HORIZONS:
+        if row.get(f"price_{horizon}") is None:
+            # The next missing mark is due once its date is a completed session.
+            return price_history.add_days(row["ingest_date"], horizon) < today
+    return False
+
+
+def price_rows(today=None):
+    """Price every outcome row that needs it. Returns counts.
+
+    One history fetch per ticker, one for SPY. A ticker the source can't
+    price (delisted, renamed) stays unpriced and is retried next run.
+    """
+    today = today or _today()
+    rows = [r for r in get_outcomes_to_price()
+            if r.get("ticker") and r.get("ingest_date") and _needs_work(r, today)]
+    counts = {"priced": 0, "unpriced": 0}
+    if not rows:
+        return counts
+
+    start = price_history.add_days(min(r["ingest_date"] for r in rows), -_LOOKBACK_DAYS)
+    spy = price_history.closes(BENCHMARK, start, today)
+    if not spy:
+        # Without the benchmark no move can be read net of the market.
+        print("[OUTCOMES] No SPY history — pricing deferred to the next run", flush=True)
+        counts["unpriced"] = len(rows)
+        return counts
+
+    by_ticker = {}
+    for row in rows:
+        by_ticker.setdefault(row["ticker"].strip().upper(), []).append(row)
+
+    for ticker, ticker_rows in by_ticker.items():
+        first = min(r["ingest_date"] for r in ticker_rows)
+        stock = price_history.closes(ticker, price_history.add_days(first, -_LOOKBACK_DAYS), today)
+        for row in ticker_rows:
+            prices = price_from_history(row["ingest_date"], stock, spy, today) if stock else {}
+            if not prices:
+                counts["unpriced"] += 1
+                continue
+            set_outcome_prices(row["id"], prices)
+            counts["priced"] += 1
+    return counts
+
+
+def run(today=None):
+    """The daily step: start rows for new flags, price everything due."""
     started = record_baselines()
-    marked = mark_due()
-    print(f"[OUTCOMES] started {started}, marked {marked}", flush=True)
-    return {"started": started, "marked": marked}
+    priced = price_rows(today=today)
+    print(f"[OUTCOMES] started {started}, {priced}", flush=True)
+    return {"started": started, **priced}
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +204,29 @@ def scorecard(rows=None):
     return result
 
 
+def filing_results(rows=None, limit=100):
+    """The individual filings behind the table, newest first: each row's
+    signed excess at every horizon it has reached. Only directional calls
+    with at least one mark — the rest have nothing to show."""
+    rows = rows if rows is not None else get_all_outcomes()
+    results = []
+    for row in rows:
+        marks = {h: signed_excess(row, h) for h in OUTCOME_HORIZONS}
+        if all(v is None for v in marks.values()):
+            continue
+        results.append({
+            "filing_id": row.get("filing_id"),
+            "ticker": row.get("ticker"),
+            "company": row.get("company"),
+            "filed": row.get("ingest_date"),
+            "direction": (row.get("direction") or "").upper(),
+            "signal_types": [t for t in (row.get("signal_types") or "").split(",") if t],
+            "marks": marks,
+        })
+    results.sort(key=lambda r: (r["filed"] or "", r["filing_id"] or 0), reverse=True)
+    return results[:limit]
+
+
 def pending_counts(rows=None):
     """How many rows are tracked, and how many have each mark — so the
     scorecard can say "nothing to show yet" instead of looking broken."""
@@ -179,3 +241,6 @@ if __name__ == "__main__":
     from database import initialize_database
     initialize_database()
     run()
+    counts = pending_counts()
+    print(f"[OUTCOMES] tracked {counts['tracked']}, marks: "
+          + ", ".join(f"{h}d={counts[h]}" for h in OUTCOME_HORIZONS), flush=True)

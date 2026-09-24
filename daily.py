@@ -77,9 +77,9 @@ def run(date=None, days=None, model=None, judge_model=None,
         except Exception as e:
             print(f"[DAILY] Form 4 scan failed (8-K ingest still succeeded): {e}", flush=True)
 
-    # Outcome tracking: start rows for newly flagged filings and price the
-    # ones that reached 7/30/90 days. It has to run every day — the price
-    # source serves current quotes only, so a skipped day is a mark taken late.
+    # Outcome tracking: start rows for newly flagged filings and price them
+    # from daily closing history — baseline at the filing date, marks at
+    # 7/30/90 days. Priced from history, so a skipped day loses nothing.
     # Never allowed to fail the job: the ingest above is what matters.
     try:
         stats["outcomes"] = __import__("outcomes").run()

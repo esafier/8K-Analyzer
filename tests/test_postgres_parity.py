@@ -263,11 +263,15 @@ def test_outcome_lifecycle_on_postgres(pg):
     pg.insert_outcome_baseline(filing_id, "PGSQL", "BEARISH", "FORFEITURE_EXIT",
                                "2026-06-01", 99.0, 999.0)   # duplicate: ignored
 
-    due = pg.get_outcomes_due(7, "2026-06-10")
-    assert len(due) == 1
-    pg.mark_outcome(due[0]["id"], 7, 9.0, 505.0)
+    pending = [r for r in pg.get_outcomes_to_price() if r["filing_id"] == filing_id]
+    assert len(pending) == 1 and pending[0]["price_source"] is None
+    pg.set_outcome_prices(pending[0]["id"], {
+        "price_0": 10.0, "spy_0": 500.0, "price_7": 9.0, "spy_7": 505.0})
 
     row = next(r for r in pg.get_all_outcomes() if r["filing_id"] == filing_id)
     assert row["price_0"] == 10.0
     assert row["price_7"] == 9.0
-    assert pg.get_outcomes_due(7, "2026-06-10") == []
+    assert row["price_source"] == "history"
+    assert "company" in row
+    # Still pending: the 30- and 90-day marks are empty.
+    assert any(r["filing_id"] == filing_id for r in pg.get_outcomes_to_price())

@@ -46,7 +46,10 @@ when a detector fires.
 **Two feedback loops close the system:** `judgments` (the user's labels, read
 by `evaluate.py` and fed to the judge as examples) and `outcomes` (price vs.
 SPY at 7/30/90 days, shown on `/scorecard`). Both are updated by the daily
-job; `outcomes` is prospective only because the price feed has no history.
+job. Outcomes are priced from daily closing history (`price_history.py`,
+Yahoo), not the live quote feed: baseline = close on the filing date, marks =
+first close ≥ N days later, so a late run or a backfilled filing still gets
+the right dates. `python outcomes.py` re-prices by hand.
 
 **After changing a detector, run `rescore.py`.** It re-ranks every stored
 filing from its stored facts and context with zero model calls. Detectors are

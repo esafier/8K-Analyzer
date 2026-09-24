@@ -2728,9 +2728,11 @@ def _create_outcomes_table(conn):
     price at 7, 30 and 90 days, each paired with SPY so the move can be read
     net of the market.
 
-    Prospective only. The price source serves current quotes, not history, so
-    a row can only be marked on the day it comes due — which is why the daily
-    job marks outcomes every run rather than reconstructing them later.
+    Priced from daily closing history (price_history.py): the baseline is the
+    close on the filing date, each mark the close N calendar days later.
+    `price_source` is 'history' once a row has been priced that way; rows
+    from before that (NULL) were priced from live quotes on whatever day the
+    job ran and get re-priced from history.
     """
     cursor = conn.cursor()
     id_col = "id SERIAL PRIMARY KEY" if _using_postgres() else "id INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -2751,6 +2753,16 @@ def _create_outcomes_table(conn):
         )
     """)
     conn.commit()
+
+    if _using_postgres():
+        cursor.execute("SELECT column_name FROM information_schema.columns "
+                       "WHERE table_name = 'outcomes'")
+        existing = {row[0] for row in cursor.fetchall()}
+    else:
+        cursor.execute("PRAGMA table_info(outcomes)")
+        existing = {row[1] for row in cursor.fetchall()}
+    _add_column(conn, cursor, existing, "price_source",
+                "ALTER TABLE outcomes ADD COLUMN price_source TEXT DEFAULT NULL")
     print("[STARTUP] Outcomes table ready")
 
 
@@ -2779,7 +2791,9 @@ def get_filings_needing_baseline(limit=200):
 
 
 def insert_outcome_baseline(filing_id, ticker, direction, signal_types,
-                            ingest_date, price_0, spy_0):
+                            ingest_date, price_0=None, spy_0=None):
+    """Start tracking a flagged filing. Prices may be None: the row is priced
+    from history by outcomes.price_rows, on this run or a later one."""
     conn = get_connection()
     cursor = conn.cursor()
     p = _placeholder()
@@ -2794,43 +2808,51 @@ def insert_outcome_baseline(filing_id, ticker, direction, signal_types,
     conn.close()
 
 
-def get_outcomes_due(horizon, today):
-    """Outcome rows at least `horizon` days old whose mark is still empty."""
-    from datetime import datetime, timedelta
-    if horizon not in OUTCOME_HORIZONS:
-        raise ValueError(f"unknown horizon {horizon}")
-    cutoff = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=horizon)).strftime("%Y-%m-%d")
+def get_outcomes_to_price():
+    """Rows that still need work: never priced from history, or missing a
+    mark. The caller skips rows whose next mark isn't due yet."""
     conn = get_connection()
     cursor = conn.cursor()
-    p = _placeholder()
+    missing = " OR ".join(f"price_{h} IS NULL" for h in OUTCOME_HORIZONS)
     cursor.execute(
-        f"SELECT id, ticker FROM outcomes WHERE price_{horizon} IS NULL "
-        f"AND price_0 IS NOT NULL AND ingest_date <= {p}",
-        (cutoff,),
+        "SELECT * FROM outcomes WHERE price_source IS NULL "
+        f"OR price_source <> 'history' OR price_0 IS NULL OR {missing}"
     )
     rows = [dict(r) for r in _dict_rows(cursor.fetchall(), cursor)]
     conn.close()
     return rows
 
 
-def mark_outcome(outcome_id, horizon, price, spy):
-    if horizon not in OUTCOME_HORIZONS:
-        raise ValueError(f"unknown horizon {horizon}")
+_OUTCOME_PRICE_COLUMNS = {"price_0", "spy_0"} | {
+    f"{kind}_{h}" for h in OUTCOME_HORIZONS for kind in ("price", "spy")}
+
+
+def set_outcome_prices(outcome_id, prices, source="history"):
+    """Overwrite a row's prices. Every price column is written — a mark not
+    in `prices` is set NULL — so a row priced from bad live quotes can't keep
+    a stale mark next to a corrected baseline."""
+    unknown = set(prices) - _OUTCOME_PRICE_COLUMNS
+    if unknown:
+        raise ValueError(f"unknown outcome columns {sorted(unknown)}")
+    columns = sorted(_OUTCOME_PRICE_COLUMNS)
     conn = get_connection()
     cursor = conn.cursor()
     p = _placeholder()
+    assignments = ", ".join(f"{c} = {p}" for c in columns)
     cursor.execute(
-        f"UPDATE outcomes SET price_{horizon} = {p}, spy_{horizon} = {p} WHERE id = {p}",
-        (price, spy, outcome_id),
+        f"UPDATE outcomes SET {assignments}, price_source = {p} WHERE id = {p}",
+        tuple(prices.get(c) for c in columns) + (source, outcome_id),
     )
     conn.commit()
     conn.close()
 
 
 def get_all_outcomes():
+    """Every outcome row, with the filing's company name for the scorecard."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM outcomes")
+    cursor.execute("SELECT o.*, f.company FROM outcomes o "
+                   "LEFT JOIN filings f ON f.id = o.filing_id")
     rows = [dict(r) for r in _dict_rows(cursor.fetchall(), cursor)]
     conn.close()
     return rows

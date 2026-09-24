@@ -1030,6 +1030,7 @@ def scorecard():
         order=order,
         horizons=OUTCOME_HORIZONS,
         counts=outcome_tracker.pending_counts(rows),
+        filings=outcome_tracker.filing_results(rows),
     )
 
 

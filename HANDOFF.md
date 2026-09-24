@@ -92,8 +92,13 @@ and the rules it paid for are in `CLAUDE.md`.
   matters more than the fix: compare the log's **mtime** to now before
   believing a job is progressing.
 
-- Outcomes are prospective: the price API has no history, so a missed daily
-  run means a mark taken a day late (never lost).
+- Outcomes are priced from Yahoo daily closes (`price_history.py`). Until
+  2026-09-24 they came from live quotes on whatever day the job ran, which
+  gave backfilled filings baselines weeks late (177 of 309 rows); those rows
+  (price_source NULL) are re-priced from history on the next run. Delisted or
+  renamed tickers (BITF, HLX) stay unpriced and are retried daily. Yahoo
+  sometimes lags a fresh split — `_apply_splits` folds it in when the price
+  jumps by the split ratio.
 - The Form 4 scan covers only issuers already in the database.
 - Two insiders buying the same week in separate Form 4s appear as two rows;
   the breadth bonus in INSIDER_BUY only sees buyers within one filing.
