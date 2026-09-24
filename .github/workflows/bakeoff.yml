@@ -1,0 +1,50 @@
+name: Model bake-off
+
+# Read-only comparison of extraction and judge models on stored filings, with
+# measured token cost. Writes nothing to the database. See bakeoff.py.
+
+on:
+  workflow_dispatch:
+    inputs:
+      n:
+        description: "Filings to extract"
+        default: "50"
+      judge_n:
+        description: "Judge candidates"
+        default: "20"
+      extract_models:
+        description: "Extraction models, baseline first"
+        default: "gpt-5.6-luna,gpt-6-luna"
+      judge_models:
+        description: "Judge models, baseline first"
+        default: "gpt-5.6-terra,gpt-6-sol,gpt-6-luna"
+
+concurrency:
+  group: bakeoff
+  cancel-in-progress: false
+
+jobs:
+  bakeoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Compare models
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python bakeoff.py \
+            --n "${{ github.event.inputs.n }}" \
+            --judge-n "${{ github.event.inputs.judge_n }}" \
+            --extract-models "${{ github.event.inputs.extract_models }}" \
+            --judge-models "${{ github.event.inputs.judge_models }}"

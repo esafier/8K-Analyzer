@@ -22,6 +22,10 @@ on:
         description: "Also re-run the pipeline on rows in range that were never scored"
         type: boolean
         default: true
+      no_judge:
+        description: "Detectors only, no judge calls (history: ~1/3 of the cost)"
+        type: boolean
+        default: false
 
 concurrency:
   # Shares the daily job's group on purpose. Both hit the same SEC rate limit,
@@ -53,7 +57,8 @@ jobs:
           python backfill.py \
             --start "${{ github.event.inputs.start }}" \
             --end "${{ github.event.inputs.end }}" \
-            ${{ github.event.inputs.skip_form4 == 'true' && '--no-form4' || '' }}
+            ${{ github.event.inputs.skip_form4 == 'true' && '--no-form4' || '' }} \
+            ${{ github.event.inputs.no_judge == 'true' && '--no-judge' || '' }}
 
       # Rows already stored by an older pipeline version are invisible to the
       # ingest above — dedupe skips them — so they need their own pass.
@@ -66,7 +71,8 @@ jobs:
         run: |
           python reanalyze.py \
             --since "${{ github.event.inputs.start }}" \
-            --until "${{ github.event.inputs.end }}"
+            --until "${{ github.event.inputs.end }}" \
+            ${{ github.event.inputs.no_judge == 'true' && '--no-judge' || '' }}
 
       - name: Ranking quality against the user's labels
         if: always()

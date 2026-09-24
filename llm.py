@@ -5,8 +5,9 @@
 import json
 import os
 from openai import OpenAI
+import openai
 from config import (
-    OPENAI_API_KEY, LLM_MODEL, LLM_MODEL_PREMIUM, LLM_MODEL_JUDGE,
+    OPENAI_API_KEY, LLM_MODEL, LLM_MODEL_PREMIUM, LLM_MODEL_JUDGE, LLM_SERVICE_TIER,
     PROMPTS_DIR, ACTIVE_PROMPT, MODELS_WITHOUT_TEMPERATURE, MAX_JUDGE_CHARS,
 )
 
@@ -17,6 +18,9 @@ from config import (
 # error and no progress. A stalled call must fail loudly, not park the run.
 OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "180"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "3"))
+# Flex answers more slowly; OpenAI suggests allowing well beyond the standard
+# timeout. A flex call that still times out is retried at standard.
+OPENAI_FLEX_TIMEOUT_SECONDS = float(os.getenv("OPENAI_FLEX_TIMEOUT_SECONDS", "600"))
 
 
 class OutOfCredits(RuntimeError):
@@ -40,11 +44,16 @@ def _is_out_of_credits(error):
         codes.add(body.get("code"))
         if isinstance(body.get("error"), dict):
             codes.add(body["error"].get("code"))
-    if "insufficient_quota" in codes:
+    if codes & _OUT_OF_CREDIT_CODES:
         return True
     text = str(error).lower()
-    return ("insufficient_quota" in text or "no credits remaining" in text
-            or "exceeded your current quota" in text)
+    return (any(code in text for code in _OUT_OF_CREDIT_CODES)
+            or "no credits remaining" in text or "exceeded your current quota" in text)
+
+
+# insufficient_quota is the classic code; credit_balance_exhausted is the one
+# OpenAI documents for a prepaid balance at zero.
+_OUT_OF_CREDIT_CODES = {"insufficient_quota", "credit_balance_exhausted"}
 
 
 def _raise_if_out_of_credits(error, model):
@@ -55,7 +64,7 @@ def _raise_if_out_of_credits(error, model):
         ) from error
 
 
-def _client():
+def _client(timeout=None):
     """The one place an OpenAI client is constructed.
 
     Every call site shares the same timeout and retry budget, so a network
@@ -63,9 +72,62 @@ def _client():
     """
     return OpenAI(
         api_key=OPENAI_API_KEY,
-        timeout=OPENAI_TIMEOUT_SECONDS,
+        timeout=timeout or OPENAI_TIMEOUT_SECONDS,
         max_retries=OPENAI_MAX_RETRIES,
     )
+
+
+# Learned during a run, so each costs one failed call rather than one per
+# filing: models that turned out not to offer the flex tier, and models that
+# turned out to reject an explicit temperature (a new generation may, like
+# GPT-5.6 does, without anyone updating MODELS_WITHOUT_TEMPERATURE first).
+_FLEX_UNSUPPORTED = set()
+_NO_TEMPERATURE = set()
+
+
+def _is_capacity_error(error):
+    """Flex's "busy" (429 Resource Unavailable), a timeout, or an overloaded
+    server: worth one retry at standard processing. Called only after the
+    out-of-credits check, which also arrives as a 429."""
+    return isinstance(error, (openai.RateLimitError, openai.APITimeoutError,
+                              openai.InternalServerError))
+
+
+def _create(messages, model, json_mode=True):
+    """chat.completions.create with the cheapest tier that works.
+
+    Tries LLM_SERVICE_TIER (flex) first. Falls back to standard processing
+    for this call when flex is busy or slow, and for the rest of the run when
+    the model doesn't offer flex. Raises OutOfCredits for an empty account —
+    never retried, never downgraded into a per-filing failure.
+    """
+    tier = LLM_SERVICE_TIER if LLM_SERVICE_TIER and model not in _FLEX_UNSUPPORTED else None
+    for _ in range(4):
+        kwargs = _chat_kwargs(model, json_mode=json_mode)
+        try:
+            if tier:
+                return _client(timeout=OPENAI_FLEX_TIMEOUT_SECONDS).chat.completions.create(
+                    messages=messages, service_tier=tier, **kwargs)
+            return _client().chat.completions.create(messages=messages, **kwargs)
+        except Exception as e:
+            _raise_if_out_of_credits(e, model)
+            text = str(e).lower()
+            if "temperature" in kwargs and "temperature" in text:
+                _NO_TEMPERATURE.add(model)
+                print(f"    [LLM] {model} rejects temperature — omitting it", flush=True)
+                continue
+            if tier and ("service_tier" in text or "service tier" in text):
+                _FLEX_UNSUPPORTED.add(model)
+                print(f"    [LLM] {model} has no {tier} tier — using standard", flush=True)
+                tier = None
+                continue
+            if tier and _is_capacity_error(e):
+                print(f"    [LLM] {tier} unavailable for {model} ({type(e).__name__}) "
+                      f"— retrying at standard", flush=True)
+                tier = None
+                continue
+            raise
+    raise RuntimeError(f"no working request shape for {model}")
 
 
 def _chat_kwargs(model, json_mode=True):
@@ -77,7 +139,7 @@ def _chat_kwargs(model, json_mode=True):
     the incompatibility as a run of failed extractions in production.
     """
     kwargs = {"model": model}
-    if not str(model).startswith(MODELS_WITHOUT_TEMPERATURE):
+    if not str(model).startswith(MODELS_WITHOUT_TEMPERATURE) and model not in _NO_TEMPERATURE:
         kwargs["temperature"] = 0
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
@@ -123,12 +185,7 @@ def classify_and_summarize(filing_text, prompt_file=None, model=None):
     prompt = template.replace("{filing_text}", filing_text)
 
     try:
-        client = _client()
-
-        response = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            **_chat_kwargs(use_model),
-        )
+        response = _create([{"role": "user", "content": prompt}], use_model)
 
         # Parse the JSON response
         result = json.loads(response.choices[0].message.content)
@@ -137,9 +194,12 @@ def classify_and_summarize(filing_text, prompt_file=None, model=None):
         usage = response.usage
         result["_tokens_in"] = usage.prompt_tokens
         result["_tokens_out"] = usage.completion_tokens
+        result["_service_tier"] = getattr(response, "service_tier", None)
 
         return result
 
+    except OutOfCredits:
+        raise
     except Exception as e:
         _raise_if_out_of_credits(e, use_model)
         # Include model, text length, and full error repr so Render logs reveal
@@ -170,17 +230,16 @@ def judge_filing(payload, model=None, prompt_file="prompt_judge.txt"):
     prompt = template.replace("{payload}", json.dumps(payload, indent=2, default=str))
 
     try:
-        client = _client()
-        response = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            **_chat_kwargs(use_model),
-        )
+        response = _create([{"role": "user", "content": prompt}], use_model)
         result = json.loads(response.choices[0].message.content)
         usage = response.usage
         result["_tokens_in"] = usage.prompt_tokens
         result["_tokens_out"] = usage.completion_tokens
         result["_model"] = use_model
+        result["_service_tier"] = getattr(response, "service_tier", None)
         return result
+    except OutOfCredits:
+        raise
     except Exception as e:
         _raise_if_out_of_credits(e, use_model)
         print(f"    Judge call failed [model={use_model}]: {type(e).__name__}: {e!r}", flush=True)

@@ -153,6 +153,21 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-5.6-luna")
 LLM_MODEL_PREMIUM = os.environ.get("LLM_MODEL_PREMIUM", "gpt-5.6-sol")
 LLM_MODEL_JUDGE = os.environ.get("LLM_MODEL_JUDGE", "gpt-5.6-terra")
 
+# OpenAI service tier for pipeline calls. "flex" is billed at half the
+# standard rate in exchange for slower answers and an occasional "busy"
+# (429 Resource Unavailable, not charged); llm._create falls back to standard
+# processing for that call when it happens, and for the rest of the run when a
+# model doesn't offer flex at all. Nothing here is latency-sensitive — the
+# daily job runs before the market opens — so the discount is free money.
+# Set LLM_SERVICE_TIER="" to use standard processing everywhere.
+LLM_SERVICE_TIER = os.environ.get("LLM_SERVICE_TIER", "flex").strip()
+
+# Form 4 open-market buys. Off by default: the user tracks insider buying
+# market-wide in a separate tool, so scoring buys here duplicated it and cost
+# ~$4/month in judge calls. Officer GRANTS stay on — they feed this app's
+# comp-design thesis and nothing else tracks them. FORM4_SCORE_BUYS=1 restores.
+FORM4_SCORE_BUYS = os.environ.get("FORM4_SCORE_BUYS", "").strip().lower() in ("1", "true", "yes")
+
 # Models that reject an explicit `temperature`. The GPT-5.6 family only
 # accepts its default, and passing temperature=0 is a hard 400 — so llm.py
 # omits the parameter for these rather than discovering it in production.

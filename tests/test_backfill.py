@@ -15,7 +15,7 @@ def test_blocked_ingest_still_scans_form4(monkeypatch):
     def blocked(*a, **k):
         raise ingest.IngestBlocked("market-data provider is down")
 
-    def scan(start, end):
+    def scan(start, end, **kwargs):
         calls["form4"] = (start, end)
         return [{"stored": 2}]
 
@@ -36,7 +36,7 @@ def test_form4_covers_the_same_range(monkeypatch):
         calls["ingest"] = (start, end)
         return {"new": 7}
 
-    def scan(start, end):
+    def scan(start, end, **kwargs):
         calls["form4"] = (start, end)
         return [{"stored": 1}, {"stored": 2}]
 

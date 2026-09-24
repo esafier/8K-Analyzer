@@ -39,9 +39,10 @@ EDGAR search → universe filter → dedupe → fetch text + exhibits
 
 **Form 4s enter at stage 2.** `form4.py` reads the XML (already structured —
 no extraction model), builds facts, and calls `pipeline.analyze_facts`, the
-same function 8-Ks use after extraction. Only open-market buys ≥ $50K by
-officers/directors and top-officer grants are scored; rows are stored only
-when a detector fires.
+same function 8-Ks use after extraction. Only top-officer grants are scored;
+rows are stored only when a detector fires. Open-market buys are off by
+default (`FORM4_SCORE_BUYS`): the user tracks insider buying in a separate
+tool, so here they only duplicated it at ~75% of the Form 4 judge spend.
 
 **Two feedback loops close the system:** `judgments` (the user's labels, read
 by `evaluate.py` and fed to the judge as examples) and `outcomes` (price vs.
@@ -138,6 +139,11 @@ decorative glyph must never be one of them.
 - **Models** are env-overridable: `LLM_MODEL` (extraction),
   `LLM_MODEL_JUDGE`, `LLM_MODEL_PREMIUM`. The GPT-5.6 family rejects an
   explicit `temperature` — `llm._chat_kwargs` handles that; don't re-add it.
+  `llm._create` also learns it at run time for a model not yet listed.
+- **Pipeline calls use OpenAI's Flex tier** (`LLM_SERVICE_TIER`, half price,
+  slower). `llm._create` falls back to standard for a call when Flex is busy
+  and for the run when a model has no Flex tier. Compare models with
+  `bakeoff.py` (read-only, measured cost) before changing a default.
 - **Every signal carries an `evidence` sentence.** It is shown to the user; it
   is the product, not a debug string.
 
@@ -147,6 +153,7 @@ decorative glyph must never be one of them.
 python -m pytest tests/ -q                   # ~500 tests, SQLite (Postgres in CI)
 python rescore.py --dry-run                  # re-rank stored filings after a detector change — free
 python reanalyze.py --since YYYY-MM-DD --dry-run  # find rows the pipeline never scored
+python bakeoff.py --n 50 --judge-n 20        # compare models on stored filings (spends ~$1)
 python backtest.py --days 30 --dry-run       # cost estimate first, always
 python form4.py --date YYYY-MM-DD --dry-run --no-judge   # Form 4 scan, no spend
 python evaluate.py                           # ranking quality vs. the user's labels

@@ -129,7 +129,7 @@ def test_backfill_exits_non_zero(monkeypatch):
     monkeypatch.setattr("backfill.initialize_database", lambda: None)
     monkeypatch.setattr("backfill.ingest.ingest_range",
                         lambda *a, **k: (_ for _ in ()).throw(ingest.IngestBlocked("out of credits")))
-    monkeypatch.setattr("backfill.form4.scan_range", lambda s, e: [{"stored": 1}])
+    monkeypatch.setattr("backfill.form4.scan_range", lambda s, e, **k: [{"stored": 1}])
     monkeypatch.setattr("sys.argv", ["backfill.py", "--start", "2026-07-11", "--end", "2026-07-12"])
     assert backfill.main() == 2
 
@@ -144,7 +144,7 @@ def test_reanalyze_stops_at_the_first_refusal(tmp_sqlite_db, monkeypatch):
         })
     calls = []
 
-    def broke(row):
+    def broke(row, **kwargs):
         calls.append(row["accession_no"])
         raise llm.OutOfCredits("OpenAI account is out of credits")
 

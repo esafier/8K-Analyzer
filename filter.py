@@ -236,7 +236,7 @@ def determine_subcategory(text_lower, matched_keywords):
 
 def filter_filings(filings_metadata, fetch_text_func=None, model=None,
                    judge_model=None, apply_universe=True, skip_existing=True,
-                   on_analyzed=None, stats=None):
+                   on_analyzed=None, stats=None, allow_judge=True):
     """Run the ingest funnel over a list of filings.
 
     Stage 1 runs on metadata only (fast).
@@ -428,7 +428,8 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None,
 
         print(f"  Stage 3: analyzing {i + 1}/{len(all_for_llm)} — {company}", flush=True)
 
-        result = analyze_filing(filing, text=text, model=model, judge_model=judge_model)
+        result = analyze_filing(filing, text=text, model=model, judge_model=judge_model,
+                                allow_judge=allow_judge)
 
         if result.error:
             # Extraction failed. Keyword matches and 5.02 near-misses fall back
