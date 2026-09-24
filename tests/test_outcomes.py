@@ -164,6 +164,21 @@ def test_rows_priced_from_live_quotes_are_repriced(tmp_sqlite_db, history):
     assert row["price_7"] is None          # the stale mark is gone, not kept
 
 
+def test_live_quote_rows_that_history_cant_price_are_cleared(tmp_sqlite_db, history):
+    """A delisted ticker can't be re-priced, but its live-quote marks are
+    still wrong. They must not keep counting on the scorecard."""
+    filing_id = _flag("a-1", ticker="GONE", filed="2026-06-01")
+    database.insert_outcome_baseline(filing_id, "GONE", "BEARISH", "FORFEITURE_EXIT",
+                                     "2026-06-01", 50.0, 600.0)
+    oid = database.get_all_outcomes()[0]["id"]
+    database.set_outcome_prices(oid, {"price_0": 50.0, "spy_0": 600.0,
+                                      "price_7": 45.0, "spy_7": 600.0}, source=None)
+    assert outcomes.run(today="2026-06-20")["unpriced"] == 1
+    row = database.get_all_outcomes()[0]
+    assert row["price_0"] is None and row["price_7"] is None
+    assert outcomes.scorecard() == {}
+
+
 def test_finished_rows_are_not_refetched(tmp_sqlite_db, history, monkeypatch):
     _flag("a-1", filed="2026-06-01")
     history["AAA"] = _series("2026-06-01", [10.0] * 120)
