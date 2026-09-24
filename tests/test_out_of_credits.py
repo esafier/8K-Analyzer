@@ -149,6 +149,6 @@ def test_reanalyze_stops_at_the_first_refusal(tmp_sqlite_db, monkeypatch):
         raise llm.OutOfCredits("OpenAI account is out of credits")
 
     monkeypatch.setattr(reanalyze, "analyze_filing", broke)
-    stats = reanalyze.run()
+    stats = reanalyze.run(apply_universe=False)
     assert len(calls) == 1
     assert stats["stopped"] and stats["scored"] == 0
