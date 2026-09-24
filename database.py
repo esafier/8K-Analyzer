@@ -94,23 +94,35 @@ def _create_pg_connection():
         return pg8000.dbapi.connect(ssl_context=None, **params)
 
 
+def _really_close(conn):
+    """Close the socket, bypassing the pool-returning close() that
+    get_connection installs. Calling conn.close() from inside the pool code
+    re-enters _return_pg_connection, which takes _pg_pool_lock again — a
+    non-reentrant lock — and the thread deadlocks. With more workers than
+    _PG_POOL_MAX that froze a parallel reanalyze silently, every other
+    thread queued behind the same lock."""
+    try:
+        type(conn).close(conn)
+    except Exception:
+        pass
+
+
 def _get_pg_connection():
     """Get a PostgreSQL connection from the pool, or create a new one."""
-    with _pg_pool_lock:
-        while _pg_pool:
-            conn = _pg_pool.pop()
-            try:
-                # Quick check that the connection is still alive
-                cursor = conn.cursor()
-                cursor.execute("SELECT 1")
-                cursor.fetchone()
-                return conn
-            except Exception:
-                # Connection went stale — discard it and try next
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+    while True:
+        with _pg_pool_lock:
+            conn = _pg_pool.pop() if _pg_pool else None
+        if conn is None:
+            break
+        try:
+            # Quick check that the connection is still alive
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            return conn
+        except Exception:
+            # Connection went stale — discard it and try next
+            _really_close(conn)
 
     # Pool was empty (or all stale) — create a fresh connection
     return _create_pg_connection()
@@ -123,21 +135,16 @@ def _return_pg_connection(conn):
         conn.rollback()
     except Exception:
         # Connection is broken — discard it
-        try:
-            conn.close()
-        except Exception:
-            pass
+        _really_close(conn)
         return
 
     with _pg_pool_lock:
-        if len(_pg_pool) < _PG_POOL_MAX:
+        pooled = len(_pg_pool) < _PG_POOL_MAX
+        if pooled:
             _pg_pool.append(conn)
-        else:
-            # Pool is full — close the extra connection
-            try:
-                conn.close()
-            except Exception:
-                pass
+    if not pooled:
+        # Pool is full — close the extra connection (outside the lock)
+        _really_close(conn)
 
 
 def get_connection():
@@ -150,7 +157,7 @@ def get_connection():
         # Override close() so callers return the connection to the pool
         # instead of actually closing it. This means all existing code
         # (which calls conn.close()) works without any changes.
-        conn._real_close = conn.close
+        conn._real_close = lambda: _really_close(conn)
         conn.close = lambda: _return_pg_connection(conn)
         return conn
     else:
