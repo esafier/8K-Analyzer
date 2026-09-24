@@ -882,3 +882,29 @@ def test_a_real_for_cause_termination_still_fires():
     result = signals.detect(facts(departures=[
         departure(stated_reason="terminated for Cause following an internal investigation")]))
     assert "FOR_CAUSE_OR_DISAGREEMENT" in types_of(result)
+
+
+# ---------------------------------------------------------------------------
+# detector_verdict: below the judge gate is PASS
+# ---------------------------------------------------------------------------
+
+def _sig(type_, severity, direction="BULLISH"):
+    return signals.Signal(type=type_, direction=direction, severity=severity, evidence="e")
+
+
+def test_lone_low_severity_signal_is_pass():
+    """A routine performance award, alone, never reached the judge and
+    shouldn't reach the inbox either."""
+    result = signals.DetectionResult(signals=[_sig("COMP_MIX_TO_EQUITY", 2)])
+    assert not signals.is_judge_candidate(result)
+    assert signals.detector_verdict(result) == "PASS"
+
+
+def test_judge_candidates_stay_monitor_without_a_judgment():
+    """A candidate the judge never read (failed, or --no-judge) keeps MONITOR."""
+    strong = signals.DetectionResult(signals=[_sig("NO_SUCCESSOR", 3, "BEARISH")])
+    stacked = signals.DetectionResult(signals=[_sig("COMP_MIX_TO_EQUITY", 2),
+                                               _sig("FRIDAY_NIGHT_FILING", 1)])
+    for result in (strong, stacked):
+        assert signals.is_judge_candidate(result)
+        assert signals.detector_verdict(result) == "MONITOR"

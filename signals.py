@@ -1174,6 +1174,14 @@ def detector_verdict(result):
     """
     if not result.signals or result.max_severity < 2:
         return "PASS"
+    # Below the judge gate means a lone low-severity signal: nothing strong
+    # enough to be worth a strong model's read is not worth the user's
+    # either. On 2026-06 to 09 history that was 16 filings whose only
+    # signal was COMP_MIX_TO_EQUITY ("USI employees and other transaction
+    # participants: performance-conditioned award") — routine design, not
+    # conviction, sitting in MONITOR only because no judge ever saw it.
+    if not is_judge_candidate(result):
+        return "PASS"
     return "MONITOR"
 
 
