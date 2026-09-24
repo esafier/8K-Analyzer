@@ -126,6 +126,10 @@ def price_rows(today=None):
             prices = price_from_history(row["ingest_date"], stock, spy, today) if stock else {}
             if not prices:
                 counts["unpriced"] += 1
+                if row.get("price_source") != "history" and row.get("price_0") is not None:
+                    # Live-quote prices are known to be wrong; an empty row
+                    # beats a wrong one on the scorecard. Retried next run.
+                    set_outcome_prices(row["id"], {}, source=None)
                 continue
             set_outcome_prices(row["id"], prices)
             counts["priced"] += 1
