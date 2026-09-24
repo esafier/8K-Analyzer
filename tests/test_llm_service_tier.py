@@ -43,15 +43,23 @@ def _flex(monkeypatch):
     monkeypatch.setattr(llm, "LLM_SERVICE_TIER", "flex")
     llm._FLEX_UNSUPPORTED.clear()
     llm._NO_TEMPERATURE.clear()
+    llm._FLEX_FAILURES.clear()
     yield
     llm._FLEX_UNSUPPORTED.clear()
     llm._NO_TEMPERATURE.clear()
+    llm._FLEX_FAILURES.clear()
 
 
-def _run(*outcomes, model="test-model"):
+def _run(*outcomes, model="test-model", clients=None):
     client = MagicMock()
     client.chat.completions.create.side_effect = list(outcomes)
-    with patch("llm._client", return_value=client):
+
+    def make(timeout=None, max_retries=None):
+        if clients is not None:
+            clients.append({"timeout": timeout, "max_retries": max_retries})
+        return client
+
+    with patch("llm._client", side_effect=make):
         result = llm.classify_and_summarize("filing text", model=model)
     return result, client.chat.completions.create.call_args_list
 
@@ -100,3 +108,21 @@ def test_an_ordinary_error_still_costs_only_that_filing():
     bad = _error(openai.BadRequestError, 400, "context_length_exceeded")
     result, _ = _run(bad)
     assert result is None
+
+
+def test_a_flex_attempt_has_a_short_timeout_and_no_sdk_retries():
+    """A 600s timeout times four SDK attempts stalled a re-score for 40
+    minutes a call before the standard fallback could run."""
+    clients = []
+    _run(_ok(), clients=clients)
+    assert clients[0] == {"timeout": llm.OPENAI_FLEX_TIMEOUT_SECONDS, "max_retries": 0}
+    assert llm.OPENAI_FLEX_TIMEOUT_SECONDS <= 120
+
+
+def test_repeated_flex_failures_switch_the_model_to_standard_for_the_run():
+    timeout = openai.APITimeoutError(request=httpx.Request("POST", "https://api.openai.com"))
+    for _ in range(llm.FLEX_FAILURES_BEFORE_STANDARD):
+        _run(timeout, _ok("default"))
+    assert "test-model" in llm._FLEX_UNSUPPORTED
+    _, calls = _run(_ok("default"))
+    assert "service_tier" not in calls[0].kwargs
