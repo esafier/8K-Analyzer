@@ -18,9 +18,17 @@ from config import (
 # error and no progress. A stalled call must fail loudly, not park the run.
 OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "180"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "3"))
-# Flex answers more slowly; OpenAI suggests allowing well beyond the standard
-# timeout. A flex call that still times out is retried at standard.
-OPENAI_FLEX_TIMEOUT_SECONDS = float(os.getenv("OPENAI_FLEX_TIMEOUT_SECONDS", "600"))
+# How long one Flex attempt may take before the call falls back to standard.
+# Deliberately short, and with the SDK's own retries off for the Flex attempt:
+# on 2026-09-24 congested Flex judge calls sat for 30+ minutes — a 600s timeout
+# times four SDK attempts is 40 minutes before any fallback — and a whole
+# re-score stalled behind them. Two minutes, then pay standard for that call.
+OPENAI_FLEX_TIMEOUT_SECONDS = float(os.getenv("OPENAI_FLEX_TIMEOUT_SECONDS", "120"))
+
+# Flex failures (busy, slow) per model before the rest of the run skips Flex
+# for it. Congestion tends to persist; probing it on every call just adds two
+# minutes to each one.
+FLEX_FAILURES_BEFORE_STANDARD = int(os.getenv("FLEX_FAILURES_BEFORE_STANDARD", "3"))
 
 
 class OutOfCredits(RuntimeError):
@@ -64,7 +72,7 @@ def _raise_if_out_of_credits(error, model):
         ) from error
 
 
-def _client(timeout=None):
+def _client(timeout=None, max_retries=None):
     """The one place an OpenAI client is constructed.
 
     Every call site shares the same timeout and retry budget, so a network
@@ -73,7 +81,7 @@ def _client(timeout=None):
     return OpenAI(
         api_key=OPENAI_API_KEY,
         timeout=timeout or OPENAI_TIMEOUT_SECONDS,
-        max_retries=OPENAI_MAX_RETRIES,
+        max_retries=OPENAI_MAX_RETRIES if max_retries is None else max_retries,
     )
 
 
@@ -83,6 +91,7 @@ def _client(timeout=None):
 # GPT-5.6 does, without anyone updating MODELS_WITHOUT_TEMPERATURE first).
 _FLEX_UNSUPPORTED = set()
 _NO_TEMPERATURE = set()
+_FLEX_FAILURES = {}
 
 
 def _is_capacity_error(error):
@@ -106,7 +115,10 @@ def _create(messages, model, json_mode=True):
         kwargs = _chat_kwargs(model, json_mode=json_mode)
         try:
             if tier:
-                return _client(timeout=OPENAI_FLEX_TIMEOUT_SECONDS).chat.completions.create(
+                # No SDK retries on the Flex attempt: a busy or slow Flex tier
+                # falls straight through to standard below.
+                return _client(timeout=OPENAI_FLEX_TIMEOUT_SECONDS, max_retries=0
+                               ).chat.completions.create(
                     messages=messages, service_tier=tier, **kwargs)
             return _client().chat.completions.create(messages=messages, **kwargs)
         except Exception as e:
@@ -122,8 +134,14 @@ def _create(messages, model, json_mode=True):
                 tier = None
                 continue
             if tier and _is_capacity_error(e):
-                print(f"    [LLM] {tier} unavailable for {model} ({type(e).__name__}) "
-                      f"— retrying at standard", flush=True)
+                failures = _FLEX_FAILURES[model] = _FLEX_FAILURES.get(model, 0) + 1
+                if failures >= FLEX_FAILURES_BEFORE_STANDARD:
+                    _FLEX_UNSUPPORTED.add(model)
+                    print(f"    [LLM] {tier} failed {failures}x for {model} — standard "
+                          f"for the rest of this run", flush=True)
+                else:
+                    print(f"    [LLM] {tier} unavailable for {model} ({type(e).__name__}) "
+                          f"— retrying at standard", flush=True)
                 tier = None
                 continue
             raise
