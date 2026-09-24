@@ -17,14 +17,14 @@ from llm import OutOfCredits
 from database import initialize_database
 
 
-def run(start, end, do_form4=True, allow_judge=True):
+def run(start, end, do_form4=True, allow_judge=True, analyze=True):
     initialize_database()
 
     stats = {}
     blocked = None
     try:
         stats = ingest.ingest_range(start, end, backfill_type="gap_backfill",
-                                    allow_judge=allow_judge)
+                                    allow_judge=allow_judge, analyze=analyze)
         print(f"8-K STATS: {stats}", flush=True)
     except ingest.IngestBlocked as e:
         # Keep going to the Form 4s, which need neither the market-data
@@ -55,9 +55,12 @@ def main():
     parser.add_argument("--no-judge", action="store_true",
                         help="detectors only — no judge calls (history backfills: "
                              "cheaper, and grades the detectors on their own)")
+    parser.add_argument("--fetch-only", action="store_true",
+                        help="store 8-K text unscored; score afterwards with "
+                             "reanalyze.py --workers, which runs in parallel")
     args = parser.parse_args()
     result = run(args.start, args.end, do_form4=not args.no_form4,
-                 allow_judge=not args.no_judge)
+                 allow_judge=not args.no_judge, analyze=not args.fetch_only)
     # Non-zero so the Actions run goes red: a backfill that stopped halfway
     # must not look like one that finished.
     return 2 if result["blocked"] else 0

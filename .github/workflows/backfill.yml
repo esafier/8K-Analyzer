@@ -26,6 +26,10 @@ on:
         description: "Detectors only, no judge calls (history: ~1/3 of the cost)"
         type: boolean
         default: false
+      fetch_only:
+        description: "Store 8-K text unscored; the re-score step analyzes it in parallel (much faster)"
+        type: boolean
+        default: false
 
 concurrency:
   # Shares the daily job's group on purpose. Both hit the same SEC rate limit,
@@ -36,7 +40,7 @@ concurrency:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 330   # a two-week range is hours of fetches and model calls
+    timeout-minutes: 350   # a two-week range is hours of fetches and model calls
 
     steps:
       - uses: actions/checkout@v4
@@ -58,12 +62,13 @@ jobs:
             --start "${{ github.event.inputs.start }}" \
             --end "${{ github.event.inputs.end }}" \
             ${{ github.event.inputs.skip_form4 == 'true' && '--no-form4' || '' }} \
-            ${{ github.event.inputs.no_judge == 'true' && '--no-judge' || '' }}
+            ${{ github.event.inputs.no_judge == 'true' && '--no-judge' || '' }} \
+            ${{ github.event.inputs.fetch_only == 'true' && '--fetch-only' || '' }}
 
       # Rows already stored by an older pipeline version are invisible to the
       # ingest above — dedupe skips them — so they need their own pass.
       - name: Score rows the pipeline never saw
-        if: ${{ github.event.inputs.reanalyze == 'true' }}
+        if: ${{ github.event.inputs.reanalyze == 'true' || github.event.inputs.fetch_only == 'true' }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -72,7 +77,14 @@ jobs:
           python reanalyze.py \
             --since "${{ github.event.inputs.start }}" \
             --until "${{ github.event.inputs.end }}" \
+            --workers 8 \
             ${{ github.event.inputs.no_judge == 'true' && '--no-judge' || '' }}
+
+      - name: Price outcomes for anything newly flagged
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python outcomes.py
 
       - name: Ranking quality against the user's labels
         if: always()
