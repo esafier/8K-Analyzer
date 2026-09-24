@@ -18,6 +18,9 @@ on:
       judge_models:
         description: "Judge models, baseline first"
         default: "gpt-5.6-terra,gpt-6-sol,gpt-6-luna"
+      workers:
+        description: "Filings in flight at once"
+        default: "8"
 
 concurrency:
   group: bakeoff
@@ -26,7 +29,7 @@ concurrency:
 jobs:
   bakeoff:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 240
 
     steps:
       - uses: actions/checkout@v4
@@ -47,4 +50,5 @@ jobs:
             --n "${{ github.event.inputs.n }}" \
             --judge-n "${{ github.event.inputs.judge_n }}" \
             --extract-models "${{ github.event.inputs.extract_models }}" \
-            --judge-models "${{ github.event.inputs.judge_models }}"
+            --judge-models "${{ github.event.inputs.judge_models }}" \
+            --workers "${{ github.event.inputs.workers || '8' }}"

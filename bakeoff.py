@@ -19,6 +19,8 @@ import argparse
 import json
 import random
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import database as db
 from config import ACTIVE_PROMPT, MAX_EXTRACTION_CHARS
@@ -75,40 +77,60 @@ def _flags(facts):
     return sorted(out, key=str)
 
 
-def extract(filings, models):
+def extract(filings, models, workers=1):
     from llm import classify_and_summarize
     import signals
 
     results = {m: {} for m in models}
-    for i, filing in enumerate(filings, 1):
+    lock = threading.Lock()
+
+    def one(i, filing):
         context = json.loads(filing["context_json"]) if filing.get("context_json") else {}
         text = (filing.get("raw_text") or "")[:MAX_EXTRACTION_CHARS]
+        line = []
         for model in models:
             facts = classify_and_summarize(text, prompt_file=ACTIVE_PROMPT, model=model)
             if facts is None:
-                results[model][filing["id"]] = {"error": True}
-                continue
-            relevant = facts.get("relevant", True)
-            detection = signals.detect(facts, context) if relevant else None
-            results[model][filing["id"]] = {
-                "relevant": bool(relevant),
-                "types": sorted(detection.types) if detection else [],
-                "verdict": signals.detector_verdict(detection) if detection else "PASS",
-                "direction": detection.direction if detection else None,
-                "flags": _flags(facts),
-                "departures": len(facts.get("departures") or []),
-                "comp_events": len(facts.get("comp_events") or []),
-                "cost": cost(model, facts.get("_tokens_in", 0), facts.get("_tokens_out", 0),
-                             facts.get("_service_tier")),
-                "tokens": (facts.get("_tokens_in", 0), facts.get("_tokens_out", 0)),
-                "tier": facts.get("_service_tier"),
-                "_facts": facts, "_detection": detection,
-            }
-        print(f"  extracted {i}/{len(filings)} {filing.get('company')}", flush=True)
+                entry = {"error": True}
+                line.append(f"{model}: ERROR")
+            else:
+                relevant = facts.get("relevant", True)
+                detection = signals.detect(facts, context) if relevant else None
+                entry = {
+                    "relevant": bool(relevant),
+                    "types": sorted(detection.types) if detection else [],
+                    "verdict": signals.detector_verdict(detection) if detection else "PASS",
+                    "direction": detection.direction if detection else None,
+                    "flags": _flags(facts),
+                    "departures": len(facts.get("departures") or []),
+                    "comp_events": len(facts.get("comp_events") or []),
+                    "cost": cost(model, facts.get("_tokens_in", 0), facts.get("_tokens_out", 0),
+                                 facts.get("_service_tier")),
+                    "tokens": (facts.get("_tokens_in", 0), facts.get("_tokens_out", 0)),
+                    "tier": facts.get("_service_tier"),
+                    "_facts": facts, "_detection": detection,
+                }
+                line.append(f"{model}: {entry['verdict']} {entry['types']}")
+            with lock:
+                results[model][filing["id"]] = entry
+        # Printed as each filing finishes, so a run cut short still reports.
+        print(f"  [x {i}/{len(filings)}] {filing.get('company')} — " + " | ".join(line), flush=True)
+
+    _run_all(one, filings, workers)
     return results
 
 
-def judge_all(filings, baseline, judge_models, judge_n):
+def _run_all(fn, items, workers):
+    if workers <= 1:
+        for i, item in enumerate(items, 1):
+            fn(i, item)
+        return
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for future in [pool.submit(fn, i, item) for i, item in enumerate(items, 1)]:
+            future.result()
+
+
+def judge_all(filings, baseline, judge_models, judge_n, workers=1):
     """Judge the same baseline facts with each judge model — the judge is
     compared on identical input, so only the model differs."""
     import signals
@@ -118,23 +140,33 @@ def judge_all(filings, baseline, judge_models, judge_n):
                   if baseline.get(f["id"], {}).get("_detection") is not None
                   and signals.is_judge_candidate(baseline[f["id"]]["_detection"])][:judge_n]
     results = {m: {} for m in judge_models}
-    for i, filing in enumerate(candidates, 1):
+    lock = threading.Lock()
+
+    def one(i, filing):
         base = baseline[filing["id"]]
         context = json.loads(filing["context_json"]) if filing.get("context_json") else {}
+        line = []
         for model in judge_models:
             j = judge(filing, base["_facts"], context, base["_detection"], model=model)
             if not j:
-                results[model][filing["id"]] = {"error": True}
-                continue
-            results[model][filing["id"]] = {
-                "verdict": j.get("verdict"), "score": j.get("score"),
-                "direction": j.get("direction"),
-                "cost": cost(model, j.get("_tokens_in", 0), j.get("_tokens_out", 0),
-                             j.get("_service_tier")),
-                "tokens": (j.get("_tokens_in", 0), j.get("_tokens_out", 0)),
-                "tier": j.get("_service_tier"),
-            }
-        print(f"  judged {i}/{len(candidates)} {filing.get('company')}", flush=True)
+                entry = {"error": True}
+                line.append(f"{model}: ERROR")
+            else:
+                entry = {
+                    "verdict": j.get("verdict"), "score": j.get("score"),
+                    "direction": j.get("direction"),
+                    "cost": cost(model, j.get("_tokens_in", 0), j.get("_tokens_out", 0),
+                                 j.get("_service_tier")),
+                    "tokens": (j.get("_tokens_in", 0), j.get("_tokens_out", 0)),
+                    "tier": j.get("_service_tier"),
+                }
+                line.append(f"{model}: {entry['verdict']} {entry['score']} {entry['direction']}")
+            with lock:
+                results[model][filing["id"]] = entry
+        print(f"  [j {i}/{len(candidates)}] {filing.get('company')} — " + " | ".join(line),
+              flush=True)
+
+    _run_all(one, candidates, workers)
     return candidates, results
 
 
@@ -208,6 +240,8 @@ def main():
     parser.add_argument("--judge-n", type=int, default=20)
     parser.add_argument("--extract-models", default="gpt-5.6-luna,gpt-6-luna")
     parser.add_argument("--judge-models", default="gpt-5.6-terra,gpt-6-sol,gpt-6-luna")
+    parser.add_argument("--workers", type=int, default=8,
+                        help="filings in flight at once (Flex is slow per call)")
     args = parser.parse_args()
 
     from llm import OutOfCredits
@@ -218,9 +252,9 @@ def main():
     print(f"Bake-off on {len(filings)} filings: extract {extract_models}, judge {judge_models}",
           flush=True)
     try:
-        extractions = extract(filings, extract_models)
+        extractions = extract(filings, extract_models, workers=args.workers)
         candidates, judgments = judge_all(filings, extractions[extract_models[0]],
-                                          judge_models, args.judge_n)
+                                          judge_models, args.judge_n, workers=args.workers)
     except OutOfCredits as e:
         print(f"STOPPED: {e}", flush=True)
         return 2
