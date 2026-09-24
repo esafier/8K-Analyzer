@@ -55,6 +55,9 @@ the right dates. `python outcomes.py` re-prices by hand.
 **After changing a detector, run `rescore.py`.** It re-ranks every stored
 filing from its stored facts and context with zero model calls. Detectors are
 deterministic; paying to re-extract to test a threshold change is waste.
+`rescore.py --judge` (or `.github/workflows/rescore.yml`) also judges the
+candidates that history scored with `--no-judge` — one judge call each, from
+the stored facts and context, no re-extraction.
 
 **Never add a second analysis path.** filter.py, app.run_resummarize and
 app.run_retry_missing_summaries each used to carry their own copy of the field
@@ -152,6 +155,7 @@ decorative glyph must never be one of them.
 ```bash
 python -m pytest tests/ -q                   # ~500 tests, SQLite (Postgres in CI)
 python rescore.py --dry-run                  # re-rank stored filings after a detector change — free
+python rescore.py --judge --since YYYY-MM-DD --dry-run  # count unjudged candidates before paying
 python reanalyze.py --since YYYY-MM-DD --dry-run  # find rows the pipeline never scored
 python bakeoff.py --n 50 --judge-n 20        # compare models on stored filings (spends ~$1)
 python backtest.py --days 30 --dry-run       # cost estimate first, always

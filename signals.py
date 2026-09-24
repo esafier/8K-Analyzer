@@ -432,7 +432,8 @@ def _detect_no_successor(facts, context):
 
 
 def _detect_departure_cluster(facts, context):
-    """Two or more executives out of the same company inside 24 months.
+    """Three or more executives out of the same company inside 24 months
+    (the count includes this filing's exit; the floor is in signal_weights.json).
 
     One exit is a person. Three is a condition — and it is the kind of pattern
     that is invisible filing-by-filing, which is exactly why the tool should

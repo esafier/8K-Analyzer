@@ -152,6 +152,7 @@ decorative glyph must never be one of them.
 ```bash
 python -m pytest tests/ -q                   # ~500 tests, SQLite (Postgres in CI)
 python rescore.py --dry-run                  # re-rank stored filings after a detector change — free
+python rescore.py --judge --since YYYY-MM-DD --dry-run  # count unjudged candidates before paying
 python reanalyze.py --since YYYY-MM-DD --dry-run  # find rows the pipeline never scored
 python bakeoff.py --n 50 --judge-n 20        # compare models on stored filings (spends ~$1)
 python backtest.py --days 30 --dry-run       # cost estimate first, always

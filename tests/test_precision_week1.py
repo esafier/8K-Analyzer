@@ -79,8 +79,8 @@ def test_cluster_does_not_fire_on_a_merger_driven_exit():
 
 
 def test_cluster_still_fires_on_an_officer_exit_with_history():
-    """Harrow: the CAO leaves immediately — the company's second exit."""
-    result = signals.detect(facts(departures=[officer_exit()]), {"departures_24mo": 2})
+    """An officer leaves — the company's third exit in 24 months."""
+    result = signals.detect(facts(departures=[officer_exit()]), {"departures_24mo": 3})
     assert "DEPARTURE_CLUSTER" in {s.type for s in result.signals}
 
 

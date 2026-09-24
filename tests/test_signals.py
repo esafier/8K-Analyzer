@@ -272,14 +272,19 @@ def test_silent_filing_does_not_claim_no_successor():
 # DEPARTURE_CLUSTER
 # ---------------------------------------------------------------------------
 
-def test_cluster_fires_at_two_departures():
-    result = signals.detect(facts(departures=[departure()]), {"departures_24mo": 2})
+def test_cluster_fires_at_three_departures():
+    result = signals.detect(facts(departures=[departure()]), {"departures_24mo": 3})
     assert "DEPARTURE_CLUSTER" in types_of(result)
 
 
-def test_single_departure_in_24mo_is_not_a_cluster():
-    result = signals.detect(facts(departures=[departure()]), {"departures_24mo": 1})
-    assert "DEPARTURE_CLUSTER" not in types_of(result)
+def test_two_departures_in_24mo_is_ordinary_turnover():
+    """This exit plus one other in two years. Measured on 2026-06 to 09
+    history, that fired on 104 filings; where it was the only signal the
+    judge itself called most of them orderly handoffs (T-Mobile, Glacier,
+    Sprouts, Veeva). Ordinary turnover, not a pattern."""
+    for count in (1, 2):
+        result = signals.detect(facts(departures=[departure()]), {"departures_24mo": count})
+        assert "DEPARTURE_CLUSTER" not in types_of(result)
 
 
 def test_finance_seat_cluster_outranks_general_churn():

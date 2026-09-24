@@ -102,3 +102,97 @@ def test_rescore_makes_no_model_calls(tmp_sqlite_db, monkeypatch):
     monkeypatch.setattr("llm.judge_filing", boom)
     _add("a-1", FORFEITURE)
     rescore.run(verbose=False)
+
+
+# ---------------------------------------------------------------------------
+# --judge: judging history that was scored detector-only
+# ---------------------------------------------------------------------------
+
+JUDGMENT = {"score": 8, "verdict": "DEEP_LOOK", "direction": "BEARISH",
+            "thesis": "CFO walks from unvested equity, no successor.", "disputed_signals": []}
+
+
+def _fake_judge(monkeypatch, result=JUDGMENT):
+    calls = []
+
+    def judge_filing(payload, model=None):
+        calls.append(payload)
+        if isinstance(result, Exception):
+            raise result
+        return dict(result) if result else None
+
+    monkeypatch.setattr("llm.judge_filing", judge_filing)
+    monkeypatch.setattr("judge.judge_filing", judge_filing)
+    return calls
+
+
+def test_judge_ranks_an_unjudged_candidate(tmp_sqlite_db, monkeypatch):
+    calls = _fake_judge(monkeypatch)
+    filing_id = _add("a-1", FORFEITURE, verdict="MONITOR", score=6)
+    stats = rescore.run(verbose=False, judge=True)
+
+    row = database.get_filing_by_id(filing_id)
+    assert len(calls) == 1
+    assert stats["judge"]["judged"] == 1
+    assert row["triage_verdict"] == "DEEP_LOOK"
+    assert row["signal_score"] == 8
+    assert row["top_signal"] == JUDGMENT["thesis"]
+    assert json.loads(row["judge_json"])["verdict"] == "DEEP_LOOK"
+    assert row["judged_at"] is not None
+
+
+def test_judge_skips_judged_rows_and_non_candidates(tmp_sqlite_db, monkeypatch):
+    calls = _fake_judge(monkeypatch)
+    _add("a-1", FORFEITURE, judge=JUDGMENT, verdict="DEEP_LOOK", score=8)  # already judged
+    _add("a-2", APPOINTMENT_ONLY, verdict="PASS", score=0)                  # no signal
+    stats = rescore.run(verbose=False, judge=True)
+    assert calls == []
+    assert stats["judge"]["candidates"] == 0
+
+
+def test_judge_respects_the_date_window(tmp_sqlite_db, monkeypatch):
+    calls = _fake_judge(monkeypatch)
+    _add("a-1", FORFEITURE)  # filed 2026-09-08
+    rescore.run(verbose=False, judge=True, since="2026-09-09")
+    assert calls == []
+    rescore.run(verbose=False, judge=True, since="2026-09-01", until="2026-09-08")
+    assert len(calls) == 1
+
+
+def test_judge_dry_run_spends_nothing(tmp_sqlite_db, monkeypatch):
+    calls = _fake_judge(monkeypatch)
+    filing_id = _add("a-1", FORFEITURE, verdict="MONITOR", score=6)
+    stats = rescore.run(verbose=False, judge=True, dry_run=True)
+    assert calls == []
+    assert stats["judge"]["candidates"] == 1
+    assert database.get_filing_by_id(filing_id)["judge_json"] is None
+
+
+def test_failed_judgment_leaves_the_detector_rank(tmp_sqlite_db, monkeypatch):
+    _fake_judge(monkeypatch, result=None)
+    filing_id = _add("a-1", FORFEITURE, verdict="MONITOR", score=6)
+    stats = rescore.run(verbose=False, judge=True)
+    row = database.get_filing_by_id(filing_id)
+    assert stats["judge"]["failed"] == 1
+    assert row["judge_json"] is None
+    assert row["triage_verdict"] == "MONITOR"
+
+
+def test_out_of_credits_stops_judging(tmp_sqlite_db, monkeypatch):
+    from llm import OutOfCredits
+    calls = _fake_judge(monkeypatch, result=OutOfCredits("insufficient_quota"))
+    _add("a-1", FORFEITURE)
+    _add("a-2", FORFEITURE)
+    stats = rescore.run(verbose=False, judge=True)
+    assert len(calls) == 1
+    assert stats["judge"]["stopped"]
+    assert stats["judge"]["judged"] == 0
+
+
+def test_parallel_judging(tmp_sqlite_db, monkeypatch):
+    calls = _fake_judge(monkeypatch)
+    for n in range(6):
+        _add(f"a-{n}", FORFEITURE)
+    stats = rescore.run(verbose=False, judge=True, workers=3)
+    assert stats["judge"]["judged"] == 6
+    assert len(calls) == 6
