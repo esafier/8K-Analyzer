@@ -22,11 +22,24 @@ def _flag(accession, ticker="AAA", verdict="MONITOR", direction="BEARISH",
     return database.get_filing_by_accession(accession)["id"]
 
 
+def _series(start, prices, skip=()):
+    """Consecutive calendar-day closes from `start`, minus `skip` dates."""
+    import price_history
+    out, day = {}, start
+    for p in prices:
+        while day in skip:
+            day = price_history.add_days(day, 1)
+        out[day] = p
+        day = price_history.add_days(day, 1)
+    return out
+
+
 @pytest.fixture
-def quotes(monkeypatch):
-    """Controllable price feed."""
-    book = {"SPY": 500.0}
-    monkeypatch.setattr(outcomes, "_quote", lambda t: book.get(t))
+def history(monkeypatch):
+    """Controllable close history: {ticker: {date: close}}."""
+    import price_history
+    book = {"SPY": _series("2026-05-25", [500.0] * 120)}
+    monkeypatch.setattr(price_history, "closes", lambda t, start, end=None: book.get(t, {}))
     return book
 
 
@@ -34,71 +47,134 @@ def quotes(monkeypatch):
 # Baselines
 # ---------------------------------------------------------------------------
 
-def test_flagged_filings_get_a_baseline(tmp_sqlite_db, quotes):
-    _flag("a-1")
-    assert outcomes.record_baselines() == 1
+def test_flagged_filings_are_priced_at_the_filing_date_close(tmp_sqlite_db, history):
+    """The baseline is the close on the filing date, not the price whenever
+    the job happened to run — a backfilled filing used to get a baseline
+    weeks after it was filed."""
+    _flag("a-1", filed="2026-06-01", price=99.0)
+    history["AAA"] = _series("2026-05-25", [8.0] * 7 + [10.0] + [11.0] * 100)
+    result = outcomes.run(today="2026-06-05")
+
     row = database.get_all_outcomes()[0]
-    assert row["price_0"] == 10.0     # the price at analysis time, not today's
+    assert result["started"] == 1 and result["priced"] == 1
+    assert row["price_0"] == 10.0     # 2026-06-01's close, not price_at_ingest
     assert row["spy_0"] == 500.0
+    assert row["price_source"] == "history"
+    assert row["company"] == "Co a-1"
 
 
-def test_pass_filings_are_not_tracked(tmp_sqlite_db, quotes):
+def test_a_weekend_filing_uses_the_next_session(tmp_sqlite_db, history):
+    _flag("a-1", filed="2026-06-06")   # Saturday
+    history["AAA"] = {"2026-06-05": 9.0, "2026-06-08": 12.0}
+    history["SPY"] = {"2026-06-05": 500.0, "2026-06-08": 505.0}
+    outcomes.run(today="2026-06-10")
+    row = database.get_all_outcomes()[0]
+    assert (row["price_0"], row["spy_0"]) == (12.0, 505.0)
+
+
+def test_pass_filings_are_not_tracked(tmp_sqlite_db, history):
     """PASS is the system saying "nothing here" — tracking it would bury the
     flagged rows in noise."""
     _flag("a-1", verdict="PASS")
     assert outcomes.record_baselines() == 0
 
 
-def test_baselines_are_recorded_once(tmp_sqlite_db, quotes):
+def test_baselines_are_recorded_once(tmp_sqlite_db, history):
     _flag("a-1")
     outcomes.record_baselines()
     assert outcomes.record_baselines() == 0
     assert len(database.get_all_outcomes()) == 1
 
 
-def test_missing_ingest_price_falls_back_to_a_current_quote(tmp_sqlite_db, quotes):
-    _flag("a-1", ticker="BBB", price=None)
-    quotes["BBB"] = 42.0
-    outcomes.record_baselines()
-    assert database.get_all_outcomes()[0]["price_0"] == 42.0
-
-
-def test_no_benchmark_means_no_baselines(tmp_sqlite_db, quotes):
-    """A baseline without SPY can never be read net of the market, and can't
-    be fixed later. Better to wait a day."""
-    quotes.pop("SPY")
+def test_no_benchmark_means_nothing_is_priced(tmp_sqlite_db, history):
+    """A move without SPY can never be read net of the market. Wait a day."""
+    history.pop("SPY")
+    history["AAA"] = _series("2026-05-25", [10.0] * 30)
     _flag("a-1")
-    assert outcomes.record_baselines() == 0
+    result = outcomes.run(today="2026-06-10")
+    assert result["priced"] == 0
+    assert database.get_all_outcomes()[0]["price_0"] is None
+
+
+def test_todays_close_is_not_used(tmp_sqlite_db, history):
+    """A bar dated today is still moving; it isn't a close yet."""
+    _flag("a-1", filed="2026-06-01")
+    history["AAA"] = _series("2026-06-01", [10.0] * 20)
+    outcomes.run(today="2026-06-01")
+    assert database.get_all_outcomes()[0]["price_0"] is None
+    outcomes.run(today="2026-06-02")
+    assert database.get_all_outcomes()[0]["price_0"] == 10.0
 
 
 # ---------------------------------------------------------------------------
 # Marking
 # ---------------------------------------------------------------------------
 
-def test_rows_are_marked_only_when_due(tmp_sqlite_db, quotes):
+def test_marks_appear_only_once_their_session_has_closed(tmp_sqlite_db, history):
     _flag("a-1", filed="2026-06-01")
-    outcomes.record_baselines()
-    quotes["AAA"] = 9.0
+    history["AAA"] = _series("2026-06-01", [10.0] + [9.0] * 110)
 
-    assert outcomes.mark_due(today="2026-06-05") == {7: 0, 30: 0, 90: 0}
-    assert outcomes.mark_due(today="2026-06-08") == {7: 1, 30: 0, 90: 0}
-    assert outcomes.mark_due(today="2026-07-01") == {7: 0, 30: 1, 90: 0}
+    outcomes.run(today="2026-06-08")          # 06-08 is the 7-day session: not closed yet
+    assert database.get_all_outcomes()[0]["price_7"] is None
+    outcomes.run(today="2026-06-09")
+    row = database.get_all_outcomes()[0]
+    assert row["price_7"] == 9.0 and row["price_30"] is None
 
 
-def test_a_late_run_still_marks_the_horizon(tmp_sqlite_db, quotes):
-    """A skipped day (weekend, outage) is marked on the next run, not lost."""
+def test_a_late_run_still_marks_the_right_date(tmp_sqlite_db, history):
+    """Nothing is taken late: a run months after the filing prices every
+    horizon at its own session, not at today's quote."""
     _flag("a-1", filed="2026-06-01")
-    outcomes.record_baselines()
-    quotes["AAA"] = 9.0
-    assert outcomes.mark_due(today="2026-06-12")[7] == 1
+    prices = [10.0] * 7 + [9.0] * 23 + [8.0] * 60 + [7.0] * 20
+    history["AAA"] = _series("2026-06-01", prices)
+    outcomes.run(today="2026-09-15")
+    row = database.get_all_outcomes()[0]
+    assert (row["price_0"], row["price_7"], row["price_30"], row["price_90"]) == (10.0, 9.0, 8.0, 7.0)
 
 
-def test_an_unpriceable_ticker_stays_due(tmp_sqlite_db, quotes):
-    _flag("a-1", ticker="GONE", filed="2026-06-01", price=5.0)
-    outcomes.record_baselines()
-    assert outcomes.mark_due(today="2026-06-10")[7] == 0
-    quotes["GONE"] = 4.0
-    assert outcomes.mark_due(today="2026-06-11")[7] == 1
+def test_a_mark_on_a_holiday_rolls_to_the_next_session(tmp_sqlite_db, history):
+    _flag("a-1", filed="2026-06-01")
+    history["AAA"] = _series("2026-06-01", [10.0] * 7 + [11.0] + [12.0] * 30,
+                             skip={"2026-06-08"})
+    outcomes.run(today="2026-06-20")
+    assert database.get_all_outcomes()[0]["price_7"] == 11.0   # 06-09
+
+
+def test_an_unpriceable_ticker_stays_pending(tmp_sqlite_db, history):
+    _flag("a-1", ticker="GONE", filed="2026-06-01")
+    assert outcomes.run(today="2026-06-10")["unpriced"] == 1
+    history["GONE"] = _series("2026-06-01", [4.0] * 20)
+    assert outcomes.run(today="2026-06-11")["priced"] == 1
+
+
+def test_rows_priced_from_live_quotes_are_repriced(tmp_sqlite_db, history):
+    """The first version stored a baseline from whatever day the job ran and
+    marked it immediately. Those rows must be corrected, marks included."""
+    filing_id = _flag("a-1", filed="2026-06-01")
+    database.insert_outcome_baseline(filing_id, "AAA", "BEARISH", "FORFEITURE_EXIT",
+                                     "2026-06-01", 50.0, 600.0)
+    oid = database.get_all_outcomes()[0]["id"]
+    database.set_outcome_prices(oid, {"price_0": 50.0, "spy_0": 600.0,
+                                      "price_7": 50.0, "spy_7": 600.0}, source=None)
+    history["AAA"] = _series("2026-06-01", [10.0] * 5 + [9.0] * 30)
+
+    outcomes.run(today="2026-06-05")      # only the baseline is due
+    row = database.get_all_outcomes()[0]
+    assert (row["price_0"], row["spy_0"]) == (10.0, 500.0)
+    assert row["price_7"] is None          # the stale mark is gone, not kept
+
+
+def test_finished_rows_are_not_refetched(tmp_sqlite_db, history, monkeypatch):
+    _flag("a-1", filed="2026-06-01")
+    history["AAA"] = _series("2026-06-01", [10.0] * 120)
+    outcomes.run(today="2026-06-05")
+
+    import price_history
+    calls = []
+    monkeypatch.setattr(price_history, "closes",
+                        lambda t, start, end=None: calls.append(t) or history.get(t, {}))
+    outcomes.run(today="2026-06-06")       # nothing new is due
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +224,19 @@ def test_scorecard_groups_by_signal_type_and_overall():
     assert 7 not in table["ALL"]  # no 7-day marks in these rows
 
 
+def test_filing_results_lists_scored_filings_newest_first():
+    rows = [
+        dict(_row("BEARISH", 10, 9), filing_id=1, ingest_date="2026-06-01", ticker="OLD"),
+        dict(_row("BULLISH", 10, 12), filing_id=2, ingest_date="2026-06-09", ticker="NEW"),
+        dict(_row("MIXED", 10, 12), filing_id=3, ingest_date="2026-06-10", ticker="MIX"),
+        {"filing_id": 4, "direction": "BEARISH", "price_0": 10, "ingest_date": "2026-06-11"},
+    ]
+    results = outcomes.filing_results(rows)
+    assert [r["ticker"] for r in results] == ["NEW", "OLD"]
+    assert results[0]["marks"][30] == pytest.approx(20.0)
+    assert results[0]["marks"][7] is None
+
+
 def test_pending_counts():
     rows = [_row("BEARISH", 10, 9), {"price_0": 10, "price_30": None}]
     counts = outcomes.pending_counts(rows)
@@ -166,14 +255,15 @@ def test_scorecard_page_renders_empty(tmp_sqlite_db):
     assert "Nothing to score yet" in body
 
 
-def test_scorecard_page_renders_results(tmp_sqlite_db, quotes):
+def test_scorecard_page_renders_results(tmp_sqlite_db, history):
     from app import app
     app.config["TESTING"] = True
     _flag("a-1", filed="2026-06-01")
-    outcomes.record_baselines()
-    quotes["AAA"] = 8.0
-    outcomes.mark_due(today="2026-07-02")
+    history["AAA"] = _series("2026-06-01", [10.0] + [8.0] * 60)
+    outcomes.run(today="2026-07-15")
 
     body = app.test_client().get("/scorecard").get_data(as_text=True)
     assert "All flagged filings" in body
     assert "Forfeiture Exit" in body
+    assert "Filings behind the numbers" in body
+    assert "/filing/" in body and "+20.0%" in body

@@ -23,8 +23,8 @@
 <div class="text-center py-5">
   <h4 class="text-muted mb-2">Nothing to score yet</h4>
   <p class="text-muted">
-    Tracking starts when a filing is flagged. The first 7-day marks appear a week after that,
-    30-day marks a month after — this page fills in on its own as the daily job runs.
+    Tracking starts when a filing is flagged, and each filing is priced from daily closes
+    once 7, 30 and 90 days have passed — this page fills in on its own as the daily job runs.
   </p>
 </div>
 {% else %}
@@ -65,8 +65,51 @@
 </div>
 <p class="text-muted small mt-3">
   Small samples mislead. A row with fewer than ~20 marks is an anecdote, not a hit rate.
-  Marks are taken on the first daily run at or after each horizon.
+  Priced from daily closes: the baseline is the close on the filing date, each mark the
+  first close at least N days later. SPY is priced on the same sessions.
 </p>
+{% endif %}
+
+{% if filings %}
+<h5 class="mt-4 mb-2">Filings behind the numbers</h5>
+<div class="text-muted small mb-2">
+  Each flagged filing's move vs SPY, signed by the call: positive means the call was right.
+</div>
+<div class="card">
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 scorecard-table">
+        <thead>
+          <tr>
+            <th>Filed</th>
+            <th>Ticker</th>
+            <th>Call</th>
+            <th>Signals</th>
+            {% for h in horizons %}<th class="text-end">{{ h }}d</th>{% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in filings %}
+          <tr>
+            <td class="text-nowrap">{{ f.filed }}</td>
+            <td><a href="/filing/{{ f.filing_id }}" title="{{ f.company or '' }}">{{ f.ticker }}</a></td>
+            <td class="{{ 'text-danger' if f.direction == 'BEARISH' else 'text-success' }}">{{ f.direction.title() }}</td>
+            <td class="small">{{ f.signal_types | map('replace', '_', ' ') | map('title') | join(', ') }}</td>
+            {% for h in horizons %}
+              {% set v = f.marks[h] %}
+              {% if v is none %}
+              <td class="text-end text-muted">—</td>
+              {% else %}
+              <td class="text-end {{ 'text-success' if v > 0 else 'text-danger' }}">{{ '%+.1f' % v }}%</td>
+              {% endif %}
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
 {% endif %}
 
 {% endblock %}
