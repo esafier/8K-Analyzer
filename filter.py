@@ -236,7 +236,7 @@ def determine_subcategory(text_lower, matched_keywords):
 
 def filter_filings(filings_metadata, fetch_text_func=None, model=None,
                    judge_model=None, apply_universe=True, skip_existing=True,
-                   on_analyzed=None, stats=None, allow_judge=True):
+                   on_analyzed=None, stats=None, allow_judge=True, analyze=True):
     """Run the ingest funnel over a list of filings.
 
     Stage 1 runs on metadata only (fast).
@@ -421,6 +421,15 @@ def filter_filings(filings_metadata, fetch_text_func=None, model=None,
             # No text to analyze — keep keyword-based info plus whatever
             # placeholder Stage 2 set on `summary` (e.g. the rate-limit notice).
             # Don't overwrite that with "" — leaves the dashboard ambiguous.
+            filing.setdefault("summary", "")
+            filing.setdefault("source", "8-K")
+            _keep(filing, final_passed, on_analyzed)
+            continue
+
+        if not analyze:
+            # Fetch-only (history backfills): store the text unscored. The
+            # SEC fetch above has to be sequential; analysis doesn't, and
+            # reanalyze.py --workers picks these rows up in parallel.
             filing.setdefault("summary", "")
             filing.setdefault("source", "8-K")
             _keep(filing, final_passed, on_analyzed)

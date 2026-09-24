@@ -209,3 +209,18 @@ def test_filings_already_in_the_database_are_not_reanalyzed(tmp_sqlite_db):
 
     assert result == []
     assert not mock_llm.called
+
+
+def test_fetch_only_stores_the_text_without_a_model_call():
+    """History backfills fetch sequentially (SEC) and score in parallel
+    afterwards with reanalyze.py --workers — so the fetch pass must not
+    spend anything, and must leave the row unscored for reanalyze to find."""
+    with patch("llm.classify_and_summarize") as mock_llm:
+        result = filter_filings(_meta(), fetch_text_func=_fetch_ok,
+                                apply_universe=False, skip_existing=False, analyze=False)
+
+    assert not mock_llm.called
+    assert len(result) == 1
+    assert result[0]["raw_text"].startswith("Filing text")
+    assert not result[0].get("pipeline_version")
+    assert not result[0].get("triage_verdict")
