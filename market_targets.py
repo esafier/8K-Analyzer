@@ -130,9 +130,33 @@ def detect_market_targets(structured):
 
 # Dollar amounts inside a free-text price-target string, e.g.
 # "$12.50 and $15.00 sustained over 60 days" -> [12.50, 15.00]
-# The comma branch requires an actual comma group and the trailing (?!\d)
-# stops partial matches — without it "$1000" parsed as 100.0.
-_PRICE_VALUE_RE = re.compile(r"\$\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,4})?|\d+(?:\.\d{1,4})?)(?![\d,])")
+# The comma branch requires an actual comma group, and the lookahead stops
+# partial matches — without it "$1000" parsed as 100.0. It rejects a
+# following digit or a comma-then-digit, NOT a bare comma: "$21.50, $41.00"
+# is a list, and rejecting the comma made the regex backtrack to "$21"
+# (the detail page showed a $21.50 hurdle as $21.00).
+_PRICE_VALUE_RE = re.compile(r"\$\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,4})?|\d+(?:\.\d{1,4})?)(?!\d|,\d)")
+
+
+def price_matches(text):
+    """[(value, start, end)] for each per-share dollar amount in `text`.
+
+    Positions let a caller read what the filing says around each price
+    ("30% vests at $21.50") — see payoff.parse_tranches.
+    """
+    if not _is_meaningful(text):
+        return []
+    if not isinstance(text, str):
+        text = str(text)
+    out = []
+    for m in _PRICE_VALUE_RE.finditer(text):
+        try:
+            v = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if 0 < v < 100_000:
+            out.append((v, m.start(), m.end()))
+    return out
 
 
 def extract_price_values(text):
@@ -141,19 +165,7 @@ def extract_price_values(text):
     Returns a list of floats (may be empty). Values outside (0, 100000) are
     discarded as parse noise.
     """
-    if not _is_meaningful(text):
-        return []
-    if not isinstance(text, str):
-        text = str(text)
-    values = []
-    for m in _PRICE_VALUE_RE.finditer(text):
-        try:
-            v = float(m.group(1).replace(",", ""))
-        except ValueError:
-            continue
-        if 0 < v < 100_000:
-            values.append(v)
-    return values
+    return [v for v, _, _ in price_matches(text)]
 
 
 def annotate_price_targets(market_targets, current_price):

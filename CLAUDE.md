@@ -147,6 +147,11 @@ decorative glyph must never be one of them.
   slower). `llm._create` falls back to standard for a call when Flex is busy
   and for the run when a model has no Flex tier. Compare models with
   `bakeoff.py` (read-only, measured cost) before changing a default.
+- **The hurdle payoff ladder** (`payoff.py`, filing detail page) is display
+  only: it reads stored `comp_events` and the price at ingest, never a model.
+  v4.5 extraction emits structured `price_hurdles`; older rows fall back to
+  parsing the hurdle text, and an unreadable tranche split is shown as
+  unknown, never guessed.
 - **Every signal carries an `evidence` sentence.** It is shown to the user; it
   is the product, not a debug string.
 

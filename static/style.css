@@ -571,3 +571,49 @@ tr.pass-row td { padding-top: 8px; padding-bottom: 8px; }
   .signal-card-actions { width: 100%; justify-content: flex-end; margin-top: 6px; }
   .review-btn { padding: 16px 8px; }
 }
+
+/* ---------- Hurdle payoff ladder (filing detail) ---------- */
+.payoff {
+  margin: 8px 0 12px; padding: 12px 14px;
+  background: #fffbeb; border: 1px solid #f3e1a0; border-radius: var(--r-inner);
+}
+.payoff-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #8a6d00; }
+.payoff-title span { text-transform: none; font-weight: 400; color: var(--ink-faint); letter-spacing: 0; margin-left: 4px; }
+.payoff-exec { margin-top: 10px; padding-top: 10px; border-top: 1px solid #f3e1a0; }
+.payoff-exec:first-of-type { border-top: 0; padding-top: 0; }
+.payoff-exec > summary { cursor: pointer; list-style: none; }
+.payoff-exec > summary::-webkit-details-marker { display: none; }
+.payoff-exec > summary .payoff-who::before {
+  content: "▸"; display: inline-block; width: 14px; color: var(--ink-faint);
+  transition: transform .15s ease;
+}
+.payoff-exec[open] > summary .payoff-who::before { transform: rotate(90deg); }
+.payoff-exec > summary .payoff-headline { display: block; }
+.payoff-pkg { margin: 0 0 4px; }
+.payoff-chip {
+  display: inline-block; margin: 0 4px 3px 0; padding: 1px 8px; font-size: 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-pill);
+  color: var(--ink-soft); font-variant-numeric: tabular-nums;
+}
+.payoff-headline { margin: 6px 0; font-size: 15px; text-wrap: pretty; }
+.payoff-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; margin-bottom: 6px; color: var(--ink-soft); }
+.payoff-meta b { color: var(--ink); }
+.payoff-table { background: var(--surface); border-radius: var(--r-badge); overflow: hidden; font-size: 13px; }
+.payoff-table th { font-size: 11px; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; white-space: nowrap; }
+.payoff-table td { vertical-align: top; }
+.payoff-table .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.payoff-table tr.payoff-today td { background: var(--surface-2); color: var(--ink-soft); }
+.payoff-bar { height: 4px; margin-top: 3px; background: #f1ead0; border-radius: 2px; min-width: 90px; }
+.payoff-bar > div { height: 100%; background: #d4a800; border-radius: 2px; }
+.payoff-diff {
+  display: inline-block; margin-left: 4px; padding: 0 6px; font-size: 10px; font-weight: 600;
+  border-radius: var(--r-pill); vertical-align: 1px;
+}
+.diff-already-met { background: #e8f6ee; color: #14663d; }
+.diff-market-pace { background: #e8f6ee; color: #14663d; }
+.diff-stretch     { background: #eaf1ff; color: #1d4fbf; }
+.diff-hard        { background: #fff1e0; color: #a05a00; }
+.diff-moonshot    { background: #fdecea; color: #a11a13; }
+.payoff-notes { font-size: 11px; color: var(--ink-faint); margin-top: 4px; }
+.payoff-raw { margin-top: 8px; font-size: 12px; color: var(--ink-soft); }
+.payoff-raw ul { padding-left: 16px; margin: 4px 0 0; }

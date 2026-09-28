@@ -133,6 +133,14 @@ def render_deep_analysis(text):
 app.jinja_env.filters["render_deep_analysis"] = render_deep_analysis
 
 
+def _money_filter(value):
+    from payoff import money
+    return money(value)
+
+
+app.jinja_env.filters["money"] = _money_filter
+
+
 # ============================================================
 # TRIAL ACCESS GATE
 # If TRIAL_CODE env var is set, visitors must enter the code
@@ -630,6 +638,8 @@ def _render_filing_detail(filing_id, departures=None):
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
+    payoffs = _filing_payoffs(filing, stock_price)
+
     return render_template(
         "filing.html",
         filing=filing,
@@ -642,7 +652,41 @@ def _render_filing_detail(filing_id, departures=None):
         stock_price=stock_price,
         target_pcts=target_pcts,
         departures=departures,
+        payoffs=payoffs,
     )
+
+
+def _filing_payoffs(filing, stock_price):
+    """Hurdle payoff ladders for the detail page — [] when the filing has no
+    price hurdle. Built from stored facts; the only outside call is the
+    volatility lookup for the odds column, and that is time-boxed."""
+    import json
+    from payoff import build_payoffs, volatility_for
+    try:
+        structured = json.loads(filing.get("structured_summary") or "{}")
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return []
+    if not isinstance(structured, dict):
+        return []
+    try:
+        context = json.loads(filing.get("context_json") or "{}")
+    except (json.JSONDecodeError, ValueError, TypeError):
+        context = {}
+    if not isinstance(context, dict):
+        context = {}
+    price_at_grant = filing.get("price_at_ingest") or context.get("price")
+    args = dict(price_at_grant=price_at_grant, price_today=stock_price,
+                filed_date=filing.get("filed_date"))
+    try:
+        payoffs = build_payoffs(structured, **args)
+        if payoffs and filing.get("ticker"):
+            vol = volatility_for(filing["ticker"])
+            if vol:
+                payoffs = build_payoffs(structured, volatility=vol, **args)
+    except Exception as e:  # a display nicety must never 500 the page
+        print(f"[PAYOFF] filing {filing.get('id')}: {type(e).__name__}: {e}")
+        return []
+    return payoffs
 
 
 @app.route("/update-tag/<int:filing_id>", methods=["POST"])

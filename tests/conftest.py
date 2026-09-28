@@ -19,6 +19,16 @@ def reset_sec_throttle():
     fetcher._reset_sec_throttle()
 
 
+@pytest.fixture(autouse=True)
+def no_volatility_fetch(monkeypatch):
+    """The filing page's odds column looks up a year of prices from Yahoo.
+    Tests must never reach the network; a test that wants odds patches
+    payoff.volatility_for itself."""
+    import payoff
+
+    monkeypatch.setattr(payoff, "volatility_for", lambda ticker, timeout=3.0: None)
+
+
 @pytest.fixture
 def tmp_sqlite_db(tmp_path, monkeypatch):
     """Point the app's SQLite DATABASE_PATH at a fresh temp file per test.
