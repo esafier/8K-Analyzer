@@ -382,3 +382,54 @@ def test_tiered_exercise_prices_are_strikes_not_vesting_hurdles():
     [p] = build_payoffs({"comp_events": events}, price_at_grant=1.17)
     top = p["rows"][-1]
     assert top["payout"] == pytest.approx(207_565 * 0.25 * ((7.046 - 5.42) + (7.046 - 5.962) + (7.046 - 6.504)))
+
+
+
+# --- v4.5 structured extraction, as the re-extraction run produced it ---------
+
+def test_payout_above_target_is_cumulative_and_not_capped():
+    """BBWI: earn 75% / 100% / 150% / 200% of target at $40 / $60 / $80 / $100.
+    Read as slices and capped at 100%, the top take was half what it is."""
+    facts = {"comp_events": [{"executive": "Daniel Heaf, CEO", "grant_type": "PSUs",
+        "grant_value": "$10 million (equal to 591,366 shares of Company common stock)",
+        "grant_value_usd": 10_000_000, "performance_period_years": 4, "grant_date": "2026-09-20",
+        "price_hurdles": [{"price": 40, "vest_pct": 75}, {"price": 60, "vest_pct": 100},
+                          {"price": 80, "vest_pct": 150}, {"price": 100, "vest_pct": 200}]}]}
+    [p] = build_payoffs(facts, price_at_grant=16.675, today=date(2026, 10, 1))
+    takes = [r["payout"] for r in p["rows"][1:]]
+    assert takes == pytest.approx([591_366 * 0.75 * 40, 591_366 * 1.0 * 60,
+                                   591_366 * 1.5 * 80, 591_366 * 2.0 * 100])
+    assert p["rows"][3]["unlocks"] == ["+50% of target PSUs · 295,683 units"]
+    assert p["package"] == ["591,366 PSUs · 4 price hurdles, 4-yr window, up to 200% of target"]
+
+
+def test_overlapping_slices_that_exceed_the_award_are_unreadable():
+    facts = {"comp_events": [{"executive": "A B", "grant_type": "PSUs", "share_count": 1000,
+        "price_hurdles": [{"price": 20, "vest_pct": 60}, {"price": 30, "vest_pct": 50}]}]}
+    [p] = build_payoffs(facts, price_at_grant=10)
+    assert p["split_known"] is False
+
+
+def test_token_salary_is_stated_not_divided_by():
+    """ANGI: a $1 salary gave '40,000,000x annual cash pay'."""
+    facts = {"comp_events": [{"executive": "Michael Steib (CEO)", "grant_type": "PSUs",
+        "share_count": 1_000_000, "base_salary_usd": 1,
+        "price_hurdles": [{"price": 20, "vest_pct": 100}]}]}
+    [p] = build_payoffs(facts, price_at_grant=5.05)
+    assert p["annual_pay"] is None and p["rows"][-1]["pay_multiple"] is None
+    assert p["token_salary"] == 1
+    assert "Takes a $1 salary." in p["headline"] and "cash pay" not in p["headline"]
+
+
+def test_sentence_long_measurement_is_condensed():
+    def m(text):
+        return build_payoffs({"comp_events": [{"executive": "A B", "grant_type": "PSUs",
+            "share_count": 1000, "hurdle_measurement": text,
+            "price_hurdles": [{"price": 20, "vest_pct": 100}]}]}, price_at_grant=10)[0]["measurement"]
+    assert m("The volume-weighted average closing price of Common Stock must equal or exceed "
+             "the applicable hurdle for 30 consecutive trading days.") == "30-day VWAP"
+    assert m("60 consecutive calendar days, described as a consecutive 60-day calendar average") \
+        == "60-day average price"
+    assert m("Twenty-day VWAP of the Company's common stock") == "20-day VWAP"
+    assert m("Closing price of the Company's common stock on the Principal Market on each RSU "
+             "vesting date").endswith("…")

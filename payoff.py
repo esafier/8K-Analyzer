@@ -101,7 +101,12 @@ _PERIOD_RE = re.compile(
     r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)[- ]year\s+"
     r"(?:performance|measurement)\s+period", re.I)
 _DAYS_RE = re.compile(
-    r"\b(\d+|twenty|thirty|sixty|ninety)[- ](?:consecutive[- ])?(?:trading[- ])?day\b", re.I)
+    r"\b(\d+|twenty|thirty|sixty|ninety)[- ](?:consecutive[- ])?(?:trading[- ]|calendar[- ])?days?\b",
+    re.I)
+# A salary below this is a token salary ("$1 a year"), shown as such rather
+# than turned into a "40,000,000x cash pay" multiple.
+_MIN_REAL_SALARY = 10_000
+_MAX_MEASUREMENT_CHARS = 60
 _MEASURE_KIND_RE = re.compile(r"\b(vwap|volume[- ]weighted|average|closing)", re.I)
 _EXERCISE_RE = re.compile(r"(?:exercise|strike)\s+price[^$.;]{0,60}", re.I)
 _EXERCISE_BEFORE_RE = re.compile(
@@ -322,15 +327,10 @@ def _period_years(event):
     return v if v and v > 0 else None
 
 
-def _measurement(event):
-    m = _text(event.get("hurdle_measurement"))
-    if m:
-        return m
-    blob = " ".join(_text(event.get(k)) for k in ("vesting_schedule", "stock_price_targets"))
-    blob += " " + _text((event.get("market_based_targets") or {}).get("stock_price")
-                        if isinstance(event.get("market_based_targets"), dict) else "")
+def _condensed_measurement(text):
+    """'60-day VWAP' from any wording of a price test, or None."""
     # Either order: "60-trading-day VWAP" or "VWAP ... over a 60-trading-day period".
-    days, kind = _DAYS_RE.search(blob), _MEASURE_KIND_RE.search(blob)
+    days, kind = _DAYS_RE.search(text), _MEASURE_KIND_RE.search(text)
     if not days or not kind:
         return None
     n = days.group(1).lower()
@@ -338,6 +338,24 @@ def _measurement(event):
     k = kind.group(1).lower()
     k = "VWAP" if k.startswith(("vwap", "volume")) else f"{k} price"
     return f"{n}-day {k}"
+
+
+def _measurement(event):
+    m = _text(event.get("hurdle_measurement"))
+    if m:
+        # The model often answers in a sentence ("The volume-weighted average
+        # closing price ... for 30 consecutive trading days"); the page needs
+        # the short form.
+        short = _condensed_measurement(m)
+        if short:
+            return short
+        if len(m) <= _MAX_MEASUREMENT_CHARS:
+            return m
+        return m[:_MAX_MEASUREMENT_CHARS].rsplit(" ", 1)[0] + "…"
+    blob = " ".join(_text(event.get(k)) for k in ("vesting_schedule", "stock_price_targets"))
+    blob += " " + _text((event.get("market_based_targets") or {}).get("stock_price")
+                        if isinstance(event.get("market_based_targets"), dict) else "")
+    return _condensed_measurement(blob)
 
 
 def _hurdle_texts(event):
@@ -366,6 +384,18 @@ def _event_prices(event, total_units=None):
                 pct = _num(h.get("vest_pct"))
                 rows.append((p, pct / 100.0 if pct else None, _num(h.get("units"))))
         if rows:
+            rows.sort()
+            fracs = [r[1] for r in rows]
+            # "75%, 100%, 150%, 200% of target" (BBWI, COHR) are cumulative
+            # payout levels, not slices: they rise with the price and add up
+            # to more than the whole award. Store per-tier increments.
+            if (all(f is not None for f in fracs) and sum(fracs) > 1.03
+                    and all(b >= a for a, b in zip(fracs, fracs[1:]))):
+                steps = [b - a for a, b in zip([0.0] + fracs[:-1], fracs)]
+                rows = [(p, step, None) for (p, _, _), step in zip(rows, steps) if step > 0]
+            elif all(f is not None for f in fracs) and sum(fracs) > 1.03:
+                # Slices adding up to more than the award, in no order: unreadable.
+                rows = [(p, None, None) for p, _, _ in rows]
             return rows, all(r[1] or r[2] for r in rows), strike
 
     texts = _hurdle_texts(event)
@@ -705,7 +735,8 @@ def _vested_fraction(award, price):
         if price >= max(prices) - 1e-9:
             return 1.0
         return 0.0 if price < min(prices) - 1e-9 else None
-    return min(1.0, sum(t["fraction"] for t in award["tranches"] if price >= t["price"] - 1e-9))
+    # Not capped at 1.0: a PSU paying 200% of target earns twice its units.
+    return sum(t["fraction"] for t in award["tranches"] if price >= t["price"] - 1e-9)
 
 
 def _value_at(award, price):
@@ -733,6 +764,12 @@ def _value_at(award, price):
     return earned * price
 
 
+def _above_target(award):
+    """True when the award's tiers pay out more than its target units."""
+    fracs = [t["fraction"] for t in award["tranches"]]
+    return bool(fracs) and all(fracs) and sum(fracs) > 1.03
+
+
 def _unlock_lines(awards, price):
     lines = []
     for a in awards:
@@ -743,6 +780,10 @@ def _unlock_lines(awards, price):
             if a.get("tiered_strikes"):
                 share = f"{t['fraction'] * 100:.0f}% of " if t["fraction"] else ""
                 lines.append(f"{share}{a['grant_type']} struck here (worth nothing below)")
+                continue
+            if t["fraction"] and _above_target(a):
+                units = f" · {a['units'] * t['fraction']:,.0f} units" if a["units"] else ""
+                lines.append(f"+{t['fraction'] * 100:.0f}% of target {label}{units}")
                 continue
             if t["fraction"] and a["units"]:
                 lines.append(f"{t['fraction'] * 100:.0f}% of {label} · "
@@ -769,7 +810,9 @@ def _package_line(a):
     if a["kind"] == "hurdle":
         n = len(a["tranches"])
         yrs = f", {a['period_years']:g}-yr window" if a["period_years"] else ""
-        return f"{units}{a['grant_type']} · {n} price hurdle{'s' if n != 1 else ''}{yrs}"
+        cap = (f", up to {sum(t['fraction'] for t in a['tranches']) * 100:.0f}% of target"
+               if _above_target(a) else "")
+        return f"{units}{a['grant_type']} · {n} price hurdle{'s' if n != 1 else ''}{yrs}{cap}"
     if a["kind"] == "perf":
         return f"{units}{a['grant_type']} · operating goals, at target"
     return f"{units}{a['grant_type']} · time-vested"
@@ -838,6 +881,9 @@ def _ladder(group, price_at_grant, price_today, spot, filed, today, vol):
     hurdle_awards = [a for a in awards if a["tranches"]]
     if not hurdle_awards:
         return None
+    token_salary = salary if salary and salary < _MIN_REAL_SALARY else None
+    if token_salary:
+        salary = bonus = None  # "$1 a year" is a statement, not a denominator
     annual_pay = (salary or 0) + (bonus or 0) or None
 
     levels = sorted({round(t["price"], 4) for a in hurdle_awards for t in a["tranches"]})
@@ -921,6 +967,7 @@ def _ladder(group, price_at_grant, price_today, spot, filed, today, vol):
         "value_today": rows[0]["payout"],
         "at_risk_pct": at_risk,
         "annual_pay": annual_pay,
+        "token_salary": token_salary,
         "salary": salary,
         "deadline": deadlines[0] if len(deadlines) == 1 else None,
         "mixed_deadlines": len(deadlines) > 1,
@@ -937,11 +984,11 @@ def _ladder(group, price_at_grant, price_today, spot, filed, today, vol):
         "volatility": vol,
         "headline": _headline(group["name"], first, top,
                               None if rows[0]["payout_incomplete"] else rows[0]["payout"],
-                              annual_pay),
+                              annual_pay, token_salary),
     }
 
 
-def _headline(name, first, top, value_today, annual_pay):
+def _headline(name, first, top, value_today, annual_pay, token_salary=None):
     """The sentence that answers 'how strong a bet is this?'"""
     parts = []
     when = f" by {top['deadline']:%b %Y}" if top["deadline"] else ""
@@ -959,4 +1006,6 @@ def _headline(name, first, top, value_today, annual_pay):
         parts.append(f"Worth {money(value_today)} at today's price.")
     if annual_pay and top["payout"]:
         parts.append(f"Top payout is {top['payout'] / annual_pay:.0f}× annual cash pay.")
+    if token_salary:
+        parts.append(f"Takes a {money(token_salary)} salary.")
     return " ".join(parts)
