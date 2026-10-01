@@ -110,6 +110,13 @@ Return ONLY valid JSON in exactly this shape:
         "tsr": "Total Shareholder Return target, absolute or relative. null if none."
       },
       "hurdle_prices": [],
+      "price_hurdles": [{"price": 21.50, "vest_pct": 30, "units": null}],
+      "hurdle_measurement": "How the price test is measured, e.g. '60-trading-day VWAP' or '20 consecutive trading day closing price'. null if none.",
+      "performance_period_years": null,
+      "hurdle_deadline": "YYYY-MM-DD or null",
+      "exercise_price": null,
+      "base_salary_usd": null,
+      "target_bonus_pct": null,
       "stock_price_targets": null,
       "is_repricing": false,
       "has_single_trigger_cic": false,
@@ -170,6 +177,16 @@ Empty arrays mean no events of that type. null means the filing did not say.
 **vesting_years** — total years to full vesting as a number (3 for "vests ratably over three years"). null when not stated.
 
 **hurdle_prices** — every per-share dollar figure the stock must reach, as bare numbers: [60, 75, 85]. Include option exercise prices. Empty when there are none.
+
+**price_hurdles** — one entry per stock-price tier of THIS award: the price as a bare number, the percent of the award that vests at that tier (vest_pct), and the unit count for the tier if the filing gives one. "30% vests at $21.50, 30% at $41.00, the remaining 40% at $61.50" → three entries with vest_pct 30, 30, 40. "Three equal tranches" → 33.33 each. vest_pct null when the filing doesn't say. Never list an option's exercise price here — that goes in exercise_price. Empty when the award has no price hurdle.
+
+**performance_period_years** — how long the price hurdles can be met, in years ("five-year performance period" → 5). null when not stated. Not the same as vesting_years when time-vesting continues after a hurdle is met.
+
+**hurdle_deadline** — the last date a price hurdle can be achieved, when the filing states it or it follows directly from a stated grant date and period. null otherwise.
+
+**exercise_price** — an option's or SAR's per-share exercise price as a number. null when the filing gives only "fair market value on the grant date" with no figure.
+
+**base_salary_usd** / **target_bonus_pct** — the executive's annual base salary (number) and target annual bonus as a percent of salary, when the filing states them anywhere (often the employment agreement). Repeat them on each of that executive's comp_events. null when not stated.
 
 **is_repricing** — true when existing awards have their exercise price lowered, or are exchanged/cancelled-and-regranted.
 

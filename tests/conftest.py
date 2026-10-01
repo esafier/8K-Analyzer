@@ -19,6 +19,33 @@ def reset_sec_throttle():
     fetcher._reset_sec_throttle()
 
 
+@pytest.fixture(autouse=True)
+def no_background_refresh(monkeypatch):
+    """Rendering a page kicks off daemon threads that refresh stale prices,
+    earnings dates and market caps (an API call, then a database write).
+    In a test run those threads outlive the test that started them: one
+    started by test_pagination finished its write inside test_pg_pool and
+    opened a connection through that test's fake pool, failing it whenever
+    the API call happened to take ~0.2s. No test relies on the refresh, so
+    none starts one."""
+    import earnings
+    import market_cap
+    import stock_price
+
+    for module in (stock_price, earnings, market_cap):
+        monkeypatch.setattr(module, "_refresh_in_background", lambda tickers: None)
+
+
+@pytest.fixture(autouse=True)
+def no_volatility_fetch(monkeypatch):
+    """The filing page's odds column looks up a year of prices from Yahoo.
+    Tests must never reach the network; a test that wants odds patches
+    payoff.volatility_for itself."""
+    import payoff
+
+    monkeypatch.setattr(payoff, "volatility_for", lambda ticker, timeout=3.0: None)
+
+
 @pytest.fixture
 def tmp_sqlite_db(tmp_path, monkeypatch):
     """Point the app's SQLite DATABASE_PATH at a fresh temp file per test.

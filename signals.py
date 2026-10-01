@@ -749,7 +749,9 @@ def _detect_hurdle_conviction(facts, context):
         if appreciation >= THRESHOLDS["hurdle_high_appreciation_pct"]:
             severity += 1
 
-        years = _num(event.get("vesting_years"))
+        # The window the price must be hit in, when the filing gives it;
+        # vesting_years can run longer (time-vesting after the hurdle).
+        years = _num(event.get("performance_period_years")) or _num(event.get("vesting_years"))
         cagr_text = ""
         cagr = None
         if years and years > 0:

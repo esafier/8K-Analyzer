@@ -1,0 +1,102 @@
+{# Payoff ladder for price-hurdle comp. Expects `payoffs` (payoff.build_payoffs).
+   One block per executive: the headline, the reference prices, then one row
+   per hurdle — what the stock must do, by when, and what it pays. #}
+<div class="payoff">
+  <div class="payoff-title">Hurdle payoff <span>where the stock has to go, by when, and what it pays</span></div>
+
+  {% for p in payoffs %}
+  {# Biggest package first and open; the rest fold to their headline. #}
+  <details class="payoff-exec" {{ 'open' if loop.first }}>
+    <summary>
+      <span class="payoff-who"><b>{{ p.executive }}</b>{% if p.title %} <span class="text-muted">· {{ p.title }}</span>{% endif %}</span>
+      <span class="payoff-headline">{{ p.headline }}</span>
+    </summary>
+    <div class="payoff-pkg">
+      {% for line in p.package %}<span class="payoff-chip">{{ line }}</span>{% endfor %}
+    </div>
+
+    <div class="payoff-meta">
+      {% if p.price_at_grant %}<span>At filing <b>${{ '%.2f' % p.price_at_grant }}</b></span>{% endif %}
+      {% if p.price_today %}<span>Today <b>${{ '%.2f' % p.price_today }}</b>
+        {%- if p.price_at_grant %} <span class="text-muted">({{ '%+.0f' % ((p.price_today / p.price_at_grant - 1) * 100) }}%)</span>{% endif %}</span>
+      {% else %}<span class="text-muted">No live quote: measured from the price at filing</span>{% endif %}
+      {% if p.deadline %}<span>Deadline <b>{{ p.deadline.strftime('%b') }} {{ p.deadline.day }}, {{ p.deadline.year }}</b>
+        <span class="text-muted">({{ '%.1f' % p.top.years_left }} yrs left)</span></span>
+      {% elif p.mixed_deadlines %}<span>Deadlines differ by award (see rows)</span>
+      {% else %}<span class="text-muted">Deadline not stated</span>{% endif %}
+      {% if p.measurement %}<span>Tested on <b>{{ p.measurement }}</b></span>{% endif %}
+      {% if p.at_risk_pct is not none %}<span title="Share of the top payout that is worth nothing unless the stock rises">At risk <b>{{ '%.0f' % p.at_risk_pct }}%</b></span>{% endif %}
+      {% if p.annual_pay %}<span>Cash pay <b>{{ p.annual_pay | money }}</b>/yr</span>{% endif %}
+    </div>
+
+    <div class="table-responsive">
+    <table class="table table-sm payoff-table mb-1">
+      <thead>
+        <tr>
+          <th>Stock price</th>
+          <th>Move needed</th>
+          <th title="Compound annual return needed from today's price to reach this level by the deadline">Per year</th>
+          {% if p.mixed_deadlines %}<th>By</th>{% endif %}
+          <th>Unlocks</th>
+          <th title="Everything in this filing's package, valued at this share price: vested hurdle units at the price, plus option spread over the strike">Exec's total take</th>
+          {% if p.annual_pay %}<th>× cash pay</th>{% endif %}
+          {% if p.volatility %}<th title="Rough chance the stock touches this price by the deadline">Odds*</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in p.rows %}
+        <tr class="{{ 'payoff-today' if r.is_today }}">
+          <td class="num"><b>${{ '%.2f' % r.price }}</b>{% if r.is_today %} <span class="text-muted small">today</span>{% endif %}</td>
+          <td class="num">{% if r.is_today %}—{% else %}{{ '%+.0f' % r.pct_today }}%{% endif %}</td>
+          <td class="num">
+            {% if r.cagr is not none %}{{ '%.0f' % r.cagr }}%/yr{% elif not r.is_today %}<span class="text-muted">—</span>{% endif %}
+            {% if r.difficulty %}<span class="payoff-diff diff-{{ r.difficulty | lower | replace(' ', '-') }}">{{ r.difficulty }}</span>{% endif %}
+          </td>
+          {% if p.mixed_deadlines %}<td class="num">{{ r.deadline.strftime('%b %Y') if r.deadline else '—' }}</td>{% endif %}
+          <td class="small">{% for u in r.unlocks %}{{ u }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+          <td class="num">
+            {% if r.payout_incomplete %}
+              {% if r.payout %}<b>&ge; {{ r.payout | money }}</b>{% else %}<span class="text-muted">Not disclosed</span>{% endif %}
+              <div class="text-muted small">tier split not in the filing</div>
+            {% else %}
+            <b>{{ r.payout | money }}</b>
+            {% endif %}
+            {% if r.increment %}<span class="text-muted small"> (+{{ r.increment | money }})</span>{% endif %}
+            {% if p.top_payout and r.payout is not none and not r.payout_incomplete %}
+            <div class="payoff-bar"><div style="width: {{ [100, (r.payout / p.top_payout * 100)] | min | round(1) }}%"></div></div>
+            {% endif %}
+            {% if r.breakdown %}<div class="text-muted small">{{ r.breakdown | join(' · ') }}</div>{% endif %}
+          </td>
+          {% if p.annual_pay %}<td class="num">{% if r.pay_multiple is not none %}{{ '%.0f' % r.pay_multiple }}×{% endif %}</td>{% endif %}
+          {% if p.volatility %}<td class="num">{% if r.odds is not none %}{{ '%.0f' % (r.odds * 100) }}%{% endif %}</td>{% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+
+    <div class="payoff-notes">
+      {% if not p.split_known %}<div>The filing doesn't say how much vests at each tier, so the take between the first and top hurdle isn't shown; at the top hurdle the whole award has vested.</div>{% endif %}
+      {% if p.strike_approx %}<div>~ Option strike assumed equal to the price at filing (the filing says "fair market value on the grant date").</div>{% endif %}
+      {% if p.uncounted %}<div>Not in the take (the filing gives no unit count): {{ p.uncounted | join(', ') }}.</div>{% endif %}
+      {% if p.units_approx %}<div>~ Unit count estimated from the award's dollar value at the price at filing.</div>{% endif %}
+    </div>
+  </details>
+  {% endfor %}
+
+  <div class="payoff-notes">
+    Take = every award in this filing valued at that share price (hurdle units that have vested × price, plus option spread over the strike; PSUs on operating goals at target), before tax, ignoring later dilution.
+    {% if payoffs[0].volatility %}<br>* Odds = chance the stock touches the price by the deadline, assuming its trailing 1-yr volatility ({{ '%.0f' % (payoffs[0].volatility * 100) }}%) and an 8%/yr average return. A multi-day average test is harder to meet than a touch, so read this as an upper bound.{% endif %}
+  </div>
+
+  {% if structured.market_targets and structured.market_targets.stock_price %}
+  <details class="payoff-raw">
+    <summary>As written in the filing</summary>
+    <ul>
+      {% for t in structured.market_targets.stock_price %}<li>{{ t.value }} <span class="text-muted">({{ t.executive }})</span></li>{% endfor %}
+      {% for t in structured.market_targets.market_cap %}<li><b>Market cap:</b> {{ t.value }} <span class="text-muted">({{ t.executive }})</span></li>{% endfor %}
+      {% for t in structured.market_targets.tsr %}<li><b>TSR:</b> {{ t.value }} <span class="text-muted">({{ t.executive }})</span></li>{% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>

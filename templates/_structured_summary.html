@@ -10,7 +10,10 @@
     <span class="badge" style="background:#f5b800;color:#000;margin-bottom:6px;display:inline-block;" title="Comp package includes stock-price, market-cap, or TSR target">🎯 Market Targets</span>
   {% endif %}
 
-  {% if structured.has_market_targets and structured.market_targets %}
+  {% set has_payoff = payoffs is defined and payoffs %}
+  {% if has_payoff %}
+    {% include '_payoff_ladder.html' %}
+  {% elif structured.has_market_targets and structured.market_targets %}
     {% set tp = target_pcts.get(filing['id']) if target_pcts is defined and target_pcts else none %}
     <div class="ss-section ss-market-targets" style="margin-top:6px;background:#fffbe6;border-left:3px solid #f5b800;padding:6px 10px;border-radius:4px;">
       <div class="ss-label" style="font-size:10px;font-weight:700;text-transform:uppercase;color:#8a6d00;">Market-Based Targets
@@ -71,7 +74,13 @@
 
   {% if structured.comp_events %}
     <div class="ss-section ss-comp">
+      {% if has_payoff %}
+      {# The ladder above carries the numbers; the terms stay one click away. #}
+      <details>
+      <summary class="ss-label" style="font-size:10px;font-weight:700;text-transform:uppercase;color:#198754;cursor:pointer;">Compensation: grant terms as filed</summary>
+      {% else %}
       <div class="ss-label" style="font-size:10px;font-weight:700;text-transform:uppercase;color:#198754;">Compensation</div>
+      {% endif %}
       <ul class="ss-body" style="padding-left:14px;margin:2px 0 6px 0;">
         {% for c in structured.comp_events %}
           <li><b>{{ c.executive }}</b>
@@ -84,6 +93,7 @@
           </li>
         {% endfor %}
       </ul>
+      {% if has_payoff %}</details>{% endif %}
     </div>
   {% endif %}
 
