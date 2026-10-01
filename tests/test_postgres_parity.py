@@ -202,6 +202,16 @@ def test_form4_rows_are_excluded_from_repair_queries(pg):
     assert "pg-f4" not in accessions
 
 
+def test_stale_market_target_selection_on_postgres(pg):
+    import reanalyze
+    from config import PIPELINE_VERSION
+    _insert(pg, "pg-mt-old", pipeline_version="v4.4-signals", has_market_targets=1)
+    _insert(pg, "pg-mt-new", pipeline_version=PIPELINE_VERSION, has_market_targets=1)
+    accessions = {r["accession_no"] for r in reanalyze.rows_stale_market_targets()}
+    assert "pg-mt-old" in accessions
+    assert "pg-mt-new" not in accessions
+
+
 def test_digest_records_round_trip(pg):
     filing_id = _insert(pg, "pg-digest")
     pg.record_digest("email", [filing_id])

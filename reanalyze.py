@@ -10,6 +10,12 @@
 # re-detect from, so extraction has to run. It is still the cheap option,
 # because the SEC fetch is already paid for — the text is in the database.
 #
+# --market-targets re-extracts a different set: rows already scored, but by
+# an older prompt, that carry a market-target flag. v4.5 extraction emits
+# structured price hurdles (price, vest %, units per tier) that the filing
+# page's payoff ladder needs; rows extracted before it only have free text,
+# and where that text can't be parsed the ladder shows the split as unknown.
+#
 # Runs through pipeline.analyze_filing, the single analysis path (CLAUDE.md).
 import argparse
 import sys
@@ -31,14 +37,30 @@ def rows_missing_analysis(since=None, until=None, limit=0):
     detectors can't read, and no verdict. They are as unscored as a row with
     no facts at all.
     """
+    return _select(["pipeline_version IS NULL"], [], since, until, limit)
+
+
+def rows_stale_market_targets(since=None, until=None, limit=0):
+    """Market-target rows extracted by an older pipeline version.
+
+    Keyed on pipeline_version, so a run that stops halfway (or is run twice)
+    picks up exactly the rows the current prompt hasn't read yet.
+    """
+    p = db._placeholder()
+    return _select(["has_market_targets = 1",
+                    f"(pipeline_version IS NULL OR pipeline_version <> {p})"],
+                   [PIPELINE_VERSION], since, until, limit)
+
+
+def _select(conditions, params, since=None, until=None, limit=0):
+    """8-K rows with stored text matching `conditions`, newest first."""
     conn = db.get_connection()
     cursor = conn.cursor()
     p = db._placeholder()
 
-    where = ["pipeline_version IS NULL",
-             "raw_text IS NOT NULL", "raw_text != ''",
-             "COALESCE(source, '8-K') = '8-K'"]
-    params = []
+    where = list(conditions) + ["raw_text IS NOT NULL", "raw_text != ''",
+                                "COALESCE(source, '8-K') = '8-K'"]
+    params = list(params)
     if since:
         where.append(f"filed_date >= {p}")
         params.append(since)
@@ -59,9 +81,17 @@ def rows_missing_analysis(since=None, until=None, limit=0):
 
 
 def run(since=None, until=None, limit=0, dry_run=False, allow_judge=True,
-        apply_universe=True, workers=1):
-    rows = rows_missing_analysis(since, until, 0)
-    print(f"{len(rows)} unscored filings"
+        apply_universe=True, workers=1, market_targets=False):
+    if market_targets:
+        rows = rows_stale_market_targets(since, until, 0)
+        label = f"market-target filings extracted before {PIPELINE_VERSION}"
+        # Already in the feed: they passed the universe gate when ingested.
+        # Re-gating on today's cap would leave some on the old extraction.
+        apply_universe = False
+    else:
+        rows = rows_missing_analysis(since, until, 0)
+        label = "unscored filings"
+    print(f"{len(rows)} {label}"
           f"{f' since {since}' if since else ''}"
           f"{f' through {until}' if until else ''}", flush=True)
     if apply_universe and rows:
@@ -188,13 +218,16 @@ def main():
                         help="filings in flight at once (Flex is slow per call; 6-8 is sensible)")
     parser.add_argument("--all", action="store_true",
                         help="skip the market-cap universe gate")
+    parser.add_argument("--market-targets", action="store_true",
+                        help="re-extract market-target rows scored by an older prompt "
+                             "(structured price hurdles for the payoff ladder)")
     parser.add_argument("--no-judge", action="store_true",
                         help="detectors only — no judge calls. For history: about a "
                              "third of the cost, and it grades the detectors on their own")
     args = parser.parse_args()
     stats = run(since=args.since, until=args.until, limit=args.limit, dry_run=args.dry_run,
                 allow_judge=not args.no_judge, apply_universe=not args.all,
-                workers=args.workers)
+                workers=args.workers, market_targets=args.market_targets)
     return 2 if stats.get("stopped") else 0
 
 

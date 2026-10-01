@@ -31,6 +31,10 @@ on:
         description: "Only count what would be scored — no model calls, no writes"
         type: boolean
         default: false
+      market_targets:
+        description: "Re-extract market-target rows scored by an older prompt (payoff ladder)"
+        type: boolean
+        default: false
 
 concurrency:
   # Context building calls SEC; never overlap the daily job's rate limit.
@@ -64,7 +68,8 @@ jobs:
             --limit "${{ github.event.inputs.limit || '0' }}" \
             --workers "${{ github.event.inputs.workers || '8' }}" \
             ${{ github.event.inputs.no_judge == 'true' && '--no-judge' || '' }} \
-            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }} \
+            ${{ github.event.inputs.market_targets == 'true' && '--market-targets' || '' }}
 
       - name: Price outcomes for anything newly flagged
         if: ${{ always() && github.event.inputs.dry_run != 'true' }}
