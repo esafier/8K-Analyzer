@@ -27,6 +27,7 @@
       {% if p.measurement %}<span>Tested on <b>{{ p.measurement }}</b></span>{% endif %}
       {% if p.at_risk_pct is not none %}<span title="Share of the top payout that is worth nothing unless the stock rises">At risk <b>{{ '%.0f' % p.at_risk_pct }}%</b></span>{% endif %}
       {% if p.annual_pay %}<span>Cash pay <b>{{ p.annual_pay | money }}</b>/yr</span>{% endif %}
+      {% if p.token_salary %}<span title="A token salary: the package is effectively all equity">Salary <b>{{ p.token_salary | money }}</b>/yr</span>{% endif %}
     </div>
 
     <div class="table-responsive">

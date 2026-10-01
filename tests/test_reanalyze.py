@@ -16,7 +16,7 @@ import reanalyze
 
 
 def _insert(accession, filed_date="2026-09-03", structured=None, raw_text="t",
-            pipeline_version=None, ticker="AAA"):
+            pipeline_version=None, ticker="AAA", has_market_targets=0):
     database.insert_filing({
         "accession_no": accession, "company": f"Co {accession}", "ticker": ticker,
         "cik": "1", "filed_date": filed_date, "item_codes": "5.02",
@@ -24,6 +24,7 @@ def _insert(accession, filed_date="2026-09-03", structured=None, raw_text="t",
         "structured_summary": json.dumps(structured) if structured else None,
         "summary": "old-style prose summary",
         "pipeline_version": pipeline_version,
+        "has_market_targets": has_market_targets,
     })
     return database.get_filing_by_accession(accession)["id"]
 
@@ -181,3 +182,34 @@ def test_one_bad_row_costs_one_row(tmp_sqlite_db, monkeypatch):
     stats = reanalyze.run(since="2026-09-01", workers=3)
     assert stats["scored"] == 3 and stats["failed"] == 1
     assert list(stats["errors"].values()) == [1]
+
+
+# --- --market-targets: re-extract for the payoff ladder ---------------------
+
+def test_market_targets_mode_selects_scored_target_rows_from_older_prompts(tmp_sqlite_db):
+    from config import PIPELINE_VERSION
+    stale = _insert("m-1", pipeline_version="v4.4-signals", has_market_targets=1)
+    _insert("m-2", pipeline_version=PIPELINE_VERSION, has_market_targets=1)  # already re-read
+    _insert("m-3", pipeline_version="v4.4-signals")                           # no targets
+    _insert("m-4", pipeline_version="v4.4-signals", has_market_targets=1, raw_text="")
+
+    assert [r["id"] for r in reanalyze.rows_stale_market_targets()] == [stale]
+
+
+def test_market_targets_mode_skips_the_universe_gate_and_is_idempotent(tmp_sqlite_db, monkeypatch):
+    """These rows are already in the feed. Re-gating on today's cap would
+    leave some on the old extraction for no reason."""
+    from config import PIPELINE_VERSION
+    monkeypatch.setattr("database.get_cached_market_caps",
+                        lambda tickers, max_age_hours=None: {})   # gate would skip everything
+    row_id = _insert("m-5", pipeline_version="v4.4-signals", has_market_targets=1)
+    result = _result()
+    result.fields["pipeline_version"] = PIPELINE_VERSION
+    result.fields["has_market_targets"] = 1
+    monkeypatch.setattr("reanalyze.analyze_filing", lambda *a, **k: result)
+
+    stats = reanalyze.run(market_targets=True)
+
+    assert stats["scored"] == 1
+    assert database.get_filing_by_id(row_id)["pipeline_version"] == PIPELINE_VERSION
+    assert reanalyze.rows_stale_market_targets() == []          # a rerun pays for nothing
