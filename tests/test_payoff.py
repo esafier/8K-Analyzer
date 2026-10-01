@@ -132,13 +132,130 @@ def test_structured_v45_fields_win_over_text():
     assert p["rows"][-1]["pay_multiple"] == pytest.approx(3_000_000 / 2_000_000)
 
 
-def test_unknown_split_counts_nothing_until_the_top():
+def test_unknown_split_is_not_disclosed_between_first_and_top_tier():
+    """Showing $0 at the middle tier would read as fact; the filing just
+    didn't say. At the top tier everything has vested, so that one is known."""
     facts = {"comp_events": [{"executive": "A B", "grant_type": "PSUs", "share_count": 1000,
                               "stock_price_targets": "$20 and $30", "vesting_years": 3}]}
     [p] = build_payoffs(facts, price_at_grant=10, today=date(2026, 1, 1), filed_date="2026-01-01")
     assert p["split_known"] is False
-    assert p["rows"][1]["payout"] == 0
+    assert p["rows"][0]["payout"] == 0                       # below the first tier: nothing
+    assert p["rows"][1]["payout"] is None and p["rows"][1]["payout_incomplete"]
     assert p["rows"][2]["payout"] == 30_000
+    assert p["rows"][2]["increment"] is None                 # step from an unknown isn't known
+
+
+def test_single_tier_is_the_whole_award():
+    facts = {"comp_events": [{"executive": "Joseph Hayek, CEO", "grant_type": "PSUs",
+                              "grant_value": "150,000 Performance Shares", "hurdle_prices": [100],
+                              "stock_price_targets": "$100 average over a consecutive 90-day period"}]}
+    [p] = build_payoffs(facts, price_at_grant=60.47)
+    assert p["split_known"] is True
+    assert p["rows"][1]["unlocks"] == ["100% of PSUs · 150,000 units"]
+
+
+# --- real filings that misread before (stored facts, trimmed) -------------------
+
+def test_dollar_millions_are_not_share_prices():
+    """WRAP: market-cap thresholds; SPAI: revenue milestones. Both read as
+    per-share hurdles of +30,000% before."""
+    assert extract_price_values("$150.0 million, $225.0 million, and $506.25 million") == []
+    assert extract_price_values("milestones of $5 million, $10 million and $25M") == []
+    assert extract_price_values("$12.50 per share") == [12.5]
+    wrap = {"comp_events": [{"executive": "Scot Cohen", "grant_type": "PSUs", "share_count": 4_000_000,
+            "vesting_schedule": "1,000,000 shares vest at each of four market capitalization thresholds"
+                                ": $150.0 million, $225.0 million, $337.5 million, and $506.25 million."}]}
+    assert build_payoffs(wrap, price_at_grant=1.645) == []
+
+
+def test_merger_cash_outs_and_investor_warrants_get_no_ladder():
+    events = [
+        {"executive": "Company equity award holders", "grant_type": "Cash-out of PSUs",
+         "market_based_targets": {"stock_price": "$9.50 per share"}, "hurdle_prices": [9.5]},
+        {"executive": "Company RSU Award holders", "grant_type": "Merger consideration / RSU cancellation",
+         "stock_price_targets": "$17.00 per Ordinary Share", "hurdle_prices": [17]},
+        {"executive": "Eagle Equity Partners IV, LLC (Sponsor)", "grant_type": "Earn-Out Shares",
+         "share_count": 2_035_000, "hurdle_prices": [12.5, 15, 17.5]},
+        {"executive": "Twenty-three November 2024 investors", "grant_type": "Warrants",
+         "share_count": 657_876, "hurdle_prices": [5]},
+    ]
+    assert build_payoffs({"comp_events": events}, price_at_grant=4.0) == []
+
+
+def test_tranche_split_read_from_unit_counts():
+    """ANGI: '300,000 PSUs on ... a $10.00 stock price hurdle; 300,000 on ...'"""
+    text = ("300,000 PSUs on the later of the first anniversary of the Effective Date and achievement "
+            "of a $10.00 stock price hurdle; 300,000 on the later of the second anniversary and a $12.00 "
+            "hurdle; 300,000 on the later of the third anniversary and a $14.00 hurdle; and 100,000 on "
+            "the later of the fourth anniversary and a $20.00 hurdle.")
+    got = parse_tranches(text, total_units=1_000_000)
+    assert got == [(10.0, 0.3), (12.0, 0.3), (14.0, 0.3), (20.0, 0.1)]
+
+
+def test_tranche_split_from_respective_list_and_cumulative_tiers():
+    # FBIN: percentages listed after the prices
+    got = parse_tranches("$80, $100, and $125, with 30%, 40%, and 30% of the shares vesting "
+                         "based on attainment of the respective goals")
+    assert [round(f, 2) for _, f in got] == [0.3, 0.4, 0.3]
+    # COTY: cumulative — 50% at the low tier, 100% at the high one
+    got = parse_tranches("100% vesting at $9.00 per share, 50% vesting at $5.56 per share")
+    assert dict(got) == {9.0: pytest.approx(0.5), 5.56: pytest.approx(0.5)}
+
+
+def test_strike_written_before_the_words_exercise_price():
+    """SPAI: '$4.50 exercise price' — the strike, not a $4.50 hurdle."""
+    facts = {"comp_events": [{"executive": "D E", "grant_type": "Stock Options",
+                              "grant_value": "750,000 options", "share_count": 750_000,
+                              "stock_price_targets": "$4.50 exercise price", "hurdle_prices": [4.5]}]}
+    assert build_payoffs(facts, price_at_grant=6.15) == []
+
+
+def test_sizing_price_below_the_market_is_not_a_hurdle():
+    """NINE: '$9 stock price used to determine the number of RSUs' at $10.34."""
+    facts = {"comp_events": [{"executive": "Ann Fox, CEO", "grant_type": "RSUs",
+                              "grant_value": "$2,980,000", "grant_value_usd": 2_980_000,
+                              "hurdle_prices": [9],
+                              "stock_price_targets": "$9 stock price used to determine the number of RSUs"}]}
+    assert build_payoffs(facts, price_at_grant=10.34) == []
+
+
+def test_dollar_denominated_award_granted_at_the_hurdle_pays_its_dollar_amount():
+    """GRND: RSUs worth $1.6M granted when the VWAP first reaches $26, by a date."""
+    facts = {"comp_events": [{"executive": "John North", "grant_type": "RSUs",
+        "grant_value": "$1,600,000", "grant_value_usd": 1_600_000, "hurdle_prices": [26],
+        "market_based_targets": {"stock_price": "Average VWAP equals or exceeds $26 for 15 consecutive trading days"},
+        "vesting_schedule": "Upon the first occurrence on or before December 31, 2027 of the first performance "
+                            "threshold, a number of RSUs equal to $1,600,000 divided by the average VWAP for the "
+                            "preceding 90 trading days will be granted and fully vested on grant."}]}
+    [p] = build_payoffs(facts, price_at_grant=13.56, today=date(2026, 7, 1))
+    assert p["rows"][1]["payout"] == 1_600_000
+    assert p["deadline"] == date(2027, 12, 31)
+
+
+def test_years_and_option_dollar_values_are_not_unit_counts():
+    assert parse_units({"grant_value": "2026 PSUs under the LTIP"}) == (None, False)
+    facts = {"comp_events": [
+        {"executive": "T H", "grant_type": "PSUs", "share_count": 1000,
+         "price_hurdles": [{"price": 20, "vest_pct": 100}]},
+        {"executive": "T H", "grant_type": "Stock Options", "grant_value": "$4.5 million",
+         "grant_value_usd": 4_500_000},
+    ]}
+    [p] = build_payoffs(facts, price_at_grant=10)
+    assert p["uncounted"] == ["Stock Options"]
+    assert p["rows"][-1]["payout"] == 20_000
+
+
+def test_salary_and_bonus_read_from_text():
+    facts = {"comp_events": [
+        {"executive": "Amanda Busby, COO", "grant_type": "Employment Agreement Compensation",
+         "grant_value": "$450,000 annual base salary; annual cash bonus target of 70% of annual salary"},
+        {"executive": "Amanda Busby, COO", "grant_type": "PSUs", "share_count": 10_000,
+         "price_hurdles": [{"price": 20, "vest_pct": 100}]},
+    ]}
+    [p] = build_payoffs(facts, price_at_grant=10)
+    assert p["salary"] == 450_000
+    assert p["annual_pay"] == pytest.approx(450_000 * 1.7)
+    assert p["package"] == ["10,000 PSUs · 1 price hurdle"]   # the salary isn't an award
 
 
 def test_option_with_one_price_is_a_strike_not_a_hurdle():
@@ -247,3 +364,21 @@ def test_detail_page_without_hurdles_is_unchanged(tmp_sqlite_db):
     app.config["TESTING"] = True
     html = app.test_client().get(f"/filing/{row['id']}").data.decode()
     assert "Hurdle payoff" not in html
+
+
+def test_tiered_exercise_prices_are_strikes_not_vesting_hurdles():
+    """SUIG: warrants struck at four premium prices, time-vested. Valued as
+    shares before, which put $1.4M on a $1.17 stock's warrants."""
+    events = [{"executive": "Kristina Campbell (Director)", "grant_type": "Warrants",
+               "grant_value": "Warrants to purchase 207,565 shares of Common Stock",
+               "share_count": 207_565, "hurdle_prices": [5.42, 5.962, 6.504, 7.046],
+               "market_based_targets": {"stock_price": "$5.420, $5.962, $6.504, and $7.046 per share exercise prices"}}]
+    [p] = build_payoffs({"comp_events": events}, price_at_grant=1.17)
+    assert p["package"] == ["207,565 Warrants · 4 premium strikes"]
+    assert p["rows"][1]["payout"] == 0                          # at the lowest strike: worth nothing
+    assert p["rows"][-1]["payout"] is None                      # split not stated: not guessed
+    # With the split stated, each tranche is valued over its own strike.
+    events[0]["price_hurdles"] = [{"price": x, "vest_pct": 25} for x in (5.42, 5.962, 6.504, 7.046)]
+    [p] = build_payoffs({"comp_events": events}, price_at_grant=1.17)
+    top = p["rows"][-1]
+    assert top["payout"] == pytest.approx(207_565 * 0.25 * ((7.046 - 5.42) + (7.046 - 5.962) + (7.046 - 6.504)))

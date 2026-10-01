@@ -55,9 +55,14 @@
           {% if p.mixed_deadlines %}<td class="num">{{ r.deadline.strftime('%b %Y') if r.deadline else '—' }}</td>{% endif %}
           <td class="small">{% for u in r.unlocks %}{{ u }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
           <td class="num">
+            {% if r.payout_incomplete %}
+              {% if r.payout %}<b>&ge; {{ r.payout | money }}</b>{% else %}<span class="text-muted">Not disclosed</span>{% endif %}
+              <div class="text-muted small">tier split not in the filing</div>
+            {% else %}
             <b>{{ r.payout | money }}</b>
+            {% endif %}
             {% if r.increment %}<span class="text-muted small"> (+{{ r.increment | money }})</span>{% endif %}
-            {% if p.top_payout and r.payout is not none %}
+            {% if p.top_payout and r.payout is not none and not r.payout_incomplete %}
             <div class="payoff-bar"><div style="width: {{ [100, (r.payout / p.top_payout * 100)] | min | round(1) }}%"></div></div>
             {% endif %}
             {% if r.breakdown %}<div class="text-muted small">{{ r.breakdown | join(' · ') }}</div>{% endif %}
@@ -71,15 +76,16 @@
     </div>
 
     <div class="payoff-notes">
-      {% if not p.split_known %}<div>The filing doesn't say how the award splits across tiers, so nothing is counted until the top hurdle.</div>{% endif %}
+      {% if not p.split_known %}<div>The filing doesn't say how much vests at each tier, so the take between the first and top hurdle isn't shown; at the top hurdle the whole award has vested.</div>{% endif %}
       {% if p.strike_approx %}<div>~ Option strike assumed equal to the price at filing (the filing says "fair market value on the grant date").</div>{% endif %}
+      {% if p.uncounted %}<div>Not in the take (the filing gives no unit count): {{ p.uncounted | join(', ') }}.</div>{% endif %}
       {% if p.units_approx %}<div>~ Unit count estimated from the award's dollar value at the price at filing.</div>{% endif %}
     </div>
   </details>
   {% endfor %}
 
   <div class="payoff-notes">
-    Take = every award in this filing valued at that share price (hurdle units that have vested × price, plus option spread over the strike), before tax, ignoring later dilution.
+    Take = every award in this filing valued at that share price (hurdle units that have vested × price, plus option spread over the strike; PSUs on operating goals at target), before tax, ignoring later dilution.
     {% if payoffs[0].volatility %}<br>* Odds = chance the stock touches the price by the deadline, assuming its trailing 1-yr volatility ({{ '%.0f' % (payoffs[0].volatility * 100) }}%) and an 8%/yr average return. A multi-day average test is harder to meet than a touch, so read this as an upper bound.{% endif %}
   </div>
 

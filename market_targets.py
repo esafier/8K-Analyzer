@@ -137,6 +137,10 @@ def detect_market_targets(structured):
 # (the detail page showed a $21.50 hurdle as $21.00).
 _PRICE_VALUE_RE = re.compile(r"\$\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,4})?|\d+(?:\.\d{1,4})?)(?!\d|,\d)")
 
+# "$150.0 million" market-cap thresholds and "$5 million" revenue milestones
+# are not share prices. Read as one, they put a +30,000% hurdle on the page.
+_SCALE_AFTER_RE = re.compile(r"\s*(?:million|billion|thousand|mm|bn|[mbk])\b", re.I)
+
 
 def price_matches(text):
     """[(value, start, end)] for each per-share dollar amount in `text`.
@@ -153,6 +157,8 @@ def price_matches(text):
         try:
             v = float(m.group(1).replace(",", ""))
         except ValueError:
+            continue
+        if _SCALE_AFTER_RE.match(text, m.end()):
             continue
         if 0 < v < 100_000:
             out.append((v, m.start(), m.end()))

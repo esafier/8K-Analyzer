@@ -37,11 +37,53 @@ ASSUMED_ANNUAL_RETURN = 0.08
 _DIFFICULTY = ((10.0, "Market pace"), (20.0, "Stretch"), (35.0, "Hard"))
 _MOONSHOT = "Moonshot"
 
-_OPTION_WORDS = ("option", "sar", "stock appreciation")
+_OPTION_RE = re.compile(r"\boptions?\b|\bsars?\b|\bwarrants?\b|stock appreciation", re.I)
+# "$5.420, $5.962, $6.504, and $7.046 per share exercise prices": premium-priced
+# tranches, each worth nothing until the stock clears its own strike.
+_TIERED_STRIKES_RE = re.compile(r"(?:exercise|strike)\s+prices\b", re.I)
 _EQUITY_WORDS = ("rsu", "psu", "restricted", "performance share", "performance stock",
                  "performance unit", "stock unit", "stock award", "share award", "equity",
                  "shares")
-_SALARY_WORDS = ("salary",)
+_PERF_WORDS = ("psu", "performance")
+
+# Events that move money but aren't an executive's pay package: merger
+# cash-outs ("$9.50 per share for each RSU") and SPAC sponsor earn-outs carry
+# a dollar figure the pipeline flags as a market target, and a ladder built
+# on them is nonsense ("Company equity award holders makes up to ...").
+_NOT_A_PACKAGE_RE = re.compile(
+    r"merger|cash[- ]?out|cancel|consideration|earn[- ]?out|conversion|converted|"
+    r"assum(?:e|ed|ption)|exchange|rollover|severance|separation|accelerat|extension", re.I)
+_NOT_A_PERSON_RE = re.compile(
+    r"\bholders?\b|\bemployees\b|\bparticipants\b|\bsponsor\b|\bllc\b|\bl\.?p\.?$|"
+    r"\binvestors?\b|\bshareholders\b|\bstockholders\b|\blenders\b|\bpurchasers\b|"
+    r"\bpartners\b|\binc\b|\bltd\b|\bfund\b|\btrust\b", re.I)
+# A dollar-denominated award granted when the hurdle is hit ("a number of RSUs
+# equal to $1,600,000 divided by the average VWAP ... will be granted") pays
+# that dollar amount, whatever the price is then.
+_FIXED_DOLLAR_RE = re.compile(r"divided by.{0,120}?(?:will be granted|granted and (?:fully )?vested)",
+                              re.I | re.S)
+_YEAR_RE = re.compile(r"^(?:19|20)\d\d$")
+_MONTHS = "january|february|march|april|may|june|july|august|september|october|november|december"
+_DEADLINE_RE = re.compile(
+    r"(?:on or before|no later than|by|through|until|prior to)\s+(" + _MONTHS + r")\s+(\d{1,2}),?\s+(\d{4})",
+    re.I)
+_TERM_RE = re.compile(
+    r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)[- ]year\s+(?:term|period)\b|"
+    r"\bwithin\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+years\b", re.I)
+_RESPECTIVE_RE = re.compile(r"respective", re.I)
+# A hurdle more than this multiple of the price at filing is almost always a
+# misread (a market-cap figure, a pre-split price), not a per-share target.
+_MAX_HURDLE_MULTIPLE = 25.0
+_SALARY_RE = re.compile(r"base\s+salary", re.I)
+_DOLLARS_RE = re.compile(r"\$\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(million\b)?", re.I)
+_BONUS_PCT_RE = re.compile(
+    r"bonus[^.;]{0,80}?(\d{1,3}(?:\.\d+)?)\s*%|(\d{1,3}(?:\.\d+)?)\s*%\s+of\s+(?:his\s+|her\s+|their\s+)?"
+    r"(?:annual\s+)?(?:base\s+)?salary", re.I)
+# A tranche's unit count: comma-grouped ("300,000"), or a bare number with a
+# unit word after it. Bare numbers alone would read "2030" as 2,030 units.
+_TRANCHE_UNITS_RE = re.compile(
+    r"(?<![$\d.,])(\d{1,3}(?:,\d{3})+)(?![\d,])(?!\s*%)|"
+    r"(?<![$\d.,])(\d{3,7})\s+(?:shares|units|psus|rsus|options|performance)", re.I)
 
 _WORD_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
                  "seven": 7, "eight": 8, "nine": 9, "ten": 10}
@@ -62,6 +104,8 @@ _DAYS_RE = re.compile(
     r"\b(\d+|twenty|thirty|sixty|ninety)[- ](?:consecutive[- ])?(?:trading[- ])?day\b", re.I)
 _MEASURE_KIND_RE = re.compile(r"\b(vwap|volume[- ]weighted|average|closing)", re.I)
 _EXERCISE_RE = re.compile(r"(?:exercise|strike)\s+price[^$.;]{0,60}", re.I)
+_EXERCISE_BEFORE_RE = re.compile(
+    r"\$\s*([\d,]+(?:\.\d+)?)\s*(?:per share\s*)?(?:exercise|strike)\s+price", re.I)
 _UNITS_RE = re.compile(
     r"(?<![$\d.,])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(million|thousand|m\b|k\b)?"
     r"(?!\s*%)(?![\d,.])", re.I)
@@ -124,6 +168,8 @@ def parse_units(event, price_at_grant=None):
         return units, False
     text = _text(event.get("grant_value"))
     for m in _UNITS_RE.finditer(text):
+        if _YEAR_RE.match(m.group(1)) and not m.group(2):
+            continue  # "2026 PSUs" is the plan year, not 2,026 units
         v = _num(m.group(1))
         scale = (m.group(2) or "").lower()
         if scale in ("million", "m"):
@@ -151,6 +197,14 @@ def _fraction_in(segment, take_last):
     return None
 
 
+def _units_in(segment, take_last):
+    found = [float((m.group(1) or m.group(2)).replace(",", ""))
+             for m in _TRANCHE_UNITS_RE.finditer(segment)]
+    if not found:
+        return None
+    return found[-1] if take_last else found[0]
+
+
 def _resolve(fractions):
     """Fill a single 'rest' and validate. None unless every tranche is known
     and they sum to no more than the whole award."""
@@ -164,13 +218,34 @@ def _resolve(fractions):
     return fractions
 
 
-def parse_tranches(text):
+def _resolve_cumulative(prices, fractions):
+    """Cumulative tiers — "50% vesting at $5.56 ... 100% vesting at $9.00" —
+    turned into per-tier increments. Only when the share earned rises with
+    the price and ends at the whole award."""
+    if not fractions or any(f is None or f == "rest" for f in fractions):
+        return None
+    ordered = sorted(zip(prices, range(len(prices)), fractions))
+    levels = [f for _, _, f in ordered]
+    if any(b < a for a, b in zip(levels, levels[1:])) or abs(levels[-1] - 1.0) > 0.03:
+        return None
+    steps = [b - a for a, b in zip([0.0] + levels[:-1], levels)]
+    if any(x <= 0 for x in steps):
+        return None
+    out = [None] * len(prices)
+    for (_, i, _), step in zip(ordered, steps):
+        out[i] = step
+    return out
+
+
+def parse_tranches(text, total_units=None):
     """[(price, fraction or None)] from a free-text hurdle description.
 
-    Handles the two ways filings write it:
+    Handles the ways filings write it:
       "30% vests at $21.50, an additional 30% at $41.00, and the remaining
        40% at $61.50"                       (fraction before each price)
       "$20.00 (50% of the units) and $30.00 (50%)"   (fraction after)
+      "300,000 PSUs ... a $10.00 hurdle; 300,000 on ... a $12.00 hurdle"
+                                            (unit counts, over `total_units`)
     plus "in three equal tranches". Returns fractions of None when the split
     can't be read — the caller shows it as unknown rather than guessing.
     """
@@ -180,15 +255,32 @@ def parse_tranches(text):
         return []
     prices = [v for v, _, _ in matches]
 
-    before, after = [], []
+    before, after, units_before, units_after = [], [], [], []
     for i, (_, start, end) in enumerate(matches):
         prev_end = matches[i - 1][2] if i else 0
         next_start = matches[i + 1][1] if i + 1 < len(matches) else len(text)
         before.append(_fraction_in(text[prev_end:start], take_last=True))
         after.append(_fraction_in(text[end:next_start], take_last=False))
+        units_before.append(_units_in(text[prev_end:start], take_last=True))
+        units_after.append(_units_in(text[end:next_start], take_last=False))
 
     for candidate in (before, after):
-        resolved = _resolve(candidate)
+        resolved = _resolve(candidate) or _resolve_cumulative(prices, candidate)
+        if resolved:
+            return list(zip(prices, resolved))
+    # "$80, $100, and $125, with 30%, 40%, and 30% ... of the respective goals"
+    pcts = [float(x) / 100.0 for x in _PCT_RE.findall(text)]
+    if len(pcts) == len(prices) and _RESPECTIVE_RE.search(text):
+        resolved = _resolve(pcts) or _resolve_cumulative(prices, pcts)
+        if resolved:
+            return list(zip(prices, resolved))
+    for counts in (units_before, units_after):
+        if any(u is None for u in counts):
+            continue
+        whole = sum(counts)
+        if total_units and whole <= total_units * 1.03:
+            whole = total_units
+        resolved = _resolve([u / whole for u in counts])
         if resolved:
             return list(zip(prices, resolved))
     if len(prices) > 1 and _EQUAL_RE.search(text):
@@ -196,16 +288,36 @@ def parse_tranches(text):
     return [(p, None) for p in prices]
 
 
+def _years_word(word):
+    word = word.lower()
+    return float(_WORD_NUMBERS.get(word) or word)
+
+
+def _text_deadline(event):
+    """Latest 'on or before December 31, 2027'-style date in the hurdle text."""
+    found = None
+    for t in _hurdle_texts(event):
+        for m in _DEADLINE_RE.finditer(t):
+            try:
+                d = datetime.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%B %d %Y").date()
+            except ValueError:
+                continue
+            found = max(found, d) if found else d
+    return found
+
+
 def _period_years(event):
     for key in ("performance_period_years",):
         v = _num(event.get(key))
         if v and v > 0:
             return v
-    for key in ("vesting_schedule", "market_based_targets", "stock_price_targets"):
-        m = _PERIOD_RE.search(_text(event.get(key)))
+    for t in _hurdle_texts(event):
+        m = _PERIOD_RE.search(t)
         if m:
-            word = m.group(1).lower()
-            return float(_WORD_NUMBERS.get(word) or word)
+            return _years_word(m.group(1))
+        m = _TERM_RE.search(t)
+        if m:
+            return _years_word(m.group(1) or m.group(2))
     v = _num(event.get("vesting_years"))
     return v if v and v > 0 else None
 
@@ -235,7 +347,7 @@ def _hurdle_texts(event):
             _text(event.get("vesting_schedule"))]
 
 
-def _event_prices(event):
+def _event_prices(event, total_units=None):
     """(tranches, split_known, strike) for one comp event.
 
     Structured `price_hurdles` wins; then whichever free-text field states a
@@ -257,8 +369,13 @@ def _event_prices(event):
             return rows, all(r[1] or r[2] for r in rows), strike
 
     texts = _hurdle_texts(event)
-    if strike is None:
-        for t in texts:
+    tiered = any(_TIERED_STRIKES_RE.search(t) for t in texts)
+    if strike is None and not tiered:
+        for t in texts + [_text(event.get("grant_value"))]:
+            before = _EXERCISE_BEFORE_RE.search(t)
+            if before:
+                strike = _num(before.group(1))
+                break
             ex = _EXERCISE_RE.search(t)
             if ex:
                 tail = t[ex.start():ex.end() + 20]
@@ -269,7 +386,8 @@ def _event_prices(event):
 
     best = []
     for t in texts:
-        parsed = [(p, f) for p, f in parse_tranches(t) if strike is None or abs(p - strike) > 0.005]
+        parsed = [(p, f) for p, f in parse_tranches(t, total_units)
+                  if strike is None or abs(p - strike) > 0.005]
         if parsed and all(f is not None for _, f in parsed):
             best = parsed
             break
@@ -285,7 +403,9 @@ def _event_prices(event):
             best.append((p, None))
             known.add(round(p, 2))
 
-    # A split that covers only some of the prices isn't a split.
+    # One tier is the whole award; a split covering only some prices isn't one.
+    if len(best) == 1 and best[0][1] is None:
+        best = [(best[0][0], 1.0)]
     split_known = bool(best) and all(f is not None for _, f in best)
     if not split_known:
         best = [(p, None) for p, _ in best]
@@ -303,13 +423,54 @@ def _looks_price_vested(event):
 
 def _kind(event):
     blob = f"{_text(event.get('grant_type'))} {_text(event.get('grant_value'))}".lower()
-    if any(w in blob for w in _OPTION_WORDS):
+    if _OPTION_RE.search(blob):
         return "option"
-    if any(w in _text(event.get("grant_type")).lower() for w in _SALARY_WORDS):
+    grant_type = _text(event.get("grant_type")).lower()
+    if "salary" in grant_type:
         return "salary"
+    if _SALARY_RE.search(blob) and not any(w in grant_type for w in _EQUITY_WORDS):
+        return "salary"  # "Employment Agreement Compensation: $450,000 base salary..."
     if any(w in blob for w in _EQUITY_WORDS):
         return "equity"
     return None
+
+
+def _is_package_event(event):
+    """False for merger cash-outs, earn-outs, severance — money that moves on
+    an event, not a package an executive is being paid to earn."""
+    if _NOT_A_PACKAGE_RE.search(_text(event.get("grant_type"))):
+        return False
+    name, _ = _person(event.get("executive"))
+    return not _NOT_A_PERSON_RE.search(name)
+
+
+def _stated_pay(event):
+    """(base salary, target bonus %) stated in an event's free text, e.g.
+    "$450,000 annual base salary; annual cash bonus target of 70%"."""
+    if _NOT_A_PACKAGE_RE.search(_text(event.get("grant_type"))):
+        return None, None
+    text = f"{_text(event.get('grant_value'))} {_text(event.get('grant_type'))}"
+    salary = None
+    m = _SALARY_RE.search(text)
+    if m:
+        near = []
+        for d in _DOLLARS_RE.finditer(text):
+            v = float(d.group(1).replace(",", "")) * (1e6 if d.group(2) else 1)
+            if v >= 50_000 and abs(d.start() - m.start()) <= 60:
+                near.append((abs(d.start() - m.start()), v))
+        if not near:
+            # "$2.3 million" has no per-share-sized figure; fall back to the
+            # model's number when the event is the salary itself.
+            usd = _num(event.get("grant_value_usd"))
+            if usd and "salary" in _text(event.get("grant_type")).lower():
+                near = [(0, usd)]
+        if near:
+            salary = min(near)[1]
+    bonus = None
+    b = _BONUS_PCT_RE.search(text)
+    if b:
+        bonus = float(b.group(1) or b.group(2))
+    return salary, bonus
 
 
 def _person(executive):
@@ -437,24 +598,35 @@ def _awards_for(events, price_at_grant, filed):
     awards, salary, bonus_pct, bonus_usd = [], None, None, None
     for ev in events:
         s = _num(ev.get("base_salary_usd"))
+        stated_salary, stated_bonus = _stated_pay(ev)
+        s = s if s and s > 0 else stated_salary
         if s and s > 0:
             salary = max(salary or 0, s)
-        bp = _num(ev.get("target_bonus_pct"))
+        bp = _num(ev.get("target_bonus_pct")) or stated_bonus
         if bp and bp > 0:
             bonus_pct = bp
         kind = _kind(ev)
-        if kind == "salary":
-            s = _num(ev.get("grant_value_usd"))
-            if s and s > 0:
-                salary = max(salary or 0, s)
-            continue
-        if kind is None:
+        if kind in ("salary", None):
             continue
 
         units, units_approx = parse_units(ev, price_at_grant)
-        tranches, split_known, strike = _event_prices(ev)
+        if kind == "option" and units_approx:
+            # An option's dollar value is its Black-Scholes value, a fraction
+            # of the share price; dividing by the price would understate the
+            # count several times over. Better uncounted than wrong.
+            units, units_approx = None, False
+        tranches, split_known, strike = _event_prices(ev, units)
+        if price_at_grant:
+            # Above 25x the price is a market-cap figure or a pre-split price.
+            tranches = [t for t in tranches if t[0] <= price_at_grant * _MAX_HURDLE_MULTIPLE]
+        fixed_usd = None
         grant_date = _date(ev.get("grant_date")) or filed
-        if kind == "option":
+        tiered = (kind == "option" and len(tranches) > 1
+                  and any(_TIERED_STRIKES_RE.search(t) for t in _hurdle_texts(ev)))
+        if tiered:
+            # Each tranche is struck at its own price; no single strike.
+            strike, strike_approx, hurdle_kind = None, False, "option"
+        elif kind == "option":
             strike_approx = False
             if strike is None and len(tranches) == 1 and not _looks_price_vested(ev):
                 # One price on an option with no hurdle language is its strike.
@@ -471,10 +643,26 @@ def _awards_for(events, price_at_grant, filed):
             hurdle_kind = "option"
         else:
             strike_approx = False
-            hurdle_kind = "hurdle" if tranches else "time"
+            if price_at_grant:
+                # A price at or below where the stock already was isn't a
+                # hurdle — it's the price used to size the award ("$9 stock
+                # price used to determine the number of RSUs").
+                tranches = [t for t in tranches if t[0] > price_at_grant + 0.005]
+            usd = _num(ev.get("grant_value_usd"))
+            if tranches and usd and _FIXED_DOLLAR_RE.search(" ".join(_hurdle_texts(ev))):
+                fixed_usd, units, units_approx = usd, None, False
+            if tranches:
+                hurdle_kind = "hurdle"
+            elif any(w in f"{_text(ev.get('grant_type'))} {_text(ev.get('grant_value'))}".lower()
+                     for w in _PERF_WORDS):
+                # PSUs on revenue/EBITDA/TSR goals: at risk, but not on a
+                # price we can put on the ladder. Valued at target.
+                hurdle_kind = "perf"
+            else:
+                hurdle_kind = "time"
 
         years = _period_years(ev) if tranches else None
-        deadline = _date(ev.get("hurdle_deadline"))
+        deadline = _date(ev.get("hurdle_deadline")) or (_text_deadline(ev) if tranches else None)
         if deadline is None and years and grant_date:
             deadline = _add_years(grant_date, years)
 
@@ -490,6 +678,8 @@ def _awards_for(events, price_at_grant, filed):
             "grant_type": _text(ev.get("grant_type")) or ("Options" if kind == "option" else "Equity"),
             "units": units,
             "units_approx": units_approx,
+            "fixed_usd": fixed_usd,
+            "tiered_strikes": tiered,
             "strike": strike,
             "strike_approx": strike_approx,
             "tranches": resolved,
@@ -505,19 +695,37 @@ def _awards_for(events, price_at_grant, filed):
 
 
 def _vested_fraction(award, price):
-    """Share of the award earned once the stock sits at `price`."""
+    """Share of the award earned once the stock sits at `price`, or None when
+    the filing doesn't say (price between the first and top hurdle of an
+    award whose split isn't disclosed — showing $0 there would read as fact)."""
     if not award["tranches"]:
         return 1.0
+    prices = [t["price"] for t in award["tranches"]]
     if not award["split_known"]:
-        # Unknown split: nothing is certain until the top hurdle clears it all.
-        return 1.0 if price >= max(t["price"] for t in award["tranches"]) - 1e-9 else 0.0
+        if price >= max(prices) - 1e-9:
+            return 1.0
+        return 0.0 if price < min(prices) - 1e-9 else None
     return min(1.0, sum(t["fraction"] for t in award["tranches"] if price >= t["price"] - 1e-9))
 
 
 def _value_at(award, price):
-    if not award["units"]:
+    """Dollar value of one award at `price`; None when it can't be known."""
+    if not award["units"] and not award.get("fixed_usd"):
         return None
-    earned = award["units"] * _vested_fraction(award, price)
+    if award.get("tiered_strikes"):
+        # Every tranche is out of the money at or below the lowest strike.
+        if price <= min(t["price"] for t in award["tranches"]) + 1e-9:
+            return 0.0
+        if not award["split_known"]:
+            return None
+        return sum(award["units"] * t["fraction"] * max(0.0, price - t["price"])
+                   for t in award["tranches"])
+    fraction = _vested_fraction(award, price)
+    if fraction is None:
+        return None
+    if award.get("fixed_usd"):
+        return award["fixed_usd"] * fraction
+    earned = award["units"] * fraction
     if award["kind"] == "option":
         if award["strike"] is None:
             return None
@@ -532,6 +740,10 @@ def _unlock_lines(awards, price):
             if abs(t["price"] - price) > 0.005:
                 continue
             label = "options" if a["kind"] == "option" else a["grant_type"]
+            if a.get("tiered_strikes"):
+                share = f"{t['fraction'] * 100:.0f}% of " if t["fraction"] else ""
+                lines.append(f"{share}{a['grant_type']} struck here (worth nothing below)")
+                continue
             if t["fraction"] and a["units"]:
                 lines.append(f"{t['fraction'] * 100:.0f}% of {label} · "
                              f"{a['units'] * t['fraction']:,.0f} units")
@@ -544,15 +756,22 @@ def _unlock_lines(awards, price):
 
 def _package_line(a):
     units = f"{'~' if a['units_approx'] else ''}{a['units']:,.0f} " if a["units"] else ""
+    if a.get("fixed_usd"):
+        units = f"{money(a['fixed_usd'])} of "
     if a["kind"] == "option":
         strike = (f" @ {'~' if a['strike_approx'] else ''}${a['strike']:,.2f}"
                   if a["strike"] else "")
+        if a.get("tiered_strikes"):
+            n = len(a["tranches"])
+            return f"{units}{a['grant_type']} · {n} premium strikes"
         tail = " · price-vested" if a["tranches"] else ""
         return f"{units}options{strike}{tail}"
     if a["kind"] == "hurdle":
         n = len(a["tranches"])
         yrs = f", {a['period_years']:g}-yr window" if a["period_years"] else ""
         return f"{units}{a['grant_type']} · {n} price hurdle{'s' if n != 1 else ''}{yrs}"
+    if a["kind"] == "perf":
+        return f"{units}{a['grant_type']} · operating goals, at target"
     return f"{units}{a['grant_type']} · time-vested"
 
 
@@ -573,7 +792,8 @@ def build_payoffs(structured, price_at_grant=None, price_today=None, filed_date=
     """
     if not isinstance(structured, dict):
         return []
-    events = [e for e in (structured.get("comp_events") or []) if isinstance(e, dict)]
+    events = [e for e in (structured.get("comp_events") or [])
+              if isinstance(e, dict) and _is_package_event(e)]
     if not events:
         return []
     price_at_grant = _num(price_at_grant) or None
@@ -624,9 +844,11 @@ def _ladder(group, price_at_grant, price_today, spot, filed, today, vol):
     deadlines = sorted({a["deadline"] for a in hurdle_awards if a["deadline"]})
 
     def payout(price):
-        vals = [_value_at(a, price) for a in awards]
+        """(known total, incomplete?) — incomplete when some award's value at
+        this price isn't disclosed; the known part is then a floor."""
+        vals = [_value_at(a, price) for a in awards if a["units"] or a.get("fixed_usd")]
         known = [v for v in vals if v is not None]
-        return sum(known) if known else None
+        return (sum(known) if known else None), len(known) < len(vals)
 
     def row(label, price, is_today=False):
         deadline = None
@@ -641,9 +863,10 @@ def _ladder(group, price_at_grant, price_today, spot, filed, today, vol):
         board_years = ((deadline - filed).days / 365.25) if deadline else None
         cagr_grant = (required_cagr(price, price_at_grant, board_years)
                       if price_at_grant and board_years and board_years > 0.05 else None)
-        value = payout(price)
+        value, incomplete = payout(price)
         breakdown = []
-        for award_kind, part in (("hurdle", "PSUs"), ("option", "options"), ("time", "time-vested")):
+        for award_kind, part in (("hurdle", "PSUs"), ("option", "options"),
+                                 ("perf", "operating PSUs"), ("time", "time-vested")):
             v = sum(_value_at(a, price) or 0 for a in awards if a["kind"] == award_kind)
             if v > 0:
                 breakdown.append(f"{part} {money(v)}")
@@ -661,17 +884,23 @@ def _ladder(group, price_at_grant, price_today, spot, filed, today, vol):
             "difficulty": None if is_today else difficulty(cagr, pct_today),
             "unlocks": [] if is_today else _unlock_lines(awards, price),
             "payout": value,
+            "payout_incomplete": incomplete,
             "breakdown": breakdown if len(breakdown) > 1 else [],
-            "pay_multiple": (value / annual_pay) if (value is not None and annual_pay) else None,
+            "pay_multiple": ((value / annual_pay)
+                             if (value is not None and annual_pay and not incomplete) else None),
             "odds": odds,
         }
 
     rows = [row("Today", spot, is_today=True)]
     prev = rows[0]["payout"]
+    prev_complete = not rows[0]["payout_incomplete"]
     for p in levels:
         r = row(f"${p:,.2f}", p)
-        r["increment"] = (r["payout"] - prev) if (r["payout"] is not None and prev is not None) else None
-        prev = r["payout"]
+        complete = not r["payout_incomplete"]
+        r["increment"] = ((r["payout"] - prev)
+                          if (r["payout"] is not None and prev is not None
+                              and complete and prev_complete) else None)
+        prev, prev_complete = r["payout"], complete
         rows.append(r)
 
     top, first = rows[-1], rows[1]
@@ -698,12 +927,17 @@ def _ladder(group, price_at_grant, price_today, spot, filed, today, vol):
         "measurement": next((a["measurement"] for a in hurdle_awards if a["measurement"]), None),
         "split_known": all(a["split_known"] for a in hurdle_awards),
         "units_approx": any(a["units_approx"] for a in awards),
+        # Awards in the package the take can't value (no unit count given).
+        "uncounted": [a["grant_type"] for a in awards
+                      if not a["units"] and not a.get("fixed_usd")],
         "strike_approx": any(a["strike_approx"] for a in awards if a["kind"] == "option"),
         "price_at_grant": price_at_grant,
         "price_today": price_today,
         "spot": spot,
         "volatility": vol,
-        "headline": _headline(group["name"], first, top, rows[0]["payout"], annual_pay),
+        "headline": _headline(group["name"], first, top,
+                              None if rows[0]["payout_incomplete"] else rows[0]["payout"],
+                              annual_pay),
     }
 
 
