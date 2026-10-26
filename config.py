@@ -142,22 +142,27 @@ API_NINJAS_KEY = os.environ.get("API_NINJAS_KEY", "")
 # sees filings that already carry a signal — so it gets a much stronger model
 # and still costs well under a dollar a day.
 #
-# GPT-6 family, standard per 1M input/output tokens (Flex is half):
+# Per 1M input/output tokens, standard (Flex is half):
 #   gpt-6-luna     $0.10 / $0.50  — extraction default
-#   gpt-6.1-terra  $1.00 / $5.00  — judge alternative, untested here
-#   gpt-6.1-sol    $2.00 / $10.00 — judge default
+#   gpt-5.6-terra  $2.00 / $12.00 — judge default
+#   gpt-6.1-sol    $2.00 / $10.00 — judge candidate (no Flex tier yet)
+#   gpt-6.1-terra  $1.00 / $5.00  — judge candidate
 #   gpt-6-astra    $10.00 / $50.00 — premium: on-demand deep analysis only
 #
-# The previous defaults were gpt-5.6-luna ($0.20 / $1.20), gpt-5.6-terra
-# ($2.00 / $12.00) and gpt-5.6-sol ($4.00 / $20.00). On 50 stored 8-Ks
-# (bake-off, 2026-09-24) gpt-6-luna reached the same PASS/MONITOR verdict as
-# gpt-5.6-luna on 46. Compare with bakeoff.py before moving a default again.
+# Bake-off, 2026-10-26, 50 stored 8-Ks and 20 judge candidates:
+# - gpt-6-luna matched gpt-5.6-luna's verdict on 49 of 50 at about half
+#   the cost per filing, so it replaced it.
+# - The judge stayed on gpt-5.6-terra. Both GPT-6.1 judges escalated far more
+#   often: of the 20, gpt-5.6-terra passed 9 and sent 7 to DEEP_LOOK,
+#   gpt-6.1-sol passed 4 and sent 11, gpt-6.1-terra passed 5 and sent 14. A
+#   judge that escalates more is a precision risk until the user's labels
+#   say the escalations were right.
 #
 # All three are env-overridable so the deployed models can change from the
 # Render dashboard without a redeploy.
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-6-luna")
 LLM_MODEL_PREMIUM = os.environ.get("LLM_MODEL_PREMIUM", "gpt-6-astra")
-LLM_MODEL_JUDGE = os.environ.get("LLM_MODEL_JUDGE", "gpt-6.1-sol")
+LLM_MODEL_JUDGE = os.environ.get("LLM_MODEL_JUDGE", "gpt-5.6-terra")
 
 # OpenAI service tier for pipeline calls. "flex" is billed at half the
 # standard rate in exchange for slower answers and an occasional "busy"
