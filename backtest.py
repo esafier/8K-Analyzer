@@ -24,8 +24,13 @@ from datetime import datetime, timedelta
 
 from config import LLM_MODEL, LLM_MODEL_JUDGE
 
-# Per 1M tokens (input, output), GPT-5.6 family. Used only for estimation.
+# Per 1M tokens (input, output), standard tier. Used only for estimation.
 PRICING = {
+    "gpt-6-luna": (0.10, 0.50),
+    "gpt-6.1-terra": (1.00, 5.00),
+    "gpt-6.1-sol": (2.00, 10.00),
+    "gpt-6-sol": (2.00, 10.00),
+    "gpt-6-astra": (10.00, 50.00),
     "gpt-5.6-luna": (0.20, 1.20),
     "gpt-5.6-terra": (2.00, 12.00),
     "gpt-5.6-sol": (4.00, 20.00),

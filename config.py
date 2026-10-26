@@ -142,16 +142,22 @@ API_NINJAS_KEY = os.environ.get("API_NINJAS_KEY", "")
 # sees filings that already carry a signal — so it gets a much stronger model
 # and still costs well under a dollar a day.
 #
-# GPT-5.6 family, per 1M input/output tokens:
-#   gpt-5.6-luna   $0.20 / $1.20  — extraction default
-#   gpt-5.6-terra  $2.00 / $12.00 — judge default
-#   gpt-5.6-sol    $4.00 / $20.00 — override for a hard call
+# GPT-6 family, standard per 1M input/output tokens (Flex is half):
+#   gpt-6-luna     $0.10 / $0.50  — extraction default
+#   gpt-6.1-terra  $1.00 / $5.00  — judge alternative, untested here
+#   gpt-6.1-sol    $2.00 / $10.00 — judge default
+#   gpt-6-astra    $10.00 / $50.00 — premium: on-demand deep analysis only
+#
+# The previous defaults were gpt-5.6-luna ($0.20 / $1.20), gpt-5.6-terra
+# ($2.00 / $12.00) and gpt-5.6-sol ($4.00 / $20.00). On 50 stored 8-Ks
+# (bake-off, 2026-09-24) gpt-6-luna reached the same PASS/MONITOR verdict as
+# gpt-5.6-luna on 46. Compare with bakeoff.py before moving a default again.
 #
 # All three are env-overridable so the deployed models can change from the
 # Render dashboard without a redeploy.
-LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-5.6-luna")
-LLM_MODEL_PREMIUM = os.environ.get("LLM_MODEL_PREMIUM", "gpt-5.6-sol")
-LLM_MODEL_JUDGE = os.environ.get("LLM_MODEL_JUDGE", "gpt-5.6-terra")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-6-luna")
+LLM_MODEL_PREMIUM = os.environ.get("LLM_MODEL_PREMIUM", "gpt-6-astra")
+LLM_MODEL_JUDGE = os.environ.get("LLM_MODEL_JUDGE", "gpt-6.1-sol")
 
 # OpenAI service tier for pipeline calls. "flex" is billed at half the
 # standard rate in exchange for slower answers and an occasional "busy"
@@ -168,12 +174,13 @@ LLM_SERVICE_TIER = os.environ.get("LLM_SERVICE_TIER", "flex").strip()
 # comp-design thesis and nothing else tracks them. FORM4_SCORE_BUYS=1 restores.
 FORM4_SCORE_BUYS = os.environ.get("FORM4_SCORE_BUYS", "").strip().lower() in ("1", "true", "yes")
 
-# Models that reject an explicit `temperature`. The GPT-5.6 family only
-# accepts its default, and passing temperature=0 is a hard 400 — so llm.py
-# omits the parameter for these rather than discovering it in production.
+# Models that reject an explicit `temperature`. The GPT-5.6 and GPT-6
+# families only accept their default, and passing temperature=0 is a hard
+# 400 — so llm.py omits the parameter for these rather than discovering it in
+# production.
 # Determinism is not lost in any way that matters here: the prompts return
 # strict JSON, and the schema is what constrains the output.
-MODELS_WITHOUT_TEMPERATURE = ("gpt-5.6",)
+MODELS_WITHOUT_TEMPERATURE = ("gpt-5.6", "gpt-6")
 
 # Folder where prompt files are stored (prompt_v1.txt, prompt_v2.txt, etc.)
 # The "active" prompt used by the live pipeline is whichever one ACTIVE_PROMPT points to.

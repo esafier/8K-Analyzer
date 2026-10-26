@@ -137,7 +137,7 @@ decorative glyph must never be one of them.
 - **`PIPELINE_VERSION`** (config.py) is stamped on every analyzed filing. Bump
   it when a prompt or the weights change.
 - **Models** are env-overridable: `LLM_MODEL` (extraction),
-  `LLM_MODEL_JUDGE`, `LLM_MODEL_PREMIUM`. The GPT-5.6 family rejects an
+  `LLM_MODEL_JUDGE`, `LLM_MODEL_PREMIUM`. The GPT-5.6 and GPT-6 families reject an
   explicit `temperature` — `llm._chat_kwargs` handles that; don't re-add it.
   `llm._create` also learns it at run time for a model not yet listed.
 - **Pipeline calls use OpenAI's Flex tier** (`LLM_SERVICE_TIER`, half price,
