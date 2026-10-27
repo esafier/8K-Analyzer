@@ -17,7 +17,7 @@ on:
         default: "gpt-5.6-luna,gpt-6-luna"
       judge_models:
         description: "Judge models, baseline first"
-        default: "gpt-5.6-terra,gpt-6-sol,gpt-6-luna"
+        default: "gpt-5.6-terra,gpt-6.1-sol,gpt-6.1-terra"
       workers:
         description: "Filings in flight at once"
         default: "8"

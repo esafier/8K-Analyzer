@@ -7,7 +7,7 @@ is the baseline the others are compared against.
 
     python bakeoff.py --n 50 --judge-n 20
     python bakeoff.py --extract-models gpt-5.6-luna,gpt-6-luna \
-                      --judge-models gpt-5.6-terra,gpt-6-sol,gpt-6-luna
+                      --judge-models gpt-5.6-terra,gpt-6.1-sol,gpt-6.1-terra
 
 Agreement with the current model is not the same as being right — the report
 lists every disagreement with the company name so each can be read. A model
@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 import database as db
 from config import ACTIVE_PROMPT, MAX_EXTRACTION_CHARS
 
-# Standard-tier USD per 1M tokens (input, output), September 2026. Flex and
+# Standard-tier USD per 1M tokens (input, output), October 2026. Flex and
 # Batch are half. Cached input is ignored, so these slightly overstate.
 PRICES = {
     "gpt-5.6-luna": (0.20, 1.20),
@@ -33,6 +33,9 @@ PRICES = {
     "gpt-5.6-sol": (4.00, 20.00),
     "gpt-6-luna": (0.10, 0.50),
     "gpt-6-sol": (2.00, 10.00),
+    "gpt-6-astra": (10.00, 50.00),
+    "gpt-6.1-terra": (1.00, 5.00),
+    "gpt-6.1-sol": (2.00, 10.00),
 }
 
 # Fields that decide whether a detector fires. A model that gets these the
@@ -239,7 +242,7 @@ def main():
     parser.add_argument("--n", type=int, default=50)
     parser.add_argument("--judge-n", type=int, default=20)
     parser.add_argument("--extract-models", default="gpt-5.6-luna,gpt-6-luna")
-    parser.add_argument("--judge-models", default="gpt-5.6-terra,gpt-6-sol,gpt-6-luna")
+    parser.add_argument("--judge-models", default="gpt-5.6-terra,gpt-6.1-sol,gpt-6.1-terra")
     parser.add_argument("--workers", type=int, default=8,
                         help="filings in flight at once (Flex is slow per call)")
     args = parser.parse_args()

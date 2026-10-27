@@ -84,10 +84,10 @@ def test_a_model_without_flex_is_remembered_for_the_run():
 
 
 def test_a_model_that_rejects_temperature_is_retried_without_it():
-    _, calls = _run(NO_TEMPERATURE, _ok(), model="gpt-6-luna")
+    _, calls = _run(NO_TEMPERATURE, _ok(), model="gpt-7-luna")
     assert calls[0].kwargs.get("temperature") == 0
     assert "temperature" not in calls[1].kwargs
-    _, calls = _run(_ok(), model="gpt-6-luna")
+    _, calls = _run(_ok(), model="gpt-7-luna")
     assert "temperature" not in calls[0].kwargs
 
 
@@ -126,3 +126,8 @@ def test_repeated_flex_failures_switch_the_model_to_standard_for_the_run():
     assert "test-model" in llm._FLEX_UNSUPPORTED
     _, calls = _run(_ok("default"))
     assert "service_tier" not in calls[0].kwargs
+
+
+def test_gpt6_models_never_send_temperature():
+    for model in ("gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-5.6-luna"):
+        assert "temperature" not in llm._chat_kwargs(model)

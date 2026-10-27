@@ -5,6 +5,9 @@ schedule==1.2.2
 openai>=1.66.0
 gunicorn==22.0.0
 pg8000==1.31.2
+# scramp 1.5.0 removed make_channel_binding, which pg8000 1.31.2
+# calls on every connect: every Postgres connection failed with AttributeError.
+scramp>=1.4.5,<1.5
 python-dotenv==1.0.1
 pytest==8.3.4
 itsdangerous==2.2.0
