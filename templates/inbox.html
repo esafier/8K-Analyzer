@@ -121,9 +121,9 @@
              ~ " . My 8-K tracker flagged it as: " ~ (filing.top_signal or "no summary")
              ~ " Then add the log line to my Governance Situation Log Google Sheet." %}
         <a href="claude://claude.ai/new?q={{ ("Run the governance-situation skill in TRIAGE mode on " ~ _gov_ctx) | urlencode }}"
-           class="btn btn-sm btn-outline-secondary" title="Quick governance read in Claude (triage)">Triage</a>
+           class="btn btn-sm btn-outline-secondary" title="Opens a new Claude chat with a quick governance triage of this filing filled in (a short read plus a log line in your Governance sheet). Nothing runs until you press send.">Triage</a>
         <a href="claude://claude.ai/new?q={{ ("Run the governance-situation skill in DEEP mode on " ~ _gov_ctx) | urlencode }}"
-           class="btn btn-sm btn-outline-secondary" title="Full governance read in Claude (deep, costs more)">Deep</a>
+           class="btn btn-sm btn-outline-secondary" title="Opens a new Claude chat with a full, in-depth governance analysis of this filing filled in, plus a log line in your Governance sheet. Slower and uses more tokens than Triage. Nothing runs until you press send.">Deep</a>
       </div>
     </div>
 
