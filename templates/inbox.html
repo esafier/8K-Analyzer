@@ -114,6 +114,16 @@
                 title="Noise — teaches the ranker">&#10005;</button>
         <a href="{{ filing.filing_document_url or filing.filing_url }}" target="_blank"
            class="btn btn-sm btn-outline-primary" rel="noopener">Filing</a>
+        {# Hand-off to Claude. These only open a new Claude chat with the request
+           filled in; nothing runs (and no tokens are spent) until it is sent there. #}
+        {% set _gov_ctx = (filing.ticker or filing.company) ~ " (" ~ filing.company ~ "). Trigger filing dated "
+             ~ filing.filed_date ~ ": " ~ (filing.filing_document_url or filing.filing_url)
+             ~ " . My 8-K tracker flagged it as: " ~ (filing.top_signal or "no summary")
+             ~ " Then add the log line to my Governance Situation Log Google Sheet." %}
+        <a href="claude://claude.ai/new?q={{ ("Run the governance-situation skill in TRIAGE mode on " ~ _gov_ctx) | urlencode }}"
+           class="btn btn-sm btn-outline-secondary" title="Quick governance read in Claude (triage)">Triage</a>
+        <a href="claude://claude.ai/new?q={{ ("Run the governance-situation skill in DEEP mode on " ~ _gov_ctx) | urlencode }}"
+           class="btn btn-sm btn-outline-secondary" title="Full governance read in Claude (deep, costs more)">Deep</a>
       </div>
     </div>
 
