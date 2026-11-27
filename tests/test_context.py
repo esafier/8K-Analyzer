@@ -351,7 +351,11 @@ def test_local_history_supplies_a_cluster_count_on_first_ingest(tmp_sqlite_db, m
     _stub_sec(monkeypatch)
     _stub_markets(monkeypatch)
 
-    recent = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+    # Relative to the fixture's filing date, not the real clock: the count is
+    # anchored to the filing, so priors dated by datetime.now() started landing
+    # AFTER the 2026-09-01 filing once the calendar passed late October.
+    filed = datetime.strptime(_filing()["filed_date"], "%Y-%m-%d")
+    recent = (filed - timedelta(days=60)).strftime("%Y-%m-%d")
     for i in range(2):
         database.insert_filing({
             "accession_no": f"prior-{i}", "company": "Acme Corp", "ticker": "ACME",
